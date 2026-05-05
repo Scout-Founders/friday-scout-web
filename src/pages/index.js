@@ -98,27 +98,38 @@ function ConfidenceMeter({ passed, total = 14 }) {
 function StockChart({ ticker, price }) {
   const [tf, setTf] = useState("6M");
   const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
   const TFS = ["1D","1W","1M","3M","6M","YTD","1Y","2Y","5Y"];
 
   useEffect(() => {
-    // Generate simulated data — will wire to FMP later
-    const dayMap = { "1D": 78, "1W": 5, "1M": 22, "3M": 65, "6M": 130, "YTD": 100, "1Y": 252, "2Y": 504, "5Y": 1260 };
-    const days = dayMap[tf] || 130;
-    const pts = [];
-    let p = parseFloat(price) || 100;
-    // Work backwards from current price
-    const vol = tf === "1D" ? 0.003 : 0.015;
-    let simP = p * (0.7 + Math.random() * 0.6);
-    for (let i = days; i >= 0; i--) {
-      simP += (Math.random() - 0.47) * simP * vol;
-      simP = Math.max(5, simP);
-      if (i === 0) simP = p; // end at current price
-      pts.push(simP);
-    }
-    setData(pts);
-  }, [tf, price]);
+    if (!ticker) return;
+    setLoading(true);
+    fetch(`${API}?mode=chart&ticker=${ticker}&tf=${tf}`)
+      .then(r => r.json())
+      .then(d => {
+        if (Array.isArray(d) && d.length > 0) {
+          setData(d.map(p => p.close));
+        } else {
+          // Fallback to simulated if API fails
+          const days = { "1D": 78, "1W": 5, "1M": 22, "3M": 65, "6M": 130, "YTD": 100, "1Y": 252, "2Y": 504, "5Y": 1260 }[tf] || 130;
+          let p2 = parseFloat(price) || 100;
+          let sim = p2 * (0.7 + Math.random() * 0.6);
+          const pts = [];
+          for (let i = days; i >= 0; i--) { sim += (Math.random() - 0.47) * sim * 0.015; pts.push(Math.max(5, sim)); }
+          pts[pts.length - 1] = p2;
+          setData(pts);
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoading(false);
+        setData(null);
+      });
+  }, [tf, ticker]);
 
-  if (!data) return null;
+  if (loading) return <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: COLORS.textDim }}>Loading chart...</div>;
+  if (!data || data.length < 2) return null;
+
   const w = 700, h = 180;
   const mn = Math.min(...data), mx = Math.max(...data), rng = mx - mn || 1;
   const step = Math.max(1, Math.floor(data.length / 200));
