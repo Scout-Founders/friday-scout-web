@@ -477,15 +477,22 @@ export default function Home() {
               </p>
               <div style={{ display: "flex", justifyContent: "center", gap: 16 }}>
                 <button onClick={() => setShowAuth(true)} style={{ padding: "18px 44px", borderRadius: 14, border: "none", background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`, color: COLORS.bg, fontSize: 17, fontWeight: 700, cursor: "pointer", animation: "glow 3s ease-in-out infinite" }}>Start Scanning →</button>
-                <button onClick={() => document.getElementById("gates")?.scrollIntoView({ behavior: "smooth" })} style={{ padding: "18px 44px", borderRadius: 14, border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textDim, fontSize: 17, fontWeight: 500, cursor: "pointer" }}>See the Gates</button>
+                <button onClick={() => document.getElementById("gates")?.scrollIntoView({ behavior: "smooth" })} style={{ padding: "18px 44px", borderRadius: 14, border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textDim, fontSize: 17, fontWeight: 500, cursor: "pointer" }}>Inside The Engine</button>
               </div>
             </div>
 
             {/* Stats */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 80, animation: "fadeUp 0.8s ease 0.2s both" }}>
-              {[{ v: "∞", l: "Any Ticker", s: "Scan what you want" }, { v: "14", l: "Gates Per Stock", s: "Zero shortcuts" }, { v: "24/7", l: "Monitoring", s: "Alerts in real-time" }, { v: "67%", l: "Win Rate", s: "And improving" }].map((x, i) => (
+              {[{ v: "∞", l: "Any Ticker", s: "Scan what you want" }, { v: "14", l: "Signals Processed", s: "Zero shortcuts" }, { v: "24/7", l: "Monitoring", s: "Alerts in real-time" }, { v: "67%", l: "Win Rate", s: "And improving" }].map((x, i) => (
                 <div key={i} style={{ textAlign: "center", padding: "24px 16px", borderRadius: 16, background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 38, fontWeight: 800, color: COLORS.accent }}>{x.v}</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", 
+                  fontSize: 38,
+                    lineHeight: 1,
+                    display: "inline-block",
+                    transform: x.v === "∞" ? "scale(1.45) translateY(-4px)" : "scale(1) translateY(0px)",
+                    transformOrigin: "center center",
+                    fontWeight: 800, 
+                    color: COLORS.accent }}>{x.v}</div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginTop: 4 }}>{x.l}</div>
                   <div style={{ fontSize: 11, color: COLORS.textDim, marginTop: 2 }}>{x.s}</div>
                 </div>
@@ -497,7 +504,7 @@ export default function Home() {
               <div style={{ flex: 1, background: COLORS.surface, borderRadius: 20, padding: 32, border: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 16 }}>THE SCOUT SCORE</div>
                 <ScoutScore score={87} size={200} />
-                <div style={{ fontSize: 14, color: COLORS.textDim, textAlign: "center", marginTop: 20, lineHeight: 1.7, maxWidth: 280 }}>One number. Fourteen gates compressed into a proprietary composite score.</div>
+                <div style={{ fontSize: 14, color: COLORS.textDim, textAlign: "center", marginTop: 20, lineHeight: 1.7, maxWidth: 280 }}>Noise removed. Opportunity revealed.</div>
               </div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
                 <div style={{ flex: 1, background: COLORS.surface, borderRadius: 20, padding: 24, border: `1px solid ${COLORS.border}` }}>
@@ -507,8 +514,8 @@ export default function Home() {
                 </div>
                 <div style={{ flex: 1, background: COLORS.surface, borderRadius: 20, padding: 24, border: `1px solid ${COLORS.border}` }}>
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 12 }}>STRATEGY ENGINE</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: COLORS.text, marginBottom: 8 }}>Bull Call Spread</div>
-                  <div style={{ fontSize: 13, color: COLORS.textDim, lineHeight: 1.6 }}>Not just &quot;buy&quot; or &quot;sell.&quot; The exact strategy, sized to your account.</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: COLORS.text, marginBottom: 8 }}>Trade Architecture</div>
+                  <div style={{ fontSize: 13, color: COLORS.textDim, lineHeight: 1.6 }}> Risk. Trend. Volatility. Catalysts. Fourteen gates.<br />One engineered deployment.</div>
                 </div>
               </div>
             </div>
