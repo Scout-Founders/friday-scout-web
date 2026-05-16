@@ -1,0 +1,1547 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Gate Sandbox</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --dim: #5a6d8a;
+      --accent: #00e5a0;
+      --accent-soft: #00e5a022;
+      --danger: #ff3b5c;
+      --danger-soft: #ff3b5c22;
+      --warning: #ffb836;
+      --warning-soft: #ffb83622;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #00e5a018, transparent 34rem),
+        radial-gradient(circle at top right, #a855f718, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .shell {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 34px 0 56px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 10px 0 8px;
+      font-size: clamp(36px, 7vw, 72px);
+      line-height: 1;
+      letter-spacing: -0.055em;
+    }
+
+    .lede {
+      max-width: 760px;
+      margin: 0 0 28px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.6;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .card {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: 0 24px 60px #0008;
+    }
+
+    .controls {
+      position: sticky;
+      top: 18px;
+      padding: 22px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    textarea,
+    select,
+    input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #070b14;
+      color: var(--text);
+      outline: none;
+    }
+
+    textarea:focus,
+    select:focus,
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    textarea {
+      min-height: 148px;
+      padding: 14px;
+      resize: vertical;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 15px;
+      line-height: 1.5;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    select,
+    input {
+      height: 46px;
+      padding: 0 13px;
+    }
+
+    .field {
+      margin-bottom: 16px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 110px;
+      gap: 10px;
+    }
+
+    .run {
+      width: 100%;
+      height: 52px;
+      border: 0;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), #00c48c);
+      color: var(--bg);
+      cursor: pointer;
+      font-weight: 900;
+      box-shadow: 0 18px 36px #00e5a01c;
+    }
+
+    .run:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+
+    .secondary-action {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #070b14;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 900;
+    }
+
+    .secondary-action:hover:not(:disabled),
+    .raw-toggle:hover {
+      border-color: #00e5a066;
+      color: var(--text);
+    }
+
+    .secondary-action:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .hint {
+      margin-top: 12px;
+      color: var(--dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .results {
+      min-height: 520px;
+      padding: 22px;
+    }
+
+    .empty {
+      min-height: 476px;
+      display: grid;
+      place-items: center;
+      border: 1px dashed var(--border);
+      border-radius: 18px;
+      color: var(--dim);
+      text-align: center;
+      padding: 36px;
+    }
+
+    .status {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #070b14;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    .status.error {
+      border-color: #ff3b5c55;
+      background: var(--danger-soft);
+      color: #ff9aad;
+    }
+
+    .pick {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 18px;
+      align-items: center;
+      margin-bottom: 18px;
+      padding: 20px;
+      border: 1px solid #00e5a044;
+      border-radius: 18px;
+      background: linear-gradient(135deg, var(--accent-soft), #a855f716);
+    }
+
+    .score {
+      width: 138px;
+      height: 138px;
+      display: grid;
+      place-items: center;
+      border: 8px solid var(--accent);
+      border-radius: 50%;
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 40px;
+      font-weight: 900;
+      box-shadow: 0 0 30px #00e5a020;
+    }
+
+    .pick h2 {
+      margin: 0 0 8px;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .pick-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .inline-action {
+      border: 1px solid #00e5a066;
+      border-radius: 11px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      cursor: pointer;
+      padding: 10px 13px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .pill {
+      padding: 6px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .direction-pills {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      min-width: 280px;
+    }
+
+    .direction-pills .pill {
+      min-width: 78px;
+      flex: 0 0 auto;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 24px 0 10px;
+      gap: 12px;
+    }
+
+    .section-title h3 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: -0.01em;
+    }
+
+    .view-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .gates {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .gate {
+      display: grid;
+      grid-template-columns: 30px 84px 58px 1fr;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #070b14;
+    }
+
+    .gate.fail {
+      border-color: #ff3b5c55;
+      background: var(--danger-soft);
+    }
+
+    .badge {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .pass .badge {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .fail .badge {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .code,
+    .state {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .state.pass {
+      color: var(--accent);
+    }
+
+    .state.fail {
+      color: var(--danger);
+    }
+
+    .name {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #070b14;
+    }
+
+    .table th,
+    .table td {
+      padding: 12px 13px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      font-size: 13px;
+    }
+
+    .table td.direction-cell {
+      min-width: 320px;
+    }
+
+    .table th {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .raw-toggle {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #070b14;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    pre {
+      max-height: 430px;
+      overflow: auto;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #04070d;
+      color: #c9d7ef;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: #02040acc;
+      backdrop-filter: blur(10px);
+    }
+
+    .modal-backdrop.hidden {
+      display: none;
+    }
+
+    .modal {
+      width: min(860px, 100%);
+      max-height: min(760px, calc(100vh - 40px));
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background: var(--panel);
+      box-shadow: 0 24px 80px #000c;
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 22px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-head h2 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+
+    .modal-close {
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #070b14;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 900;
+    }
+
+    .modal-body {
+      padding: 20px 22px 24px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .detail {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #070b14;
+    }
+
+    .detail-label {
+      margin-bottom: 5px;
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .detail-value {
+      color: var(--text);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+
+    .modal-note {
+      padding: 16px;
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .explain-summary {
+      margin-bottom: 16px;
+      padding: 14px;
+      border: 1px solid #00e5a033;
+      border-radius: 14px;
+      background: var(--accent-soft);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .explain-gates {
+      display: grid;
+      gap: 10px;
+    }
+
+    .explain-gate {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #070b14;
+    }
+
+    .explain-gate.fail {
+      border-color: #ff3b5c55;
+      background: var(--danger-soft);
+    }
+
+    .explain-gate-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-weight: 900;
+    }
+
+    .explain-text {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .explain-fields {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .edge-positive {
+      color: var(--accent);
+    }
+
+    .edge-negative {
+      color: var(--danger);
+    }
+
+    @media print {
+      body {
+        background: #fff;
+        color: #000;
+      }
+
+      .controls,
+      .status,
+      .raw-toggle,
+      .inline-action,
+      .modal-backdrop {
+        display: none !important;
+      }
+
+      .shell {
+        width: 100%;
+        padding: 0;
+      }
+
+      .grid {
+        display: block;
+      }
+
+      .card,
+      .pick,
+      .gate,
+      .table,
+      pre {
+        box-shadow: none;
+        border-color: #999;
+      }
+    }
+
+    @media (max-width: 920px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        position: static;
+      }
+
+      .pick {
+        grid-template-columns: 1fr;
+      }
+
+      .gates {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Local beta testing only</div>
+    <h1>Scout Gate Sandbox</h1>
+    <p class="lede">
+      Enter a ticker universe, run the deployed Scout gate engine on demand, and inspect the final pick,
+      per-gate outcomes, rejected candidates, and raw JSON output.
+    </p>
+
+    <section class="grid">
+      <aside class="card controls">
+        <form id="run-form">
+          <div class="field">
+            <label for="tickers">Ticker Universe</label>
+            <textarea id="tickers" spellcheck="false">AAPL, MSFT, NVDA, AMZN, GOOGL</textarea>
+          </div>
+
+          <div class="field">
+            <label for="universe-mode">Universe Mode</label>
+            <select id="universe-mode">
+              <option value="custom">Test only the tickers I typed</option>
+              <option value="fallback">Pull tickers from raw data</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="pick-mode">Run Mode</label>
+            <select id="pick-mode">
+              <option value="gate_runner">Strict mode: only show stocks that pass the gates</option>
+              <option value="score_only">Research mode: rank by score even if gates fail</option>
+            </select>
+          </div>
+
+          <div class="field row">
+            <div>
+              <label for="timeout">Timeout</label>
+              <input id="timeout" type="number" min="5" max="90" step="1" value="25">
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <button id="run-button" class="run" type="submit">Run Gates</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <button id="print-button" class="secondary-action" type="button" disabled>Save / Print Results</button>
+          </div>
+
+          <div class="hint">
+            Start with a small universe while testing. Each ticker calls the same deployed
+            single-scan gate endpoint used by the frontend scanner.
+          </div>
+        </form>
+      </aside>
+
+      <section class="card results">
+        <div id="status" class="status">Ready. Configure a universe and run the gates.</div>
+        <div id="output" class="empty">
+          <div>
+            <strong>No run yet.</strong><br>
+            Results will appear here after the sandbox API completes.
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="option-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="option-modal-title">
+    <section class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">Option Pick</div>
+          <h2 id="option-modal-title">Contract Details</h2>
+        </div>
+        <button id="option-modal-close" class="modal-close" type="button" aria-label="Close option details">X</button>
+      </div>
+      <div id="option-modal-body" class="modal-body"></div>
+    </section>
+  </div>
+
+  <div id="why-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="why-modal-title">
+    <section class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">Gate Explainability</div>
+          <h2 id="why-modal-title">Why?</h2>
+        </div>
+        <button id="why-modal-close" class="modal-close" type="button" aria-label="Close explanation">X</button>
+      </div>
+      <div id="why-modal-body" class="modal-body"></div>
+    </section>
+  </div>
+
+  <div id="direction-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="direction-modal-title">
+    <section class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">Directional Transparency</div>
+          <h2 id="direction-modal-title">Why Direction?</h2>
+        </div>
+        <button id="direction-modal-close" class="modal-close" type="button" aria-label="Close direction explanation">X</button>
+      </div>
+      <div id="direction-modal-body" class="modal-body"></div>
+    </section>
+  </div>
+
+  <script>
+    const form = document.getElementById("run-form");
+    const statusEl = document.getElementById("status");
+    const outputEl = document.getElementById("output");
+    const runButton = document.getElementById("run-button");
+    const printButton = document.getElementById("print-button");
+    const optionModal = document.getElementById("option-modal");
+    const optionModalBody = document.getElementById("option-modal-body");
+    const optionModalClose = document.getElementById("option-modal-close");
+    const whyModal = document.getElementById("why-modal");
+    const whyModalBody = document.getElementById("why-modal-body");
+    const whyModalClose = document.getElementById("why-modal-close");
+    const directionModal = document.getElementById("direction-modal");
+    const directionModalBody = document.getElementById("direction-modal-body");
+    const directionModalClose = document.getElementById("direction-modal-close");
+    let currentPayload = null;
+    let currentRequest = null;
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function money(value) {
+      return typeof value === "number" ? `$${value.toFixed(2)}` : "n/a";
+    }
+
+    function signedNumber(value) {
+      if (typeof value !== "number") {
+        return "Not returned";
+      }
+      return value > 0 ? `+${value}` : String(value);
+    }
+
+    function edgeClass(value) {
+      return typeof value === "number" && value < 0 ? "edge-negative" : "edge-positive";
+    }
+
+    function directionPills(result) {
+      const direction = result.directionBreakdown || {};
+      return `
+        <div class="direction-pills">
+          <span class="pill">Scout Score ${escapeHtml(displayValue(result.score))}</span>
+          <span class="pill">Direction ${escapeHtml(direction.direction || result.direction || "n/a")}</span>
+          <span class="pill">Bull ${escapeHtml(displayValue(direction.bullConviction))}</span>
+          <span class="pill">Bear ${escapeHtml(displayValue(direction.bearConviction))}</span>
+          <span class="pill ${edgeClass(direction.netDirectionalEdge)}">Net ${escapeHtml(signedNumber(direction.netDirectionalEdge))}</span>
+        </div>
+      `;
+    }
+
+    function labelForSelect(selectId, value) {
+      const option = [...document.getElementById(selectId).options].find((item) => item.value === value);
+      return option ? option.textContent : value;
+    }
+
+    function failedGateText(result) {
+      if (!result.firstFailedGate) {
+        return result.passedAllGates ? "Passed all gates" : "No failed gate reported";
+      }
+      const gate = result.firstFailedGate;
+      return `Gate ${gate.index} ${gate.code} (${gate.name})`;
+    }
+
+    function renderGates(gates) {
+      return gates.map((gate) => {
+        const state = gate.passed ? "pass" : "fail";
+        const icon = gate.passed ? "OK" : "NO";
+        return `
+          <div class="gate ${state}">
+            <div class="badge">${icon}</div>
+            <div class="code">${escapeHtml(gate.code)}</div>
+            <div class="state ${state}">${gate.passed ? "PASS" : "FAIL"}</div>
+            <div class="name">${escapeHtml(gate.name)}</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderRejected(rejected) {
+      if (!rejected.length) {
+        return "<p class=\"hint\">No rejected candidates.</p>";
+      }
+
+      return `
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>First Failed Gate</th>
+              <th>Directional Breakdown</th>
+              <th>Why?</th>
+              <th>Why Direction?</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rejected.map((item) => `
+              <tr>
+                <td><strong>${escapeHtml(item.ticker)}</strong></td>
+                <td>${escapeHtml(failedGateText(item))}</td>
+                <td class="direction-cell">${directionPills(item)}</td>
+                <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
+                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderPassedTickers(results) {
+      const passed = results.filter((item) => item.passedAllGates);
+      if (!passed.length) {
+        return "<p class=\"hint\">No ticker passed every gate in this run.</p>";
+      }
+
+      return `
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Directional Breakdown</th>
+              <th>Option Pick</th>
+              <th>Why?</th>
+              <th>Why Direction?</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${passed.map((item) => `
+              <tr>
+                <td><strong>${escapeHtml(item.ticker)}</strong></td>
+                <td class="direction-cell">${directionPills(item)}</td>
+                <td><button class="inline-action" type="button" data-option-ticker="${escapeHtml(item.ticker)}">View Option Pick</button></td>
+                <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
+                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderRankedCandidates(results) {
+      const ranked = [...results].sort((a, b) => b.score - a.score);
+      return `
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Ticker</th>
+              <th>Status</th>
+              <th>Directional Breakdown</th>
+              <th>Why?</th>
+              <th>Why Direction?</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ranked.map((item, index) => `
+              <tr>
+                <td>${index + 1}</td>
+                <td><strong>${escapeHtml(item.ticker)}</strong></td>
+                <td>${escapeHtml(item.explanation?.status || (item.passedAllGates ? "passed" : "rejected"))}</td>
+                <td class="direction-cell">${directionPills(item)}</td>
+                <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
+                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function displayValue(value) {
+      return value === undefined || value === null || value === "" ? "Not returned" : value;
+    }
+
+    function optionIsAvailable(option) {
+      if (!option || typeof option !== "object") {
+        return false;
+      }
+      return [
+        "contractSymbol", "optionType", "strike", "expiration", "bid", "ask",
+        "midPrice", "lastPrice", "volume", "openInterest"
+      ].some((key) => option[key] !== undefined && option[key] !== null && option[key] !== "");
+    }
+
+    function renderOptionDetails(result) {
+      const option = result.optionPick;
+      if (!optionIsAvailable(option)) {
+        return "<div class=\"modal-note\">No option contract was returned for this ticker.</div>";
+      }
+
+      const rows = [
+        ["Underlying ticker", result.ticker],
+        ["Direction", option.direction ?? result.direction],
+        ["Contract symbol", option.contractSymbol],
+        ["Option type", option.optionType],
+        ["Strike", option.strike],
+        ["Expiration", option.expiration],
+        ["Bid", option.bid],
+        ["Ask", option.ask],
+        ["Mid price", option.midPrice],
+        ["Last price", option.lastPrice],
+        ["Volume", option.volume],
+        ["Open interest", option.openInterest],
+        ["Implied volatility", option.impliedVolatility],
+        ["Delta", option.delta],
+        ["Gamma", option.gamma],
+        ["Theta", option.theta],
+        ["Vega", option.vega],
+        ["Confidence / score", result.score],
+        ["Reason / notes", option.reasonSelected],
+      ];
+
+      return `
+        <div class="detail-grid">
+          ${rows.map(([label, value]) => `
+            <div class="detail">
+              <div class="detail-label">${escapeHtml(label)}</div>
+              <div class="detail-value">${escapeHtml(displayValue(value))}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function openOptionModal(result) {
+      document.getElementById("option-modal-title").textContent = `${result.ticker} Contract Details`;
+      optionModalBody.innerHTML = renderOptionDetails(result);
+      optionModal.classList.remove("hidden");
+    }
+
+    function closeOptionModal() {
+      optionModal.classList.add("hidden");
+    }
+
+    function renderWhyDetails(result) {
+      const explanation = result.explanation;
+      if (!explanation) {
+        return "<div class=\"modal-note\">No explanation object was returned for this ticker.</div>";
+      }
+
+      return `
+        <div class="explain-summary">
+          <div class="meta">
+            <span class="pill">${escapeHtml(explanation.ticker)}</span>
+            <span class="pill">${escapeHtml(explanation.status || "n/a")}</span>
+            <span class="pill">Score ${escapeHtml(displayValue(explanation.score))}</span>
+            <span class="pill">${escapeHtml(explanation.direction || "n/a")}</span>
+            <span class="pill">${money(explanation.price)}</span>
+          </div>
+          <div style="margin-top: 10px;">${escapeHtml(explanation.summary || "")}</div>
+        </div>
+        <div class="explain-gates">
+          ${(explanation.gates || []).map((gate) => {
+            const state = gate.status === "PASS" ? "pass" : "fail";
+            return `
+              <section class="explain-gate ${state}">
+                <div class="explain-gate-head">
+                  <span>${escapeHtml(gate.gate_number)}. ${escapeHtml(gate.gate_name)}</span>
+                  <span class="state ${state}">${escapeHtml(gate.status)}</span>
+                </div>
+                <div class="explain-text">${escapeHtml(gate.explanation)}</div>
+                <div class="explain-fields">
+                  <div class="detail">
+                    <div class="detail-label">Actual value</div>
+                    <div class="detail-value">${escapeHtml(displayValue(gate.actual_value))}</div>
+                  </div>
+                  <div class="detail">
+                    <div class="detail-label">Required</div>
+                    <div class="detail-value">${escapeHtml(displayValue(gate.required_value))}</div>
+                  </div>
+                  <div class="detail">
+                    <div class="detail-label">Source field</div>
+                    <div class="detail-value">${escapeHtml(displayValue(gate.source_field))}</div>
+                  </div>
+                </div>
+              </section>
+            `;
+          }).join("")}
+        </div>
+      `;
+    }
+
+    function openWhyModal(result) {
+      document.getElementById("why-modal-title").textContent = `${result.ticker} Gate Explanation`;
+      whyModalBody.innerHTML = renderWhyDetails(result);
+      whyModal.classList.remove("hidden");
+    }
+
+    function closeWhyModal() {
+      whyModal.classList.add("hidden");
+    }
+
+    function renderSignalList(signals, emptyText) {
+      if (!signals || !signals.length) {
+        return `<div class="modal-note">${escapeHtml(emptyText)}</div>`;
+      }
+      return `
+        <div class="explain-gates">
+          ${signals.map((signal) => `
+            <section class="explain-gate ${signal.side === "bear" ? "fail" : "pass"}">
+              <div class="explain-gate-head">
+                <span>${escapeHtml(signal.gate)}</span>
+                <span class="pill">Weight ${escapeHtml(displayValue(signal.weight))}</span>
+              </div>
+              <div class="explain-text">${escapeHtml(signal.description)}</div>
+              <div class="explain-fields">
+                <div class="detail">
+                  <div class="detail-label">Actual value</div>
+                  <div class="detail-value">${escapeHtml(displayValue(signal.value))}</div>
+                </div>
+                <div class="detail">
+                  <div class="detail-label">Source field</div>
+                  <div class="detail-value">${escapeHtml(displayValue(signal.source_field))}</div>
+                </div>
+                <div class="detail">
+                  <div class="detail-label">Signal side</div>
+                  <div class="detail-value">${escapeHtml(signal.side)}</div>
+                </div>
+              </div>
+            </section>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderDirectionDetails(result) {
+      const direction = result.directionBreakdown;
+      if (!direction) {
+        return "<div class=\"modal-note\">No directional breakdown was returned for this ticker.</div>";
+      }
+
+      return `
+        <div class="explain-summary">
+          <div class="meta">
+            <span class="pill">${escapeHtml(result.ticker)}</span>
+            <span class="pill">Scout Score ${escapeHtml(displayValue(direction.scoutScore ?? result.score))}</span>
+            <span class="pill">Direction ${escapeHtml(direction.direction || result.direction || "n/a")}</span>
+            <span class="pill">Bull ${escapeHtml(displayValue(direction.bullConviction))}</span>
+            <span class="pill">Bear ${escapeHtml(displayValue(direction.bearConviction))}</span>
+            <span class="pill ${edgeClass(direction.netDirectionalEdge)}">Net ${escapeHtml(signedNumber(direction.netDirectionalEdge))}</span>
+          </div>
+          <div style="margin-top: 10px;">${escapeHtml(direction.summary || "")}</div>
+          <div class="hint">${escapeHtml(direction.scoreInterpretation || "")}</div>
+        </div>
+
+        <div class="section-title"><h3>Bullish Signals</h3></div>
+        ${renderSignalList(direction.bullishSignals, "No bullish signals were extracted from this run.")}
+
+        <div class="section-title"><h3>Bearish Signals</h3></div>
+        ${renderSignalList(direction.bearishSignals, "No bearish signals were extracted from this run.")}
+      `;
+    }
+
+    function openDirectionModal(result) {
+      document.getElementById("direction-modal-title").textContent = `${result.ticker} Direction Explanation`;
+      directionModalBody.innerHTML = renderDirectionDetails(result);
+      directionModal.classList.remove("hidden");
+    }
+
+    function closeDirectionModal() {
+      directionModal.classList.add("hidden");
+    }
+
+    function renderResults(payload) {
+      const pick = payload.finalPick;
+      const rawJson = escapeHtml(JSON.stringify(payload, null, 2));
+      const showFinalOptionButton = pick.passedAllGates
+        ? "<button id=\"option-pick-button\" class=\"inline-action\" type=\"button\">View Option Pick</button>"
+        : "";
+      const showFinalWhyButton = "<button id=\"final-why-button\" class=\"inline-action\" type=\"button\">Why?</button>";
+      const showFinalDirectionButton = "<button id=\"final-direction-button\" class=\"inline-action\" type=\"button\">Why Direction?</button>";
+
+      outputEl.className = "";
+      outputEl.innerHTML = `
+        <div id="results-view">
+          <section class="pick">
+            <div class="score">${Math.round(pick.score)}</div>
+            <div>
+              <div class="eyebrow">Final Pick</div>
+              <h2>${escapeHtml(pick.ticker)}</h2>
+              <div class="meta">
+                <span class="pill">${money(pick.price)}</span>
+                <span class="pill">${escapeHtml(pick.trend || "n/a")}</span>
+                <span class="pill">${escapeHtml(pick.sector || "n/a")}</span>
+                <span class="pill">${pick.passedAllGates ? "Passed all gates" : escapeHtml(failedGateText(pick))}</span>
+                ${directionPills(pick)}
+              </div>
+              <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalDirectionButton}</div>
+            </div>
+          </section>
+
+          <div class="section-title">
+            <h3>Full Gate Breakdown</h3>
+            <span class="pill">${pick.gates.filter((gate) => gate.passed).length}/${pick.gates.length} passed</span>
+          </div>
+          <div class="gates">${renderGates(pick.gates)}</div>
+
+          <div class="section-title">
+            <h3>Passed Tickers</h3>
+            <span class="pill">${payload.results.filter((item) => item.passedAllGates).length} passed</span>
+          </div>
+          ${renderPassedTickers(payload.results)}
+
+          <div class="section-title">
+            <h3>Ranked Candidates</h3>
+            <span class="pill">${payload.results.length} scored</span>
+          </div>
+          ${renderRankedCandidates(payload.results)}
+
+          <div class="section-title">
+            <h3>Rejected Candidates</h3>
+            <span class="pill">${payload.rejected.length} rejected</span>
+          </div>
+          ${renderRejected(payload.rejected)}
+
+          <div class="section-title">
+            <h3>Raw JSON</h3>
+            <button id="raw-toggle" class="raw-toggle" type="button">Raw JSON Output</button>
+          </div>
+        </div>
+
+        <div id="raw-json-view" class="hidden">
+          <div class="view-actions">
+            <button id="back-to-results" class="inline-action" type="button">Back to Results</button>
+          </div>
+          <pre>${rawJson}</pre>
+        </div>
+      `;
+
+      document.getElementById("raw-toggle").addEventListener("click", (event) => {
+        document.getElementById("results-view").classList.add("hidden");
+        document.getElementById("raw-json-view").classList.remove("hidden");
+      });
+      document.getElementById("back-to-results").addEventListener("click", () => {
+        document.getElementById("raw-json-view").classList.add("hidden");
+        document.getElementById("results-view").classList.remove("hidden");
+      });
+      const finalOptionButton = document.getElementById("option-pick-button");
+      if (finalOptionButton) {
+        finalOptionButton.addEventListener("click", () => openOptionModal(pick));
+      }
+      document.getElementById("final-why-button").addEventListener("click", () => openWhyModal(pick));
+      document.getElementById("final-direction-button").addEventListener("click", () => openDirectionModal(pick));
+      document.querySelectorAll("[data-option-ticker]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const ticker = button.getAttribute("data-option-ticker");
+          const result = payload.results.find((item) => item.ticker === ticker);
+          if (result) {
+            openOptionModal(result);
+          }
+        });
+      });
+      document.querySelectorAll("[data-why-ticker]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const ticker = button.getAttribute("data-why-ticker");
+          const result = payload.results.find((item) => item.ticker === ticker);
+          if (result) {
+            openWhyModal(result);
+          }
+        });
+      });
+      document.querySelectorAll("[data-direction-ticker]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const ticker = button.getAttribute("data-direction-ticker");
+          const result = payload.results.find((item) => item.ticker === ticker);
+          if (result) {
+            openDirectionModal(result);
+          }
+        });
+      });
+    }
+
+    function reportRowsForGates(gates) {
+      return gates.map((gate) => `
+        <tr>
+          <td>${gate.index}</td>
+          <td>${escapeHtml(gate.code)}</td>
+          <td>${gate.passed ? "PASS" : "FAIL"}</td>
+          <td>${escapeHtml(gate.name)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function reportRowsForOptions(results) {
+      const passed = results.filter((item) => item.passedAllGates);
+      if (!passed.length) {
+        return "<tr><td colspan=\"10\">No ticker passed every gate.</td></tr>";
+      }
+      return passed.map((item) => {
+        const option = item.optionPick;
+        if (!optionIsAvailable(option)) {
+          return `
+            <tr>
+              <td>${escapeHtml(item.ticker)}</td>
+              <td colspan="8">No option contract was returned for this ticker.</td>
+              <td>${escapeHtml(item.explanation?.summary || "No explanation returned.")}</td>
+            </tr>
+          `;
+        }
+        return `
+          <tr>
+            <td>${escapeHtml(item.ticker)}</td>
+            <td>${escapeHtml(displayValue(option.contractSymbol))}</td>
+            <td>${escapeHtml(displayValue(option.optionType))}</td>
+            <td>${escapeHtml(displayValue(option.strike))}</td>
+            <td>${escapeHtml(displayValue(option.expiration))}</td>
+            <td>${escapeHtml(displayValue(option.bid))} / ${escapeHtml(displayValue(option.ask))}</td>
+            <td>${escapeHtml(displayValue(option.midPrice))}</td>
+            <td>${escapeHtml(displayValue(option.delta))}</td>
+            <td>${escapeHtml(displayValue(option.reasonSelected))}</td>
+            <td>${escapeHtml(item.explanation?.summary || "No explanation returned.")}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function reportRowsForExplanations(results) {
+      return results.map((item) => {
+        const explanation = item.explanation;
+        if (!explanation) {
+          return `
+            <h3>${escapeHtml(item.ticker)}</h3>
+            <p>No explanation object was returned for this ticker.</p>
+          `;
+        }
+        const failed = (explanation.gates || []).filter((gate) => gate.status === "FAIL");
+        const gateRows = (explanation.gates || []).map((gate) => `
+          <tr>
+            <td>${escapeHtml(gate.gate_name)}</td>
+            <td>${escapeHtml(gate.status)}</td>
+            <td>${escapeHtml(displayValue(gate.actual_value))}</td>
+            <td>${escapeHtml(displayValue(gate.required_value))}</td>
+            <td>${escapeHtml(displayValue(gate.source_field))}</td>
+            <td>${escapeHtml(displayValue(gate.explanation))}</td>
+          </tr>
+        `).join("");
+        return `
+          <h3>${escapeHtml(explanation.ticker)} - ${escapeHtml(explanation.status)}</h3>
+          <p><strong>Score:</strong> ${escapeHtml(displayValue(explanation.score))}
+          <strong>Direction:</strong> ${escapeHtml(displayValue(explanation.direction))}
+          <strong>Price:</strong> ${money(explanation.price)}</p>
+          <p>${escapeHtml(explanation.summary)}</p>
+          <p><strong>Failed gates:</strong> ${escapeHtml(failed.map((gate) => gate.gate_name).join(", ") || "None")}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate</th><th>Status</th><th>Actual Value</th><th>Required</th><th>Source Field</th><th>Explanation</th>
+              </tr>
+            </thead>
+            <tbody>${gateRows}</tbody>
+          </table>
+        `;
+      }).join("");
+    }
+
+    function reportRowsForDirectionalBreakdowns(results) {
+      return results.map((item) => {
+        const direction = item.directionBreakdown || {};
+        const bullish = (direction.bullishSignals || []).slice(0, 5).map((signal) =>
+          `${signal.gate}: ${signal.value} (${signal.description})`
+        ).join("; ") || "None extracted";
+        const bearish = (direction.bearishSignals || []).slice(0, 5).map((signal) =>
+          `${signal.gate}: ${signal.value} (${signal.description})`
+        ).join("; ") || "None extracted";
+        return `
+          <tr>
+            <td>${escapeHtml(item.ticker)}</td>
+            <td>${escapeHtml(displayValue(direction.scoutScore ?? item.score))}</td>
+            <td>${escapeHtml(direction.direction || item.direction || "n/a")}</td>
+            <td>${escapeHtml(displayValue(direction.bullConviction))}</td>
+            <td>${escapeHtml(displayValue(direction.bearConviction))}</td>
+            <td>${escapeHtml(signedNumber(direction.netDirectionalEdge))}</td>
+            <td>${escapeHtml(bullish)}</td>
+            <td>${escapeHtml(bearish)}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function buildPrintableReport(payload, request) {
+      const pick = payload.finalPick;
+      const pickDirection = pick.directionBreakdown || {};
+      const timestamp = payload.runTimestamp ? new Date(payload.runTimestamp).toLocaleString() : new Date().toLocaleString();
+      const rejectedRows = payload.rejected.length
+        ? payload.rejected.map((item) => `
+          <tr>
+            <td>${escapeHtml(item.ticker)}</td>
+            <td>${Math.round(item.score)}</td>
+            <td>${escapeHtml(failedGateText(item))}</td>
+            <td>${escapeHtml(item.direction || "n/a")}</td>
+          </tr>
+        `).join("")
+        : "<tr><td colspan=\"4\">No rejected candidates.</td></tr>";
+
+      return `<!doctype html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Scout Gate Sandbox Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111; margin: 32px; line-height: 1.45; }
+            h1 { margin: 0 0 8px; }
+            h2 { margin-top: 28px; border-bottom: 1px solid #ccc; padding-bottom: 6px; }
+            .meta { display: grid; grid-template-columns: 180px 1fr; gap: 6px 14px; margin: 18px 0; }
+            .label { font-weight: 700; color: #444; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #ccc; padding: 8px; text-align: left; vertical-align: top; }
+            th { background: #f1f3f5; }
+            pre { white-space: pre-wrap; word-break: break-word; border: 1px solid #ccc; padding: 12px; background: #f8f9fb; }
+            .print { margin: 0 0 20px; padding: 10px 14px; }
+            @media print { .print { display: none; } body { margin: 18mm; } }
+          </style>
+        </head>
+        <body>
+          <button class="print" onclick="window.print()">Print / Save as PDF</button>
+          <h1>Scout Gate Sandbox Report</h1>
+          <div class="meta">
+            <div class="label">Run timestamp</div><div>${escapeHtml(timestamp)}</div>
+            <div class="label">Ticker universe</div><div>${escapeHtml(payload.candidates.join(", "))}</div>
+            <div class="label">Universe mode</div><div>${escapeHtml(labelForSelect("universe-mode", payload.universeMode || request.universeMode))}</div>
+            <div class="label">Run mode</div><div>${escapeHtml(labelForSelect("pick-mode", payload.pickMode || request.pickMode))}</div>
+            <div class="label">Timeout</div><div>${escapeHtml(payload.timeout ?? request.timeout)} seconds</div>
+          </div>
+
+          <h2>Final Pick</h2>
+          <div class="meta">
+            <div class="label">Ticker</div><div>${escapeHtml(pick.ticker)}</div>
+            <div class="label">Scout score</div><div>${Math.round(pick.score)}</div>
+            <div class="label">Price</div><div>${money(pick.price)}</div>
+            <div class="label">Direction</div><div>${escapeHtml(pickDirection.direction || pick.direction || "n/a")}</div>
+            <div class="label">Bull conviction</div><div>${escapeHtml(displayValue(pickDirection.bullConviction))}</div>
+            <div class="label">Bear conviction</div><div>${escapeHtml(displayValue(pickDirection.bearConviction))}</div>
+            <div class="label">Net directional edge</div><div>${escapeHtml(signedNumber(pickDirection.netDirectionalEdge))}</div>
+            <div class="label">Trend</div><div>${escapeHtml(pick.trend || "n/a")}</div>
+            <div class="label">Sector</div><div>${escapeHtml(pick.sector || "n/a")}</div>
+          </div>
+
+          <h2>Directional Breakdown</h2>
+          <p>${escapeHtml(pickDirection.scoreInterpretation || "")}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th><th>Scout Score</th><th>Direction</th><th>Bull</th><th>Bear</th><th>Net Edge</th><th>Bullish Signals</th><th>Bearish Signals</th>
+              </tr>
+            </thead>
+            <tbody>${reportRowsForDirectionalBreakdowns(payload.results)}</tbody>
+          </table>
+
+          <h2>Full Gate Pass/Fail Breakdown</h2>
+          <table>
+            <thead><tr><th>#</th><th>Gate</th><th>Status</th><th>Name</th></tr></thead>
+            <tbody>${reportRowsForGates(pick.gates)}</tbody>
+          </table>
+
+          <h2>Rejected Candidates</h2>
+          <table>
+            <thead><tr><th>Ticker</th><th>Score</th><th>First Failed Gate</th><th>Direction</th></tr></thead>
+            <tbody>${rejectedRows}</tbody>
+          </table>
+
+          <h2>Generated Option Picks</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th><th>Contract</th><th>Type</th><th>Strike</th><th>Expiration</th>
+                <th>Bid / Ask</th><th>Mid</th><th>Delta</th><th>Reason</th><th>Why Summary</th>
+              </tr>
+            </thead>
+            <tbody>${reportRowsForOptions(payload.results)}</tbody>
+          </table>
+
+          <h2>Per-Ticker Gate Explanations</h2>
+          ${reportRowsForExplanations(payload.results)}
+
+          <h2>Raw JSON</h2>
+          <pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+        </body>
+        </html>`;
+    }
+
+    function savePrintResults() {
+      if (!currentPayload || !currentRequest) {
+        return;
+      }
+      const report = buildPrintableReport(currentPayload, currentRequest);
+      const reportUrl = URL.createObjectURL(new Blob([report], { type: "text/html" }));
+      const anchor = document.createElement("a");
+      anchor.href = reportUrl;
+      anchor.download = `scout-gate-report-${new Date().toISOString().slice(0, 10)}.html`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setStatus("Report downloaded as HTML. Open it in a browser to print or save as PDF.");
+      setTimeout(() => URL.revokeObjectURL(reportUrl), 5000);
+    }
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", isError);
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      runButton.disabled = true;
+      setStatus("Running gates. This can take a moment for larger universes...");
+
+      const request = {
+        tickers: document.getElementById("tickers").value,
+        universeMode: document.getElementById("universe-mode").value,
+        pickMode: document.getElementById("pick-mode").value,
+        timeout: Number(document.getElementById("timeout").value || 25),
+      };
+
+      try {
+        const response = await fetch("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        });
+        const payload = await response.json();
+        if (!payload.ok) {
+          throw new Error(payload.message || (payload.errors || []).join("\\n") || "Run failed.");
+        }
+        currentPayload = payload;
+        currentRequest = request;
+        printButton.disabled = false;
+        renderResults(payload);
+        const errorText = payload.errors.length ? `\\nScan errors: ${payload.errors.join("; ")}` : "";
+        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.${errorText}`);
+      } catch (error) {
+        currentPayload = null;
+        currentRequest = null;
+        printButton.disabled = true;
+        outputEl.className = "empty";
+        outputEl.innerHTML = "<div><strong>Run failed.</strong><br>Check the status message for details.</div>";
+        setStatus(error.message || String(error), true);
+      } finally {
+        runButton.disabled = false;
+      }
+    });
+
+    printButton.addEventListener("click", savePrintResults);
+    optionModalClose.addEventListener("click", closeOptionModal);
+    whyModalClose.addEventListener("click", closeWhyModal);
+    directionModalClose.addEventListener("click", closeDirectionModal);
+    optionModal.addEventListener("click", (event) => {
+      if (event.target === optionModal) {
+        closeOptionModal();
+      }
+    });
+    whyModal.addEventListener("click", (event) => {
+      if (event.target === whyModal) {
+        closeWhyModal();
+      }
+    });
+    directionModal.addEventListener("click", (event) => {
+      if (event.target === directionModal) {
+        closeDirectionModal();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeOptionModal();
+        closeWhyModal();
+        closeDirectionModal();
+      }
+    });
+  </script>
+</body>
+</html>
