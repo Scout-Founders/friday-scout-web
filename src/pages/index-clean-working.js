@@ -368,8 +368,8 @@ function Scanner() {
 }
 
 /* ─── AUTH MODAL ─── */
-function AuthModal({ onClose, onAuth, initialMode }) {
-  const [mode, setMode] = useState(initialMode || "login");
+function AuthModal({ onClose, onAuth }) {
+  const [mode, setMode] = useState("signup");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [name, setName] = useState("");
@@ -385,30 +385,15 @@ function AuthModal({ onClose, onAuth, initialMode }) {
         {mode === "signup" && <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} style={inp} />}
         <input placeholder="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} style={inp} />
         <input placeholder="Password" type="password" value={pw} onChange={e => setPw(e.target.value)} style={inp} onKeyDown={e => e.key === "Enter" && onAuth({ email, name: name || email.split("@")[0] })} />
-        {mode === "login" && (
-          <div style={{ textAlign: "right", marginTop: -4, marginBottom: 12 }}>
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={() => alert("Password reset coming soon.")}
-              onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), alert("Password reset coming soon."))}
-              style={{ color: COLORS.accent, fontSize: 13, cursor: "pointer", fontWeight: 600 }}
-            >
-              Forgot password?
-            </span>
-          </div>
-        )}
         <button onClick={() => onAuth({ email, name: name || email.split("@")[0] })} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", marginTop: 8, background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`, color: COLORS.bg, fontFamily: "'Outfit', sans-serif", fontSize: 16, fontWeight: 700, cursor: "pointer", boxShadow: `0 4px 20px ${COLORS.accentDim}` }}>
           {mode === "login" ? "Log In" : "Create Account"}
         </button>
         <div style={{ textAlign: "center", marginTop: 16 }}>
-          <span style={{ color: COLORS.textDim, fontSize: 13 }}>{mode === "login" ? "New here? " : "Have an account? "}</span>
+          <span style={{ color: COLORS.textDim, fontSize: 13 }}>{mode === "login" ? "Need an account? " : "Have an account? "}</span>
           <span onClick={() => setMode(mode === "login" ? "signup" : "login")} style={{ color: COLORS.accent, fontSize: 13, cursor: "pointer", fontWeight: 600 }}>{mode === "login" ? "Sign Up" : "Log In"}</span>
         </div>
         <div style={{ marginTop: 24, padding: 14, borderRadius: 10, background: COLORS.surfaceLight, fontSize: 11, color: COLORS.textDim, textAlign: "center", lineHeight: 1.6 }}>
-          {mode === "login"
-            ? "By signing in, you agree to Scout's Terms of Service. Scout provides analysis for educational purposes only and is not financial advice."
-            : "By creating an account, you agree to Scout's Terms of Service. Scout provides analysis for educational purposes only and is not financial advice."}
+          By creating an account you agree to our Terms of Service. Scout provides analysis for educational purposes only. This is not financial advice.
         </div>
       </div>
     </div>
@@ -419,13 +404,12 @@ function AuthModal({ onClose, onAuth, initialMode }) {
 export default function Home() {
   const [user, setUser] = useState(null);
   const [showAuth, setShowAuth] = useState(false);
-  const [authMode, setAuthMode] = useState("login");
   const [page, setPage] = useState("home");
 
   return (
     <>
       <Head>
-        <title>{page === "engine" ? "Inside the Engine — Scout" : "Scout — 14-Gate Stock Analysis"}</title>
+        <title>Scout — 14-Gate Stock Analysis</title>
         <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
       </Head>
 
@@ -443,7 +427,7 @@ export default function Home() {
         @keyframes twinkle { 0%,100% { opacity: 0.1; } 50% { opacity: 0.5; } }
       `}</style>
 
-      {showAuth && <AuthModal initialMode={authMode} onClose={() => setShowAuth(false)} onAuth={u => { setUser(u); setShowAuth(false); setPage("scanner"); }} />}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} onAuth={u => { setUser(u); setShowAuth(false); setPage("scanner"); }} />}
 
       {/* Background */}
       <div style={{ position: "fixed", inset: 0, zIndex: 0, background: COLORS.bg }}>
@@ -470,10 +454,10 @@ export default function Home() {
               </>
             ) : (
               <>
-                <span onClick={() => { setAuthMode("login"); setShowAuth(true); }} style={{ fontSize: 13, color: COLORS.textDim, cursor: "pointer" }}>Log In</span>
-                <button onClick={() => { setAuthMode("signup"); setShowAuth(true); }} style={{ padding: "10px 22px", borderRadius: 10, border: "none", background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`, color: COLORS.bg, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Get Started</button>
+                <span onClick={() => setAuthMode("signup")} style={{ fontSize: 13, color: COLORS.textDim, cursor: "pointer" }}>Log In</span>
+                <button onClick={() => setShowAuth(true)} style={{ padding: "10px 22px", borderRadius: 10, border: "none", background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`, color: COLORS.bg, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Get Started</button>
               </>
-            )}
+            }>
           </div>
         </nav>
 
@@ -485,16 +469,15 @@ export default function Home() {
                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.accent, animation: "heatPulse 1.5s infinite" }} />
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: COLORS.accent, letterSpacing: 2 }}>LIVE — 14-GATE SYSTEM ACTIVE</span>
               </div>
-              <h1 style={{ fontSize: 64, fontWeight: 900, lineHeight: 1.12, margin: "0 0 12px", paddingBottom: 6, overflow: "visible", background: `linear-gradient(135deg, ${COLORS.text} 30%, ${COLORS.accent} 100%)`, WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-                Every Stock Gets<br />
-                <span style={{ display: "inline-block", lineHeight: 1.12, paddingBottom: 6 }}>Interrogated.</span>
+              <h1 style={{ fontSize: 64, fontWeight: 900, lineHeight: 1.05, margin: "0 0 24px", background: `linear-gradient(135deg, ${COLORS.text} 30%, ${COLORS.accent} 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                Every Stock Gets<br/>Interrogated.
               </h1>
               <p style={{ fontSize: 19, color: COLORS.textDim, fontWeight: 300, maxWidth: 550, margin: "0 auto 40px", lineHeight: 1.7 }}>
                 14 proprietary gates. Any ticker. Real-time sector analysis. Only the strongest signals survive.
               </p>
               <div style={{ display: "flex", justifyContent: "center", gap: 16 }}>
-                <button onClick={() => { setAuthMode("signup"); setShowAuth(true); }} style={{ padding: "18px 44px", borderRadius: 14, border: "none", background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`, color: COLORS.bg, fontSize: 17, fontWeight: 700, cursor: "pointer", animation: "glow 3s ease-in-out infinite" }}>Start Scanning →</button>
-                <button onClick={() => setPage("engine")} style={{ padding: "18px 44px", borderRadius: 14, border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textDim, fontSize: 17, fontWeight: 500, cursor: "pointer" }}>Inside The Engine</button>
+                <button onClick={() => setShowAuth(true)} style={{ padding: "18px 44px", borderRadius: 14, border: "none", background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`, color: COLORS.bg, fontSize: 17, fontWeight: 700, cursor: "pointer", animation: "glow 3s ease-in-out infinite" }}>Start Scanning →</button>
+                <button onClick={() => document.getElementById("gates")?.scrollIntoView({ behavior: "smooth" })} style={{ padding: "18px 44px", borderRadius: 14, border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textDim, fontSize: 17, fontWeight: 500, cursor: "pointer" }}>Inside The Engine</button>
               </div>
             </div>
 
@@ -546,8 +529,8 @@ export default function Home() {
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                 {GATES.map((g, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 20px", borderRadius: 12, background: i % 2 === 0 ? COLORS.surfaceLight : "transparent", animation: `slideIn 0.4s ease ${i * 0.05}s both` }}>
-                    <div style={{ width: 32, height: 32, flexShrink: 0, borderRadius: 8, background: COLORS.accentDim, border: `1.5px solid ${COLORS.accent}44`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: COLORS.accent }}>{g.id}</div>
-                    <span style={{ flex: "0 0 96px", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: COLORS.text, letterSpacing: 1 }}>{g.code}</span>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: COLORS.accentDim, border: `1.5px solid ${COLORS.accent}44`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: COLORS.accent }}>{g.id}</div>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: COLORS.text, letterSpacing: 1 }}>{g.code}</span>
                     <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 12, color: COLORS.textDim, marginLeft: 12 }}>{g.name}</span>
                     <div style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: COLORS.accent, opacity: 0.5, animation: `heatPulse ${1.5 + i * 0.2}s infinite` }} />
                   </div>
@@ -559,180 +542,6 @@ export default function Home() {
             <div style={{ textAlign: "center", padding: 20, borderRadius: 14, background: COLORS.surfaceLight, border: `1px solid ${COLORS.border}` }}>
               <p style={{ fontSize: 11, color: COLORS.textDim, lineHeight: 1.8, margin: 0 }}>
                 Scout provides analysis for educational purposes only. This is not financial advice. All trading involves risk of loss. Past performance does not guarantee future results. You are solely responsible for your trading decisions.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* INSIDE THE ENGINE */}
-        {page === "engine" && (
-          <div style={{ maxWidth: 1200, margin: "0 auto", padding: "40px 40px 80px" }}>
-            <div style={{ textAlign: "center", marginBottom: 56, animation: "fadeUp 0.8s ease" }}>
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 18px", borderRadius: 20, marginBottom: 24, background: COLORS.accentDim, border: `1px solid ${COLORS.accent}33` }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.accent, animation: "heatPulse 1.5s infinite" }} />
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: COLORS.accent, letterSpacing: 2 }}>INSIDE THE ENGINE</span>
-              </div>
-              <h1 style={{ fontSize: 44, fontWeight: 900, lineHeight: 1.15, margin: "0 0 20px", color: COLORS.text }}>
-                How Scout Interrogates Every Trade
-              </h1>
-              <p style={{ fontSize: 18, color: COLORS.textDim, fontWeight: 300, maxWidth: 640, margin: "0 auto", lineHeight: 1.75 }}>
-                Scout runs every ticker through a 14-gate trade architecture built to filter noise, expose risk, and surface only the strongest setups.
-              </p>
-            </div>
-
-            {/* Section 1 */}
-            <div style={{ marginBottom: 72, animation: "fadeUp 0.8s ease 0.05s both" }}>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 10 }}>THE ARCHITECTURE</div>
-              <h2 style={{ fontSize: 30, fontWeight: 800, color: COLORS.text, margin: "0 0 20px" }}>The 14-Gate Trade Architecture</h2>
-              <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 32, maxWidth: 800 }}>
-                <p style={{ fontSize: 15, color: COLORS.textDim, lineHeight: 1.75, margin: 0 }}>
-                  Scout doesn't just look for one signal. It forces every ticker through a layered gate system before reaching the finish line.
-                </p>
-                <p style={{ fontSize: 15, color: COLORS.textDim, lineHeight: 1.75, margin: 0 }}>
-                  Each gate checks a different part of the trade: market quality, sector alignment, technical structure, volume and flow, options activity, risk, timing, and catalyst strength. Weak points show up early instead of after you are committed.
-                </p>
-                <p style={{ fontSize: 15, color: COLORS.textDim, lineHeight: 1.75, margin: 0 }}>
-                  The goal is simple: prevent weak trades from reaching the final signal. Only setups that hold up across the full stack advance.
-                </p>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
-                {GATES.map((g, i) => (
-                  <div
-                    key={g.id}
-                    style={{
-                      padding: "16px 18px",
-                      borderRadius: 14,
-                      background: COLORS.surface,
-                      border: `1px solid ${COLORS.border}`,
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 12,
-                      boxShadow: `0 0 0 1px ${COLORS.accentDim}`,
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 30,
-                        height: 30,
-                        flexShrink: 0,
-                        borderRadius: 8,
-                        background: COLORS.accentDim,
-                        border: `1.5px solid ${COLORS.accent}44`,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        color: COLORS.accent,
-                      }}
-                    >
-                      {g.id}
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: COLORS.text, letterSpacing: 1 }}>{g.code}</div>
-                      <div style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, color: COLORS.textDim, marginTop: 4, lineHeight: 1.45 }}>{g.name}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Section 2 + pricing */}
-            <div style={{ marginBottom: 72, animation: "fadeUp 0.8s ease 0.1s both" }}>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 10 }}>WHAT YOU GET</div>
-              <h2 style={{ fontSize: 30, fontWeight: 800, color: COLORS.text, margin: "0 0 28px" }}>What You Get</h2>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16, marginBottom: 28 }}>
-                {[
-                  "14-gate ticker analysis",
-                  "Cleaner trade filtering",
-                  "Risk-aware setup scoring",
-                  "Real-time market context",
-                  "Simple bullish, bearish, and neutral readouts",
-                ].map((label, i) => (
-                  <div key={i} style={{ padding: 22, borderRadius: 16, background: COLORS.surfaceLight, border: `1px solid ${COLORS.border}`, backdropFilter: "blur(12px)" }}>
-                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.accent, marginBottom: 12, opacity: 0.85 }} />
-                    <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, lineHeight: 1.5 }}>{label}</div>
-                  </div>
-                ))}
-              </div>
-              <div
-                style={{
-                  maxWidth: 420,
-                  margin: "0 auto",
-                  padding: 32,
-                  borderRadius: 20,
-                  background: `linear-gradient(145deg, ${COLORS.surface} 0%, ${COLORS.surfaceLight} 100%)`,
-                  border: `1px solid ${COLORS.accent}33`,
-                  boxShadow: `0 0 60px ${COLORS.accentDim}`,
-                  textAlign: "center",
-                }}
-              >
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 12 }}>MEMBERSHIP</div>
-                <div style={{ fontSize: 36, fontWeight: 800, color: COLORS.text, marginBottom: 8 }}>$x/mo</div>
-                <div style={{ fontSize: 13, color: COLORS.textDim, marginBottom: 24, lineHeight: 1.6 }}>Early access pricing placeholder</div>
-                <button
-                  onClick={() => { setAuthMode("signup"); setShowAuth(true); }}
-                  style={{
-                    width: "100%",
-                    padding: "14px 24px",
-                    borderRadius: 12,
-                    border: "none",
-                    background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`,
-                    color: COLORS.bg,
-                    fontSize: 15,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    boxShadow: `0 4px 20px ${COLORS.accentDim}`,
-                  }}
-                >
-                  Get Started
-                </button>
-              </div>
-            </div>
-
-            {/* Section 3 */}
-            <div style={{ marginBottom: 64, animation: "fadeUp 0.8s ease 0.15s both" }}>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 10 }}>DECISION SPEED</div>
-              <h2 style={{ fontSize: 30, fontWeight: 800, color: COLORS.text, margin: "0 0 18px" }}>Built for Decision Speed</h2>
-              <p style={{ fontSize: 15, color: COLORS.textDim, lineHeight: 1.75, margin: 0, maxWidth: 800 }}>
-                Scout is built to help traders move faster without skipping the hard questions. Instead of chasing every alert, Scout organizes the setup, pressure-tests the thesis, and shows where the trade may be strong or weak.
-              </p>
-            </div>
-
-            {/* Footer CTA */}
-            <div
-              style={{
-                textAlign: "center",
-                padding: "40px 24px",
-                borderRadius: 20,
-                background: COLORS.surface,
-                border: `1px solid ${COLORS.border}`,
-                animation: "fadeUp 0.8s ease 0.2s both",
-              }}
-            >
-              <div style={{ fontSize: 22, fontWeight: 800, color: COLORS.text, marginBottom: 20 }}>Ready to run the gates?</div>
-              <button
-                onClick={() => { setAuthMode("signup"); setShowAuth(true); }}
-                style={{
-                  padding: "16px 40px",
-                  borderRadius: 14,
-                  border: "none",
-                  background: `linear-gradient(135deg, ${COLORS.accent}, #00c48c)`,
-                  color: COLORS.bg,
-                  fontSize: 16,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  animation: "glow 3s ease-in-out infinite",
-                }}
-              >
-                Start Scanning
-              </button>
-            </div>
-
-            <div style={{ textAlign: "center", padding: 24, marginTop: 32 }}>
-              <p style={{ fontSize: 11, color: COLORS.textDim, lineHeight: 1.8, margin: 0 }}>
-                Scout provides analysis for educational purposes only. This is not financial advice.
               </p>
             </div>
           </div>
