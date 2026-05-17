@@ -73,6 +73,30 @@
       line-height: 1.6;
     }
 
+    .top-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 22px 0 28px;
+    }
+
+    .top-nav a {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .top-nav a.active {
+      border-color: #00e5a066;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
     .grid {
       display: grid;
       grid-template-columns: 380px 1fr;
@@ -671,6 +695,10 @@
       Enter a ticker universe, run the deployed Scout gate engine on demand, and inspect the final pick,
       per-gate outcomes, rejected candidates, and raw JSON output.
     </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a class="active" href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+    </nav>
 
     <section class="grid">
       <aside class="card controls">

@@ -16,6 +16,15 @@ from typing import Any, Optional
 
 from directionality import build_directional_breakdown
 from explainability import build_explanation
+from memory_store import (
+    export_csv,
+    get_direction_accuracy,
+    get_gate_statistics,
+    get_option_pick_history,
+    get_ticker_history,
+    get_top_gate_failures,
+    save_scan_result,
+)
 from option_picker import choose_option_contract
 from run_gates import (
     DEFAULT_CANDIDATES,
@@ -31,6 +40,7 @@ from run_gates import (
 
 SANDBOX_DIR = Path(__file__).resolve().parent
 DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
+RESEARCH_HTML = SANDBOX_DIR / "research.html"
 
 
 def first_failed_gate_payload(result: CandidateResult) -> Optional[dict[str, Any]]:
@@ -150,7 +160,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
         if result.ticker != winner.ticker
     ]
 
-    return {
+    payload = {
         "ok": True,
         "apiUrl": api_url,
         "candidates": candidates,
@@ -179,6 +189,19 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
         "directionBreakdowns": direction_breakdowns,
         "errors": errors,
     }
+    payload["memoryRunId"] = save_scan_result(payload)
+    return payload
+
+
+def build_memory_summary() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "recentScans": get_ticker_history(limit=100),
+        "gateStatistics": get_gate_statistics(),
+        "directionAccuracy": get_direction_accuracy(),
+        "topGateFailures": get_top_gate_failures(),
+        "optionPickHistory": get_option_pick_history(),
+    }
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -189,8 +212,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/dashboard.html"):
             self.send_file(DASHBOARD_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/research", "/research.html"):
+            self.send_file(RESEARCH_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
+            return
+        if parsed.path == "/api/memory/summary":
+            self.send_json(build_memory_summary())
+            return
+        if parsed.path == "/api/memory/ticker":
+            params = urllib.parse.parse_qs(parsed.query)
+            ticker = (params.get("ticker") or [""])[0].strip().upper()
+            self.send_json({"ok": True, "history": get_ticker_history(ticker or None)})
+            return
+        if parsed.path == "/api/memory/export.csv":
+            self.send_text(
+                export_csv(),
+                "text/csv; charset=utf-8",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="scout-memory-export.csv"'
+                },
+            )
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -236,6 +279,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_text(
+        self,
+        text: str,
+        content_type: str,
+        status: HTTPStatus = HTTPStatus.OK,
+        extra_headers: Optional[dict[str, str]] = None,
+    ) -> None:
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 
