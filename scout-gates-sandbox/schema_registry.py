@@ -176,6 +176,39 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "engine_version": "TEXT",
         },
     },
+    "pattern_intelligence": {
+        "table": "pattern_intelligence",
+        "columns": {
+            "pattern_id": "TEXT",
+            "pattern_signature": "TEXT",
+            "sample_size": "INTEGER",
+            "win_rate": "REAL",
+            "loss_rate": "REAL",
+            "avg_1d": "REAL",
+            "avg_3d": "REAL",
+            "avg_5d": "REAL",
+            "avg_10d": "REAL",
+            "avg_20d": "REAL",
+            "expectancy_score": "REAL",
+            "confidence_score": "REAL",
+            "created_at_utc": "TEXT",
+        },
+    },
+    "gate_attributions": {
+        "table": "gate_attributions",
+        "columns": {
+            "id": "INTEGER",
+            "scan_id": "INTEGER",
+            "ticker": "TEXT",
+            "gate_name": "TEXT",
+            "gate_score": "REAL",
+            "gate_weight": "REAL",
+            "contribution_pct": "REAL",
+            "gate_rank": "INTEGER",
+            "regime_tag": "TEXT",
+            "created_at_utc": "TEXT",
+        },
+    },
 }
 
 

@@ -359,6 +359,66 @@
       overflow-x: auto;
     }
 
+    .pattern-card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .pattern-card {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid #ffffff12;
+      border-radius: 18px;
+      background: #060a14bb;
+    }
+
+    .pattern-title {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.14em;
+      line-height: 1.1;
+      text-transform: uppercase;
+    }
+
+    .pattern-direction {
+      margin-top: 9px;
+      color: var(--gold);
+      font-size: 20px;
+      font-weight: 750;
+      line-height: 1.05;
+    }
+
+    .pattern-sector,
+    .pattern-confidence {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.15;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pattern-confidence {
+      color: var(--peach);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-weight: 800;
+    }
+
+    .why-trade {
+      margin-top: 16px;
+      padding: 16px;
+      border: 1px solid #f6c87928;
+      border-radius: 18px;
+      background: linear-gradient(135deg, #f6c87914, #6ee7ff0f);
+      color: var(--text);
+      line-height: 1.55;
+    }
+
     @media (max-width: 880px) {
       .half,
       .third,
@@ -441,6 +501,19 @@
         <div class="kicker">Anomaly Monitor</div>
         <h2>Data Anomaly Detection</h2>
         <div id="anomaly-monitor"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Pattern Intelligence</div>
+        <h2>Recurring Market Setups</h2>
+        <button class="button primary" id="patterns-button" type="button">Rebuild Pattern Intelligence</button>
+        <div id="pattern-intelligence" style="margin-top:16px;"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Gate Attribution</div>
+        <h2>Why The Current Recommendation Happened</h2>
+        <div id="gate-attribution"></div>
       </article>
 
       <article class="card half">
@@ -581,6 +654,7 @@
         metric("Total universe snapshots", number(health.universe_snapshots)),
         metric("Total audit log entries", number(health.audit_log_entries)),
         metric("Total feature vectors", number(health.feature_vectors)),
+        metric("Total gate attributions", number(health.gate_attributions)),
       ].join("");
     }
 
@@ -690,6 +764,117 @@
           </div>
         ` : "<p class=\"hint\">No anomalies detected.</p>"}
       `;
+    }
+
+    function patternLabel(pattern) {
+      if (!pattern || !pattern.pattern_signature) return "None";
+      const signature = pattern.pattern_signature;
+      return Object.entries(signature)
+        .filter(([key]) => key !== "kind")
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(" | ");
+    }
+
+    function patternCard(title, pattern) {
+      const signature = pattern?.pattern_signature || {};
+      const direction = signature.direction || "n/a";
+      const sector = signature.sector || "Any sector";
+      const confidence = pattern ? `${Number(pattern.confidence_score || 0).toFixed(1)}%` : "n/a";
+      const full = patternLabel(pattern);
+      return `
+        <div class="pattern-card" title="${escapeHtml(full)}">
+          <div class="pattern-title">${escapeHtml(title)}</div>
+          <div class="pattern-direction">${escapeHtml(direction)}</div>
+          <div class="pattern-sector">${escapeHtml(sector)}</div>
+          <div class="pattern-confidence">${escapeHtml(confidence)}</div>
+        </div>
+      `;
+    }
+
+    function renderPatternIntelligence(data) {
+      const patterns = data.pattern_intelligence || {};
+      document.getElementById("pattern-intelligence").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Total patterns discovered", number(patterns.total_patterns_discovered))}
+          ${metric("Average sample size", patterns.average_sample_size || 0)}
+        </div>
+        <div class="pattern-card-grid">
+          ${patternCard("Strongest Bullish", patterns.strongest_bullish_pattern)}
+          ${patternCard("Strongest Bearish", patterns.strongest_bearish_pattern)}
+          ${patternCard("Highest Confidence", patterns.highest_confidence_pattern)}
+          ${patternCard("Weakest Pattern", patterns.weakest_pattern)}
+        </div>
+        ${(patterns.patterns || []).length ? `
+          <div class="table-wrap" style="margin-top:14px;">
+            <table>
+              <thead><tr><th>Pattern</th><th>Samples</th><th>Win</th><th>Loss</th><th>Expectancy</th><th>Confidence</th></tr></thead>
+              <tbody>
+                ${(patterns.patterns || []).slice(0, 8).map((row) => `
+                  <tr>
+                    <td>${escapeHtml(patternLabel(row))}</td>
+                    <td>${escapeHtml(row.sample_size)}</td>
+                    <td>${escapeHtml(row.win_rate)}%</td>
+                    <td>${escapeHtml(row.loss_rate)}%</td>
+                    <td>${escapeHtml(row.expectancy_score)}</td>
+                    <td>${escapeHtml(row.confidence_score)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : "<p class=\"hint\">No recurring patterns with sample size 3+ have been discovered yet.</p>"}
+      `;
+    }
+
+    function attributionCard(row) {
+      const title = `Score: ${row.gate_score ?? "n/a"} | Weight: ${row.gate_weight ?? "n/a"} | Regime: ${row.regime_tag || "n/a"}`;
+      return `
+        <div class="pattern-card" title="${escapeHtml(title)}">
+          <div class="pattern-title">Rank ${escapeHtml(row.gate_rank || "n/a")}</div>
+          <div class="pattern-direction">${escapeHtml(row.gate_name || "UNKNOWN")} &rarr; ${Number(row.contribution_pct || 0).toFixed(0)}%</div>
+          <div class="pattern-confidence">${Number(row.contribution_pct || 0).toFixed(2)}%</div>
+        </div>
+      `;
+    }
+
+    function renderGateAttribution(data) {
+      const attribution = data.gate_attribution || {};
+      const rows = attribution.attributions || [];
+      document.getElementById("gate-attribution").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Top current recommendation", attribution.ticker || "n/a")}
+          ${metric("scan_id", attribution.scan_id || "n/a")}
+          ${metric("Contribution sum", `${Number(attribution.contribution_sum || 0).toFixed(2)}%`)}
+          ${metric("Direction", attribution.direction || "n/a")}
+        </div>
+        ${rows.length ? `
+          <div class="pattern-card-grid">
+            ${rows.map(attributionCard).join("")}
+          </div>
+        ` : "<p class=\"hint\">No Gate Attribution rows yet. New sandbox scans will generate this layer automatically.</p>"}
+        <div class="why-trade">
+          <div class="kicker">Why This Trade</div>
+          ${escapeHtml(attribution.why_this_trade || "Gate Attribution will appear after the next sandbox scan.")}
+        </div>
+      `;
+    }
+
+    async function rebuildPatterns() {
+      const button = document.getElementById("patterns-button");
+      button.disabled = true;
+      statusEl.textContent = "Rebuilding Pattern Intelligence from immutable records...";
+      try {
+        const response = await fetch("/api/control/patterns");
+        const data = await response.json();
+        renderPatternIntelligence(data);
+        await loadSummary();
+        const total = data.pattern_intelligence?.total_patterns_discovered || 0;
+        statusEl.textContent = `Pattern Intelligence rebuilt: ${total} patterns discovered.`;
+      } catch (error) {
+        statusEl.textContent = `Could not rebuild Pattern Intelligence: ${error}`;
+      } finally {
+        button.disabled = false;
+      }
     }
 
     function renderHealth(rows) {
@@ -877,6 +1062,8 @@
       renderFeatureIntelligence(data);
       renderSchemaIntegrity(data);
       renderAnomalyMonitor(data);
+      renderPatternIntelligence(data);
+      renderGateAttribution(data);
       renderHealth(data.system_health || []);
       renderDataVolume(data);
       renderVersioning(data);
@@ -898,6 +1085,7 @@
 
     document.getElementById("self-audit-button").addEventListener("click", runSelfAudit);
     document.getElementById("backfill-button").addEventListener("click", runBackfill);
+    document.getElementById("patterns-button").addEventListener("click", rebuildPatterns);
 
     loadSummary();
   </script>

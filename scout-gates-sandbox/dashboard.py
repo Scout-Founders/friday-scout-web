@@ -21,6 +21,7 @@ from memory_store import (
     export_csv,
     get_control_summary,
     get_direction_accuracy,
+    get_gate_attribution_summary,
     get_gate_intelligence_metrics,
     get_gate_statistics,
     get_horizon_self_audit,
@@ -31,6 +32,7 @@ from memory_store import (
     get_ticker_history,
     get_top_gate_failures,
     run_horizon_backfill,
+    rebuild_patterns,
     save_scan_result,
 )
 from option_picker import choose_option_contract, fmp_api_key
@@ -232,6 +234,10 @@ def execute_horizon_backfill() -> dict[str, Any]:
     return run_horizon_backfill()
 
 
+def execute_pattern_rebuild() -> dict[str, Any]:
+    return rebuild_patterns()
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "ScoutGateDashboard/1.0"
 
@@ -254,6 +260,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/control/self-audit":
             self.send_json(build_horizon_self_audit())
+            return
+        if parsed.path == "/api/control/patterns":
+            self.send_json(execute_pattern_rebuild())
+            return
+        if parsed.path == "/api/control/attribution":
+            self.send_json(get_gate_attribution_summary())
             return
         if parsed.path.startswith("/api/explanation/") or parsed.path.startswith("/api/horizon-trace/"):
             scan_id_text = parsed.path.rsplit("/", 1)[-1]

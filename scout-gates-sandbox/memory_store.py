@@ -22,6 +22,11 @@ from feature_store import (
     save_feature_vector,
 )
 from schema_registry import validate_schema
+from pattern_engine import (
+    get_pattern_intelligence,
+    init_pattern_store,
+    rebuild_pattern_intelligence,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -183,6 +188,24 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_institutional_audit_scan
                 ON institutional_audit_log(scan_id, timestamp DESC);
 
+            CREATE TABLE IF NOT EXISTS gate_attributions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                gate_name TEXT NOT NULL,
+                gate_score REAL,
+                gate_weight REAL NOT NULL,
+                contribution_pct REAL NOT NULL,
+                gate_rank INTEGER NOT NULL,
+                regime_tag TEXT,
+                created_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gate_attributions_scan
+                ON gate_attributions(scan_id, ticker, gate_rank);
+            CREATE INDEX IF NOT EXISTS idx_gate_attributions_created
+                ON gate_attributions(created_at_utc DESC);
+
             CREATE TABLE IF NOT EXISTS gate_intelligence_metrics (
                 gate_key TEXT PRIMARY KEY,
                 gate_name TEXT NOT NULL,
@@ -221,6 +244,7 @@ def init_db() -> None:
             if column not in existing_runs:
                 conn.execute(f"ALTER TABLE scan_runs ADD COLUMN {column} {column_type}")
         init_feature_store(conn)
+        init_pattern_store(conn)
 
 
 def failed_gate_names(result: dict[str, Any]) -> list[str]:
@@ -374,6 +398,135 @@ def build_feature_vector(
         "direction": result.get("direction") or raw.get("direction"),
         "engine_version": engine_version,
     }
+
+
+def attribution_gate_score(gate: dict[str, Any]) -> float:
+    raw_score = to_optional_float(gate.get("raw_score"))
+    if raw_score is not None:
+        return raw_score
+    return 1.0 if gate.get("passed") is True else 0.35
+
+
+def attribution_regime_tag(result: dict[str, Any], feature_vector: dict[str, Any]) -> str:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    source = {**raw, **result, **feature_vector}
+    direction = str(first_present(source, ("direction", "final_direction")) or "neutral").lower()
+    sector = str(first_present(source, ("sector",)) or "cross-sector")
+    risk = str(first_present(source, ("risk_regime", "trend_state", "trend")) or "standard-regime")
+    return f"{direction}:{sector}:{risk}"
+
+
+def build_gate_attributions(
+    result: dict[str, Any],
+    gate_snapshot: dict[str, Any],
+    feature_vector: dict[str, Any],
+    scan_id: int,
+    created_at_utc: str,
+) -> list[dict[str, Any]]:
+    gates = [gate for gate in gate_snapshot.get("gates", []) if isinstance(gate, dict)]
+    weighted: list[dict[str, Any]] = []
+    for gate in gates:
+        gate_score = attribution_gate_score(gate)
+        gate_weight = max(abs(gate_score), 0.01)
+        weighted.append(
+            {
+                "scan_id": scan_id,
+                "ticker": str(result.get("ticker") or gate_snapshot.get("ticker") or ""),
+                "gate_name": str(gate.get("code") or gate.get("key") or gate.get("name") or "UNKNOWN").upper(),
+                "gate_score": gate_score,
+                "gate_weight": gate_weight,
+                "regime_tag": attribution_regime_tag(result, feature_vector),
+                "created_at_utc": created_at_utc,
+            }
+        )
+
+    if not weighted:
+        return []
+
+    total_weight = sum(row["gate_weight"] for row in weighted) or 1.0
+    running_pct = 0.0
+    ranked = sorted(weighted, key=lambda row: row["gate_weight"], reverse=True)
+    for index, row in enumerate(ranked, start=1):
+        if index == len(ranked):
+            contribution = round(max(0.0, 100.0 - running_pct), 2)
+        else:
+            contribution = round(row["gate_weight"] / total_weight * 100.0, 2)
+            running_pct += contribution
+        row["contribution_pct"] = contribution
+        row["gate_rank"] = index
+    return ranked
+
+
+def save_gate_attributions(
+    conn: sqlite3.Connection,
+    attributions: list[dict[str, Any]],
+) -> None:
+    if not attributions:
+        return
+    conn.executemany(
+        """
+        INSERT INTO gate_attributions (
+            scan_id, ticker, gate_name, gate_score, gate_weight,
+            contribution_pct, gate_rank, regime_tag, created_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                row["scan_id"],
+                row["ticker"],
+                row["gate_name"],
+                row["gate_score"],
+                row["gate_weight"],
+                row["contribution_pct"],
+                row["gate_rank"],
+                row["regime_tag"],
+                row["created_at_utc"],
+            )
+            for row in attributions
+        ],
+    )
+
+
+def attribution_phrase(gate_name: str, gate_score: Optional[float]) -> str:
+    weak = gate_score is not None and gate_score < 0.5
+    descriptors = {
+        "SENTINEL": ("supportive market filter", "weak market filter"),
+        "ATLAS": ("strong core fundamentals", "deteriorating core fundamentals"),
+        "ORACLE": ("constructive forward vision", "weak forward vision"),
+        "PHANTOM": ("smart-money confirmation", "weak smart-money confirmation"),
+        "CATALYST": ("active catalyst support", "thin catalyst support"),
+        "SPECTER": ("contained threat profile", "elevated threat profile"),
+        "MERIDIAN": ("sector tailwinds", "sector headwinds"),
+        "AEGIS": ("earnings risk control", "earnings risk pressure"),
+        "COMPASS": ("trend alignment", "trend deterioration"),
+        "PULSE": ("volatility confirmation", "unstable volatility"),
+        "SIGNAL": ("intel feed confirmation", "weak intel feed"),
+        "CURRENT": ("flow momentum", "weak flow momentum"),
+        "ARCHER": ("strategy fit", "limited strategy fit"),
+        "FORTRESS": ("risk discipline", "risk pressure"),
+    }
+    strong_phrase, weak_phrase = descriptors.get(gate_name.upper(), (f"{gate_name} strength", f"weak {gate_name} signal"))
+    return weak_phrase if weak else strong_phrase
+
+
+def build_why_this_trade(
+    ticker: str,
+    direction: Optional[str],
+    sector: Optional[str],
+    attributions: list[dict[str, Any]],
+) -> str:
+    top = attributions[:3]
+    phrases = [attribution_phrase(str(row.get("gate_name")), to_optional_float(row.get("gate_score"))) for row in top]
+    direction_text = str(direction or "directional").lower()
+    sector_text = str(sector or "cross-sector").lower()
+    if not phrases:
+        return f"Scout identified {direction_text} conditions for {ticker} from the saved gate stack."
+    condition_scope = "cross-sector" if sector_text == "cross-sector" else f"{sector_text} sector"
+    if len(phrases) == 1:
+        driver_text = phrases[0]
+    else:
+        driver_text = f"{', '.join(phrases[:-1])}, and {phrases[-1]}"
+    return f"Scout identified {direction_text} {condition_scope} conditions for {ticker} driven primarily by {driver_text}."
 
 
 def rejection_reason(result: dict[str, Any]) -> str:
@@ -550,6 +703,23 @@ def save_scan_result(payload: dict[str, Any]) -> int:
             ),
         )
         run_id = int(cursor.lastrowid)
+        log_institutional_audit_event(
+            conn,
+            f"scan_created:{run_id}",
+            timestamp or created_at_utc,
+            run_id,
+            None,
+            None,
+            engine_version,
+            "scan_created",
+            {
+                "scan_id": run_id,
+                "universe_mode": payload.get("universeMode"),
+                "pick_mode": payload.get("pickMode"),
+                "git_commit_hash": git_commit_hash,
+                "created_at_utc": created_at_utc,
+            },
+        )
         universe_snapshot = build_universe_snapshot(payload, run_id)
         conn.execute(
             "UPDATE scan_runs SET universe_snapshot_json = ? WHERE id = ?",
@@ -617,6 +787,33 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 ),
             )
             recommendation_id = int(cursor.lastrowid)
+            log_institutional_audit_event(
+                conn,
+                f"recommendation_created:{recommendation_id}",
+                timestamp or created_at_utc,
+                run_id,
+                recommendation_id,
+                result.get("ticker"),
+                engine_version,
+                "recommendation_created",
+                {
+                    "row_id": recommendation_id,
+                    "ticker": result.get("ticker"),
+                    "score": result.get("score"),
+                    "direction": direction.get("direction") or result.get("direction"),
+                    "scan_id": run_id,
+                },
+            )
+            save_gate_attributions(
+                conn,
+                build_gate_attributions(
+                    result,
+                    gate_snapshot,
+                    feature_vector,
+                    run_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
             try:
                 save_feature_vector(
                     conn,
@@ -632,6 +829,7 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 )
             except Exception:
                 pass
+        rebuild_pattern_intelligence(conn)
         return run_id
 
 
@@ -1215,6 +1413,14 @@ def run_feature_vector_backfill() -> dict[str, Any]:
     return result
 
 
+def rebuild_patterns() -> dict[str, Any]:
+    init_db()
+    with connect() as conn:
+        rebuild = rebuild_pattern_intelligence(conn)
+        summary = get_pattern_intelligence(conn)
+    return {"ok": True, "rebuild": rebuild, "pattern_intelligence": summary}
+
+
 def average(values: list[float]) -> Optional[float]:
     return round(sum(values) / len(values), 4) if values else None
 
@@ -1644,6 +1850,95 @@ def get_anomaly_monitor(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def get_gate_attribution_summary() -> dict[str, Any]:
+    """Return the latest forward-generated gate attribution payload for Horizon-1."""
+    init_db()
+    with connect() as conn:
+        latest_scan_id_row = conn.execute(
+            "SELECT MAX(scan_id) AS scan_id FROM gate_attributions"
+        ).fetchone()
+        latest_scan_id = latest_scan_id_row["scan_id"] if latest_scan_id_row else None
+        if latest_scan_id is None:
+            return {
+                "ok": True,
+                "scan_id": None,
+                "ticker": None,
+                "attributions": [],
+                "contribution_sum": 0,
+                "why_this_trade": "Gate Attribution will appear after the next sandbox scan.",
+            }
+
+        top_result = conn.execute(
+            """
+            SELECT id, run_id, ticker, scout_score, final_direction, raw_result_json, feature_vector_json
+            FROM scan_results
+            WHERE run_id = ?
+              AND ticker IN (
+                  SELECT DISTINCT ticker FROM gate_attributions WHERE scan_id = ?
+              )
+            ORDER BY scout_score DESC, id ASC
+            LIMIT 1
+            """,
+            (latest_scan_id, latest_scan_id),
+        ).fetchone()
+        if top_result is None:
+            return {
+                "ok": True,
+                "scan_id": latest_scan_id,
+                "ticker": None,
+                "attributions": [],
+                "contribution_sum": 0,
+                "why_this_trade": "Gate Attribution rows exist, but the matching recommendation was not found.",
+            }
+
+        attribution_rows = [
+            {
+                "gate_name": row["gate_name"],
+                "gate_score": row["gate_score"],
+                "gate_weight": row["gate_weight"],
+                "contribution_pct": row["contribution_pct"],
+                "gate_rank": row["gate_rank"],
+                "regime_tag": row["regime_tag"],
+                "created_at_utc": row["created_at_utc"],
+            }
+            for row in conn.execute(
+                """
+                SELECT gate_name, gate_score, gate_weight, contribution_pct,
+                       gate_rank, regime_tag, created_at_utc
+                FROM gate_attributions
+                WHERE scan_id = ? AND ticker = ?
+                ORDER BY gate_rank ASC
+                """,
+                (latest_scan_id, top_result["ticker"]),
+            ).fetchall()
+        ]
+        feature_vector = json_load(top_result["feature_vector_json"])
+        if not isinstance(feature_vector, dict):
+            raw_result = json_load(top_result["raw_result_json"])
+            feature_vector = raw_result if isinstance(raw_result, dict) else {}
+        sector = first_present(feature_vector, ("sector", "sector_name"))
+        contribution_sum = round(
+            sum(float(row.get("contribution_pct") or 0) for row in attribution_rows),
+            2,
+        )
+        return {
+            "ok": True,
+            "scan_id": latest_scan_id,
+            "recommendation_id": top_result["id"],
+            "ticker": top_result["ticker"],
+            "direction": top_result["final_direction"],
+            "sector": sector,
+            "attributions": attribution_rows,
+            "contribution_sum": contribution_sum,
+            "why_this_trade": build_why_this_trade(
+                str(top_result["ticker"]),
+                top_result["final_direction"],
+                str(sector) if sector else None,
+                attribution_rows,
+            ),
+        }
+
+
 def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
     """Return Scout Horizon-1 sandbox control metrics without touching production systems."""
     init_db()
@@ -1660,9 +1955,13 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "institutional_audit_log": count_rows(conn, "institutional_audit_log"),
             "gate_intelligence_metrics": count_rows(conn, "gate_intelligence_metrics"),
             "feature_vectors": count_rows(conn, "feature_vectors"),
+            "pattern_intelligence": count_rows(conn, "pattern_intelligence"),
+            "gate_attributions": count_rows(conn, "gate_attributions"),
         }
         feature_intelligence = get_feature_intelligence_summary(conn)
         anomaly_monitor = get_anomaly_monitor(conn)
+        pattern_intelligence = get_pattern_intelligence(conn)
+        gate_attribution = get_gate_attribution_summary()
         totals = {
             "saved_scans": rows_by_table["scan_runs"],
             "saved_recommendations": rows_by_table["scan_results"],
@@ -1700,6 +1999,7 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             ),
             "audit_log_entries": rows_by_table["outcome_update_audit"] + rows_by_table["institutional_audit_log"],
             "feature_vectors": feature_intelligence["total_feature_vectors"],
+            "gate_attributions": rows_by_table["gate_attributions"],
         }
         unique_tickers = int(
             conn.execute("SELECT COUNT(DISTINCT ticker) FROM scan_results").fetchone()[0] or 0
@@ -1849,7 +2149,14 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         },
         {
             "name": "Pattern Learning",
-            "status": readiness_status(completed >= 1000, completed > 0),
+            "status": readiness_status(
+                pattern_intelligence["total_patterns_discovered"] > 0,
+                completed > 0,
+            ),
+        },
+        {
+            "name": "Gate Attribution",
+            "status": readiness_status(totals["gate_attributions"] > 0, recommendations > 0),
         },
     ]
 
@@ -1864,7 +2171,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "name": "Feature Store",
             "percent": progress_percent(totals["feature_vectors"] / max(recommendations, 1) * 100),
         },
-        {"name": "Pattern Learning", "percent": progress_percent(completed / 1000 * 100)},
+        {"name": "Pattern Learning", "percent": progress_percent(pattern_intelligence["total_patterns_discovered"] / 25 * 100)},
+        {"name": "Gate Attribution", "percent": progress_percent(totals["gate_attributions"] / max(recommendations * 10, 1) * 100)},
     ]
 
     system_health = [
@@ -1875,6 +2183,7 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         {"name": "Memory Layer", "status": health_status(True, recommendations == 0)},
         {"name": "Outcome Engine", "status": health_status(completed > 0, recommendations > 0 and completed == 0)},
         {"name": "Feature Store", "status": health_status(totals["feature_vectors"] > 0, missing_feature_vectors > 0)},
+        {"name": "Gate Attribution", "status": health_status(totals["gate_attributions"] > 0, recommendations > 0)},
     ]
     latest_immutable_run = (
         {
@@ -1911,6 +2220,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "feature_vector_count": totals["feature_vectors"],
         },
         "feature_intelligence": feature_intelligence,
+        "pattern_intelligence": pattern_intelligence,
+        "gate_attribution": gate_attribution,
         "schema_integrity": schema_integrity,
         "anomaly_monitor": anomaly_monitor,
         "latest_immutable_run": latest_immutable_run,
@@ -1943,6 +2254,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             {"path": "/api/control/summary", "description": "JSON summary for sandbox memory health and training readiness."},
             {"path": "/api/control/self-audit", "description": "Runs Phase 4 infrastructure readiness checks."},
             {"path": "/api/control/backfill", "description": "Backfills missing institutional snapshots and audit events."},
+            {"path": "/api/control/patterns", "description": "Rebuilds and returns Pattern Intelligence from immutable records."},
+            {"path": "/api/control/attribution", "description": "Returns the latest Gate Attribution Intelligence payload."},
         ],
         "safety": {
             "active_model_training": False,
