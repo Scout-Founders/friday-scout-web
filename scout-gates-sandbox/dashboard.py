@@ -18,10 +18,12 @@ from directionality import build_directional_breakdown
 from explainability import build_explanation
 from memory_store import (
     create_outcome_test_record,
+    create_gate_alpha_test_record,
     export_csv,
     get_control_summary,
     get_direction_accuracy,
     get_gate_attribution_summary,
+    get_gate_alpha_summary,
     get_gate_intelligence_metrics,
     get_gate_statistics,
     get_horizon_self_audit,
@@ -31,7 +33,9 @@ from memory_store import (
     get_recommendation_explanation,
     get_ticker_history,
     get_top_gate_failures,
+    rebuild_regime_intelligence,
     run_horizon_backfill,
+    rebuild_gate_alpha,
     rebuild_patterns,
     save_scan_result,
 )
@@ -238,6 +242,18 @@ def execute_pattern_rebuild() -> dict[str, Any]:
     return rebuild_patterns()
 
 
+def execute_gate_alpha_rebuild() -> dict[str, Any]:
+    return rebuild_gate_alpha()
+
+
+def execute_gate_alpha_test_bridge() -> dict[str, Any]:
+    return create_gate_alpha_test_record()
+
+
+def execute_regime_intelligence_rebuild() -> dict[str, Any]:
+    return rebuild_regime_intelligence()
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "ScoutGateDashboard/1.0"
 
@@ -266,6 +282,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/control/attribution":
             self.send_json(get_gate_attribution_summary())
+            return
+        if parsed.path == "/api/control/gate-alpha":
+            self.send_json(get_gate_alpha_summary())
             return
         if parsed.path.startswith("/api/explanation/") or parsed.path.startswith("/api/horizon-trace/"):
             scan_id_text = parsed.path.rsplit("/", 1)[-1]
@@ -343,6 +362,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Horizon backfill error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/control/gate-alpha":
+            try:
+                self.send_json(execute_gate_alpha_rebuild())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Gate Alpha rebuild error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/control/gate-alpha/test-record":
+            try:
+                self.send_json(execute_gate_alpha_test_bridge())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Gate Alpha test record error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/control/regime-intelligence":
+            try:
+                self.send_json(execute_regime_intelligence_rebuild())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Regime Intelligence error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return

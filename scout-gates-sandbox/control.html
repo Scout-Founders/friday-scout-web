@@ -121,6 +121,17 @@
       box-shadow: 0 0 26px #ffb08a22;
     }
 
+    .button:active,
+    .button.is-loading {
+      transform: translateY(1px) scale(0.98);
+      box-shadow: inset 0 0 18px #0007;
+    }
+
+    .button:disabled {
+      cursor: progress;
+      opacity: 0.72;
+    }
+
     .status {
       margin-bottom: 18px;
       padding: 12px 14px;
@@ -516,6 +527,22 @@
         <div id="gate-attribution"></div>
       </article>
 
+      <article class="card wide">
+        <div class="kicker">Gate Alpha Intelligence</div>
+        <h2>Statistical Gate Performance</h2>
+        <button class="button primary" id="gate-alpha-button" type="button">Rebuild Gate Alpha</button>
+        <button class="button" id="gate-alpha-test-button" type="button">Create Gate Alpha Test Record</button>
+        <p class="hint" id="gate-alpha-test-label">Sandbox test data is isolated from real trade history.</p>
+        <div id="gate-alpha" style="margin-top:16px;"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Regime Intelligence</div>
+        <h2>When Gates Perform Best</h2>
+        <button class="button primary" id="regime-intelligence-button" type="button">Rebuild Regime Intelligence</button>
+        <div id="regime-intelligence" style="margin-top:16px;"></div>
+      </article>
+
       <article class="card half">
         <div class="kicker">Readiness Matrix</div>
         <h2>Learning Readiness</h2>
@@ -655,6 +682,8 @@
         metric("Total audit log entries", number(health.audit_log_entries)),
         metric("Total feature vectors", number(health.feature_vectors)),
         metric("Total gate attributions", number(health.gate_attributions)),
+        metric("Total gate alpha metrics", number(health.gate_alpha_metrics)),
+        metric("Total regime snapshots", number(health.regime_snapshots)),
       ].join("");
     }
 
@@ -857,6 +886,215 @@
           ${escapeHtml(attribution.why_this_trade || "Gate Attribution will appear after the next sandbox scan.")}
         </div>
       `;
+    }
+
+    function alphaMetricCard(title, row, valueKey = "expectancy") {
+      if (!row) {
+        return `
+          <div class="pattern-card">
+            <div class="pattern-title">${escapeHtml(title)}</div>
+            <div class="pattern-direction">n/a</div>
+            <div class="pattern-confidence">Collecting</div>
+          </div>
+        `;
+      }
+      const value = valueKey === "sample_count"
+        ? number(row.sample_count)
+        : `${Number(row[valueKey] || 0).toFixed(2)}${valueKey === "win_rate" || valueKey === "confidence_score" ? "%" : ""}`;
+      return `
+        <div class="pattern-card" title="${escapeHtml(`${row.sector} | ${row.market_regime} | ${row.volatility_regime}`)}">
+          <div class="pattern-title">${escapeHtml(title)}</div>
+          <div class="pattern-direction">${escapeHtml(row.gate_name || "n/a")}</div>
+          <div class="pattern-sector">Uses ${number(row.sample_count)} | Win ${Number(row.win_rate || 0).toFixed(1)}%</div>
+          <div class="pattern-confidence">${escapeHtml(value)}</div>
+        </div>
+      `;
+    }
+
+    function renderGateAlpha(data) {
+      const alpha = data.gate_alpha || {};
+      const rows = alpha.leaderboard || [];
+      const test = data.test_record || {};
+      const testLabel = test.label
+        ? `<p class="hint"><strong>${escapeHtml(test.label)}</strong>: ${escapeHtml(test.message || "Test bridge is active.")}</p>`
+        : "";
+      document.getElementById("gate-alpha").innerHTML = `
+        ${testLabel}
+        <div class="metric-grid">
+          ${metric("Metric rows", number(alpha.total_metric_rows))}
+          ${metric("Global gate uses", number(alpha.total_global_samples))}
+        </div>
+        <div class="pattern-card-grid">
+          ${alphaMetricCard("Top Performing Gate", alpha.top_performing_gate, "expectancy")}
+          ${alphaMetricCard("Worst Performing Gate", alpha.worst_performing_gate, "expectancy")}
+          ${alphaMetricCard("Highest Confidence Gate", alpha.highest_confidence_gate, "confidence_score")}
+          ${alphaMetricCard("Most Used Gate", alpha.most_used_gate, "sample_count")}
+        </div>
+        ${rows.length ? `
+          <div class="table-wrap" style="margin-top:14px;">
+            <table>
+              <thead><tr><th>Gate</th><th>Uses</th><th>Win Rate</th><th>Expectancy</th><th>Avg Return</th><th>Confidence</th></tr></thead>
+              <tbody>
+                ${rows.map((row) => `
+                  <tr>
+                    <td>${escapeHtml(row.gate_name)}</td>
+                    <td>${number(row.sample_count)}</td>
+                    <td>${Number(row.win_rate || 0).toFixed(2)}%</td>
+                    <td>${Number(row.expectancy || 0).toFixed(4)}</td>
+                    <td>${Number(row.avg_return || 0).toFixed(4)}%</td>
+                    <td>${Number(row.confidence_score || 0).toFixed(2)}%</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : "<p class=\"hint\">Gate Alpha will populate after completed outcomes exist for scans with gate attribution rows.</p>"}
+      `;
+    }
+
+    async function createGateAlphaTestRecord() {
+      const button = document.getElementById("gate-alpha-test-button");
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.classList.add("is-loading");
+      button.textContent = "Creating...";
+      statusEl.textContent = "Creating Gate Alpha sandbox test data...";
+      try {
+        const response = await fetch("/api/control/gate-alpha/test-record", {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+        });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.message || `HTTP ${response.status}`);
+        }
+        renderGateAlpha({
+          gate_alpha: data.gate_alpha,
+          test_record: {
+            label: data.label || "Sandbox test data",
+            message: `${data.message || "Gate Alpha test record ready."} test_result_id=${data.test_result_id || "n/a"}`,
+          },
+        });
+        statusEl.textContent = "Gate Alpha sandbox test data created";
+      } catch (error) {
+        statusEl.textContent = "Gate Alpha test record creation failed";
+        console.error("Gate Alpha test record creation failed", error);
+      } finally {
+        button.disabled = false;
+        button.classList.remove("is-loading");
+        button.textContent = originalText;
+      }
+    }
+
+    async function rebuildGateAlpha() {
+      const button = document.getElementById("gate-alpha-button");
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.classList.add("is-loading");
+      button.textContent = "Rebuilding...";
+      statusEl.textContent = "Rebuilding...";
+      try {
+        const response = await fetch("/api/control/gate-alpha", {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+        });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.message || `HTTP ${response.status}`);
+        }
+        renderGateAlpha(data);
+        statusEl.textContent = "Gate Alpha rebuilt successfully";
+      } catch (error) {
+        statusEl.textContent = "Gate Alpha rebuild failed";
+        console.error("Gate Alpha rebuild failed", error);
+      } finally {
+        button.disabled = false;
+        button.classList.remove("is-loading");
+        button.textContent = originalText;
+      }
+    }
+
+    function regimeCard(title, row) {
+      if (!row) {
+        return `
+          <div class="pattern-card">
+            <div class="pattern-title">${escapeHtml(title)}</div>
+            <div class="pattern-direction">n/a</div>
+            <div class="pattern-confidence">Collecting</div>
+          </div>
+        `;
+      }
+      return `
+        <div class="pattern-card" title="${escapeHtml(row.regime || "")}">
+          <div class="pattern-title">${escapeHtml(title)}</div>
+          <div class="pattern-direction">${escapeHtml(row.market_trend || "n/a")}</div>
+          <div class="pattern-sector">${escapeHtml(row.volatility_regime || "n/a")} vol | ${escapeHtml(row.liquidity_regime || "n/a")} liquidity</div>
+          <div class="pattern-confidence">${Number(row.expectancy || 0).toFixed(4)} / n=${number(row.sample_size)}</div>
+        </div>
+      `;
+    }
+
+    function renderRegimeIntelligence(data) {
+      const regime = data.regime_intelligence || {};
+      const rows = regime.leaderboard || [];
+      document.getElementById("regime-intelligence").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Regime snapshots", number(regime.total_regime_snapshots))}
+          ${metric("Completed regime samples", number(regime.completed_regime_samples))}
+        </div>
+        <div class="pattern-card-grid">
+          ${regimeCard("Strongest Bullish Regime", regime.strongest_bullish_regime)}
+          ${regimeCard("Strongest Bearish Regime", regime.strongest_bearish_regime)}
+          ${regimeCard("Highest Expectancy Regime", regime.highest_expectancy_regime)}
+          ${regimeCard("Weakest Regime", regime.weakest_regime)}
+        </div>
+        ${rows.length ? `
+          <div class="table-wrap" style="margin-top:14px;">
+            <table>
+              <thead><tr><th>Regime</th><th>Samples</th><th>Win Rate</th><th>Expectancy</th><th>Avg Return</th></tr></thead>
+              <tbody>
+                ${rows.map((row) => `
+                  <tr>
+                    <td>${escapeHtml(row.regime)}</td>
+                    <td>${number(row.sample_size)}</td>
+                    <td>${Number(row.win_rate || 0).toFixed(2)}%</td>
+                    <td>${Number(row.expectancy || 0).toFixed(4)}</td>
+                    <td>${Number(row.avg_return || 0).toFixed(4)}%</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : "<p class=\"hint\">Regime Intelligence will populate after new scans with regime snapshots have completed outcomes.</p>"}
+      `;
+    }
+
+    async function rebuildRegimeIntelligence() {
+      const button = document.getElementById("regime-intelligence-button");
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.classList.add("is-loading");
+      button.textContent = "Rebuilding...";
+      statusEl.textContent = "Rebuilding Regime Intelligence...";
+      try {
+        const response = await fetch("/api/control/regime-intelligence", {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+        });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.message || `HTTP ${response.status}`);
+        }
+        renderRegimeIntelligence(data);
+        statusEl.textContent = "Regime Intelligence rebuilt successfully";
+      } catch (error) {
+        statusEl.textContent = "Regime Intelligence rebuild failed";
+        console.error("Regime Intelligence rebuild failed", error);
+      } finally {
+        button.disabled = false;
+        button.classList.remove("is-loading");
+        button.textContent = originalText;
+      }
     }
 
     async function rebuildPatterns() {
@@ -1064,6 +1302,8 @@
       renderAnomalyMonitor(data);
       renderPatternIntelligence(data);
       renderGateAttribution(data);
+      renderGateAlpha(data);
+      renderRegimeIntelligence(data);
       renderHealth(data.system_health || []);
       renderDataVolume(data);
       renderVersioning(data);
@@ -1083,9 +1323,19 @@
       }
     }
 
-    document.getElementById("self-audit-button").addEventListener("click", runSelfAudit);
-    document.getElementById("backfill-button").addEventListener("click", runBackfill);
-    document.getElementById("patterns-button").addEventListener("click", rebuildPatterns);
+    function bindButton(id, handler) {
+      const button = document.getElementById(id);
+      if (button) {
+        button.addEventListener("click", handler);
+      }
+    }
+
+    bindButton("self-audit-button", runSelfAudit);
+    bindButton("backfill-button", runBackfill);
+    bindButton("patterns-button", rebuildPatterns);
+    bindButton("gate-alpha-button", rebuildGateAlpha);
+    bindButton("gate-alpha-test-button", createGateAlphaTestRecord);
+    bindButton("regime-intelligence-button", rebuildRegimeIntelligence);
 
     loadSummary();
   </script>

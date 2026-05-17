@@ -209,6 +209,39 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "created_at_utc": "TEXT",
         },
     },
+    "gate_alpha_metrics": {
+        "table": "gate_alpha_metrics",
+        "columns": {
+            "id": "INTEGER",
+            "gate_name": "TEXT",
+            "sector": "TEXT",
+            "market_regime": "TEXT",
+            "volatility_regime": "TEXT",
+            "sample_count": "INTEGER",
+            "wins": "INTEGER",
+            "losses": "INTEGER",
+            "win_rate": "REAL",
+            "avg_return": "REAL",
+            "expectancy": "REAL",
+            "confidence_score": "REAL",
+            "last_updated_utc": "TEXT",
+        },
+    },
+    "regime_snapshots": {
+        "table": "regime_snapshots",
+        "columns": {
+            "id": "INTEGER",
+            "scan_id": "INTEGER",
+            "ticker": "TEXT",
+            "sector": "TEXT",
+            "market_trend": "TEXT",
+            "volatility_regime": "TEXT",
+            "liquidity_regime": "TEXT",
+            "earnings_proximity": "TEXT",
+            "macro_bias": "TEXT",
+            "timestamp": "TEXT",
+        },
+    },
 }
 
 

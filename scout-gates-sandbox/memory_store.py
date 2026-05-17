@@ -206,6 +206,45 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_gate_attributions_created
                 ON gate_attributions(created_at_utc DESC);
 
+            CREATE TABLE IF NOT EXISTS gate_alpha_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gate_name TEXT NOT NULL,
+                sector TEXT NOT NULL,
+                market_regime TEXT NOT NULL,
+                volatility_regime TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                wins INTEGER NOT NULL,
+                losses INTEGER NOT NULL,
+                win_rate REAL NOT NULL,
+                avg_return REAL NOT NULL,
+                expectancy REAL NOT NULL,
+                confidence_score REAL NOT NULL,
+                last_updated_utc TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_alpha_identity
+                ON gate_alpha_metrics(gate_name, sector, market_regime, volatility_regime);
+            CREATE INDEX IF NOT EXISTS idx_gate_alpha_expectancy
+                ON gate_alpha_metrics(expectancy DESC, confidence_score DESC);
+
+            CREATE TABLE IF NOT EXISTS regime_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                sector TEXT,
+                market_trend TEXT NOT NULL,
+                volatility_regime TEXT NOT NULL,
+                liquidity_regime TEXT NOT NULL,
+                earnings_proximity TEXT NOT NULL,
+                macro_bias TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_regime_snapshots_identity
+                ON regime_snapshots(scan_id, ticker);
+            CREATE INDEX IF NOT EXISTS idx_regime_snapshots_regime
+                ON regime_snapshots(market_trend, volatility_regime, liquidity_regime);
+
             CREATE TABLE IF NOT EXISTS gate_intelligence_metrics (
                 gate_key TEXT PRIMARY KEY,
                 gate_name TEXT NOT NULL,
@@ -484,6 +523,136 @@ def save_gate_attributions(
             )
             for row in attributions
         ],
+    )
+
+
+def lower_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def classify_market_trend(source: dict[str, Any]) -> str:
+    trend_text = lower_text(
+        first_present(source, ("market_trend", "marketTrend", "spy_trend", "spyTrend", "trend_state", "trendState", "trend"))
+    )
+    if any(token in trend_text for token in ("bull", "uptrend", "risk_on", "positive")):
+        return "bullish"
+    if any(token in trend_text for token in ("bear", "downtrend", "risk_off", "negative")):
+        return "bearish"
+    edge = to_optional_float(first_present(source, ("netDirectionalEdge", "net_direction", "breadth_score", "breadthScore")))
+    if edge is not None:
+        if edge >= 10:
+            return "bullish"
+        if edge <= -10:
+            return "bearish"
+    return "neutral"
+
+
+def classify_volatility_regime(source: dict[str, Any]) -> str:
+    iv = to_optional_float(first_present(source, ("iv_percentile", "ivPercentile", "iv_rank", "ivRank")))
+    if iv is not None:
+        if iv >= 85:
+            return "extreme"
+        if iv >= 60:
+            return "elevated"
+        if iv <= 30:
+            return "low"
+        return "normal"
+    vix = to_optional_float(first_present(source, ("vix_level", "vixLevel", "vix")))
+    if vix is not None:
+        if vix >= 30:
+            return "extreme"
+        if vix >= 20:
+            return "elevated"
+        if vix <= 15:
+            return "low"
+        return "normal"
+    return "normal"
+
+
+def classify_liquidity_regime(source: dict[str, Any]) -> str:
+    relative_volume = to_optional_float(first_present(source, ("relative_volume", "relativeVolume", "volume_ratio", "volumeRatio")))
+    if relative_volume is not None:
+        if relative_volume >= 1.5:
+            return "strong"
+        if relative_volume <= 0.8:
+            return "weak"
+        return "normal"
+    options_score = to_optional_float(first_present(source, ("options_volume_score", "optionsVolumeScore")))
+    if options_score is not None:
+        if options_score >= 70:
+            return "strong"
+        if options_score <= 35:
+            return "weak"
+    return "normal"
+
+
+def classify_earnings_proximity(source: dict[str, Any]) -> str:
+    days = to_optional_float(first_present(source, ("earnings_days_away", "earnings_days", "earningsDays", "days_to_earnings")))
+    if days is None:
+        return "unknown"
+    if days <= 7:
+        return "immediate"
+    if days <= 30:
+        return "near"
+    return "clear"
+
+
+def classify_macro_bias(source: dict[str, Any]) -> str:
+    text = lower_text(first_present(source, ("macro_bias", "macroBias", "risk_regime", "riskRegime")))
+    if any(token in text for token in ("bull", "risk_on", "positive", "expansion")):
+        return "bullish"
+    if any(token in text for token in ("bear", "risk_off", "negative", "contraction", "defensive")):
+        return "bearish"
+    breadth = to_optional_float(first_present(source, ("breadth_score", "breadthScore")))
+    if breadth is not None:
+        if breadth >= 60:
+            return "bullish"
+        if breadth <= 40:
+            return "bearish"
+    return "neutral"
+
+
+def build_regime_snapshot(
+    result: dict[str, Any],
+    feature_vector: dict[str, Any],
+    scan_id: int,
+    timestamp: str,
+) -> dict[str, Any]:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    direction = result.get("directionBreakdown") if isinstance(result.get("directionBreakdown"), dict) else {}
+    source = {**raw, **result, **direction, **feature_vector}
+    return {
+        "scan_id": scan_id,
+        "ticker": str(result.get("ticker") or raw.get("ticker") or ""),
+        "sector": first_present(source, ("sector", "sector_name", "sectorName")),
+        "market_trend": classify_market_trend(source),
+        "volatility_regime": classify_volatility_regime(source),
+        "liquidity_regime": classify_liquidity_regime(source),
+        "earnings_proximity": classify_earnings_proximity(source),
+        "macro_bias": classify_macro_bias(source),
+        "timestamp": timestamp,
+    }
+
+
+def save_regime_snapshot(conn: sqlite3.Connection, snapshot: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO regime_snapshots (
+            scan_id, ticker, sector, market_trend, volatility_regime,
+            liquidity_regime, earnings_proximity, macro_bias, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot["scan_id"],
+            snapshot["ticker"],
+            snapshot.get("sector"),
+            snapshot["market_trend"],
+            snapshot["volatility_regime"],
+            snapshot["liquidity_regime"],
+            snapshot["earnings_proximity"],
+            snapshot["macro_bias"],
+            snapshot["timestamp"],
+        ),
     )
 
 
@@ -814,6 +983,15 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+            save_regime_snapshot(
+                conn,
+                build_regime_snapshot(
+                    result,
+                    feature_vector,
+                    run_id,
+                    timestamp or created_at_utc,
+                ),
+            )
             try:
                 save_feature_vector(
                     conn,
@@ -983,6 +1161,165 @@ def create_outcome_test_record(
         "timestamp": synthetic_timestamp,
         "days_old": days_old,
     }
+
+
+def create_gate_alpha_test_record() -> dict[str, Any]:
+    """Create one marked sandbox outcome row linked to the latest attributed scan."""
+    init_db()
+    created_at = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        source = conn.execute(
+            """
+            SELECT sr.*
+            FROM scan_results sr
+            JOIN (
+                SELECT scan_id, ticker
+                FROM gate_attributions
+                WHERE scan_id = (SELECT MAX(scan_id) FROM gate_attributions)
+                ORDER BY gate_rank ASC
+                LIMIT 1
+            ) ga
+              ON ga.scan_id = sr.run_id AND ga.ticker = sr.ticker
+            WHERE COALESCE(sr.is_test_record, 0) = 0
+            ORDER BY sr.scout_score DESC, sr.id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if source is None:
+            raise ValueError("No attributed scan was found. Run a new sandbox scan before creating Gate Alpha test data.")
+
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM scan_results
+            WHERE run_id = ?
+              AND ticker = ?
+              AND COALESCE(is_test_record, 0) = 1
+              AND outcome = 'SANDBOX_GATE_ALPHA_TEST'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (source["run_id"], source["ticker"]),
+        ).fetchone()
+        if existing is not None:
+            refresh_gate_alpha_metrics(conn)
+            return {
+                "ok": True,
+                "created": False,
+                "source_result_id": source["id"],
+                "test_result_id": existing["id"],
+                "scan_id": source["run_id"],
+                "ticker": source["ticker"],
+                "label": "Sandbox test data",
+                "message": "Existing Gate Alpha sandbox test record reused.",
+                "gate_alpha": get_gate_alpha_summary(conn),
+            }
+
+        raw_inputs = json_load(source["raw_fmp_inputs_json"]) or {}
+        if not isinstance(raw_inputs, dict):
+            raw_inputs = {"source_raw_fmp_inputs": raw_inputs}
+        raw_inputs.update(
+            {
+                "sandbox_test_data": True,
+                "gate_alpha_test_bridge": True,
+                "source_result_id": source["id"],
+                "source_scan_id": source["run_id"],
+                "created_at_utc": created_at,
+            }
+        )
+
+        raw_result = json_load(source["raw_result_json"]) or {}
+        if isinstance(raw_result, dict):
+            raw_result = {
+                **raw_result,
+                "sandbox_test_data": True,
+                "gate_alpha_test_bridge": True,
+                "source_result_id": source["id"],
+                "source_scan_id": source["run_id"],
+            }
+
+        cursor = conn.execute(
+            """
+            INSERT INTO scan_results (
+                run_id, timestamp, ticker, scout_score, bull_score, bear_score,
+                net_direction, final_direction, final_option_pick_json,
+                gates_json, gate_explanations_json, failed_gates_json,
+                failure_reasons_json, raw_fmp_inputs_json, raw_result_json,
+                entry_price, option_entry_price, stock_outcome_label,
+                option_outcome_label, result_notes, is_test_record, outcome,
+                return_1d, return_3d, return_5d, return_10d, return_20d,
+                gate_snapshot_json, feature_vector_json, explanation_json, engine_version,
+                outcome_last_updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source["run_id"],
+                created_at,
+                source["ticker"],
+                source["scout_score"],
+                source["bull_score"],
+                source["bear_score"],
+                source["net_direction"],
+                source["final_direction"],
+                source["final_option_pick_json"],
+                source["gates_json"],
+                source["gate_explanations_json"],
+                source["failed_gates_json"],
+                source["failure_reasons_json"],
+                json_dump(raw_inputs),
+                json_dump(raw_result),
+                source["entry_price"],
+                source["option_entry_price"],
+                "WIN",
+                "PENDING",
+                (
+                    "Sandbox test data: Gate Alpha bridge completed outcome. "
+                    f"Source scan_results.id={source['id']} scan_id={source['run_id']}. "
+                    "Not real trade history."
+                ),
+                1,
+                "SANDBOX_GATE_ALPHA_TEST",
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                source["gate_snapshot_json"],
+                source["feature_vector_json"],
+                source["explanation_json"],
+                source["engine_version"] or current_engine_version(),
+                created_at,
+            ),
+        )
+        test_result_id = int(cursor.lastrowid)
+        log_outcome_update_audit(
+            conn,
+            created_at,
+            source["ticker"],
+            test_result_id,
+            {},
+            {
+                "stock_outcome_label": "WIN",
+                "return_20d": 5.0,
+                "is_test_record": 1,
+                "outcome": "SANDBOX_GATE_ALPHA_TEST",
+                "label": "Sandbox test data",
+            },
+            "sandbox_gate_alpha_test_bridge",
+            source["engine_version"] or current_engine_version(),
+        )
+        refresh_gate_alpha_metrics(conn)
+        return {
+            "ok": True,
+            "created": True,
+            "source_result_id": source["id"],
+            "test_result_id": test_result_id,
+            "scan_id": source["run_id"],
+            "ticker": source["ticker"],
+            "label": "Sandbox test data",
+            "message": "Gate Alpha sandbox test record created.",
+            "gate_alpha": get_gate_alpha_summary(conn),
+        }
 
 
 def row_to_result(row: sqlite3.Row) -> dict[str, Any]:
@@ -1421,6 +1758,19 @@ def rebuild_patterns() -> dict[str, Any]:
     return {"ok": True, "rebuild": rebuild, "pattern_intelligence": summary}
 
 
+def rebuild_gate_alpha() -> dict[str, Any]:
+    init_db()
+    with connect() as conn:
+        rebuild = refresh_gate_alpha_metrics(conn)
+        summary = get_gate_alpha_summary(conn)
+    return {"ok": True, "rebuild": rebuild, "gate_alpha": summary}
+
+
+def rebuild_regime_intelligence() -> dict[str, Any]:
+    init_db()
+    return {"ok": True, "regime_intelligence": get_regime_intelligence_summary()}
+
+
 def average(values: list[float]) -> Optional[float]:
     return round(sum(values) / len(values), 4) if values else None
 
@@ -1431,6 +1781,314 @@ def standard_deviation(values: list[float]) -> float:
     mean = sum(values) / len(values)
     variance = sum((value - mean) ** 2 for value in values) / len(values)
     return math.sqrt(variance)
+
+
+def final_outcome_return(row: sqlite3.Row) -> Optional[float]:
+    for field in ("return_20d", "return_10d", "return_5d", "return_3d", "return_1d"):
+        value = to_optional_float(row[field])
+        if value is not None:
+            return value
+    return None
+
+
+def alpha_feature_payload(row: sqlite3.Row) -> dict[str, Any]:
+    raw_feature = json_load(row["raw_feature_json"])
+    if isinstance(raw_feature, dict):
+        return raw_feature
+    raw_result = json_load(row["raw_result_json"])
+    return raw_result if isinstance(raw_result, dict) else {}
+
+
+def normalize_segment(value: Any, fallback: str = "UNKNOWN") -> str:
+    text = str(value or "").strip()
+    return text.upper() if text else fallback
+
+
+def volatility_regime_from_features(row: sqlite3.Row, feature: dict[str, Any]) -> str:
+    iv_percentile = to_optional_float(row["iv_percentile"])
+    if iv_percentile is None:
+        iv_percentile = to_optional_float(first_present(feature, ("iv_percentile", "ivPercentile", "iv_rank", "ivRank")))
+    if iv_percentile is not None:
+        if iv_percentile >= 70:
+            return "HIGH_VOL"
+        if iv_percentile <= 30:
+            return "LOW_VOL"
+        return "NORMAL_VOL"
+
+    vix_level = to_optional_float(row["vix_level"])
+    if vix_level is None:
+        vix_level = to_optional_float(first_present(feature, ("vix_level", "vixLevel", "vix")))
+    if vix_level is not None:
+        if vix_level >= 25:
+            return "HIGH_VOL"
+        if vix_level <= 15:
+            return "LOW_VOL"
+        return "NORMAL_VOL"
+    return "UNKNOWN"
+
+
+def alpha_segments(sector: str, market_regime: str, volatility_regime: str) -> list[tuple[str, str, str]]:
+    segments = [
+        ("GLOBAL", "GLOBAL", "GLOBAL"),
+        (sector, "GLOBAL", "GLOBAL"),
+        ("GLOBAL", market_regime, "GLOBAL"),
+        ("GLOBAL", "GLOBAL", volatility_regime),
+    ]
+    full_segment = (sector, market_regime, volatility_regime)
+    if full_segment not in segments:
+        segments.append(full_segment)
+    return segments
+
+
+def gate_alpha_confidence(sample_count: int, win_rate: float, returns: list[float]) -> float:
+    if sample_count <= 0:
+        return 0.0
+    sample_score = min(math.log1p(sample_count) / math.log1p(50), 1.0)
+    consistency_score = abs((win_rate / 100.0) - 0.5) * 2
+    stability_score = 1.0 / (1.0 + (standard_deviation(returns) / 10.0))
+    return round((0.45 * sample_score + 0.35 * consistency_score + 0.20 * stability_score) * 100, 2)
+
+
+def refresh_gate_alpha_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT sr.id AS recommendation_id, sr.run_id, sr.ticker, sr.raw_result_json,
+               sr.return_1d, sr.return_3d, sr.return_5d, sr.return_10d, sr.return_20d,
+               fv.sector_name, fv.risk_regime, fv.iv_percentile, fv.vix_level,
+               fv.raw_feature_json
+        FROM scan_results sr
+        JOIN gate_attributions ga
+          ON ga.scan_id = sr.run_id AND ga.ticker = sr.ticker
+        LEFT JOIN feature_vectors fv
+          ON fv.recommendation_id = sr.id
+        WHERE sr.stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+        GROUP BY sr.id
+        """
+    ).fetchall()
+    metrics: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    completed_rows = 0
+    attribution_rows = 0
+    for row in rows:
+        outcome_return = final_outcome_return(row)
+        if outcome_return is None:
+            continue
+        completed_rows += 1
+        feature = alpha_feature_payload(row)
+        sector = normalize_segment(row["sector_name"] or first_present(feature, ("sector", "sector_name", "sectorName")))
+        market_regime = normalize_segment(row["risk_regime"] or first_present(feature, ("risk_regime", "riskRegime", "market_regime", "marketRegime")))
+        volatility_regime = volatility_regime_from_features(row, feature)
+        gates = conn.execute(
+            """
+            SELECT gate_name
+            FROM gate_attributions
+            WHERE scan_id = ? AND ticker = ?
+            ORDER BY gate_rank ASC
+            """,
+            (row["run_id"], row["ticker"]),
+        ).fetchall()
+        for gate in gates:
+            attribution_rows += 1
+            gate_name = normalize_segment(gate["gate_name"])
+            for segment in alpha_segments(sector, market_regime, volatility_regime):
+                key = (gate_name, *segment)
+                item = metrics.setdefault(
+                    key,
+                    {"returns": [], "wins": 0, "losses": 0},
+                )
+                item["returns"].append(outcome_return)
+                if outcome_return > 0:
+                    item["wins"] += 1
+                else:
+                    item["losses"] += 1
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn.execute("DELETE FROM gate_alpha_metrics")
+    for (gate_name, sector, market_regime, volatility_regime), item in metrics.items():
+        sample_count = len(item["returns"])
+        wins = item["wins"]
+        losses = item["losses"]
+        win_rate = round(wins / sample_count * 100, 2) if sample_count else 0.0
+        avg_return = average(item["returns"]) or 0.0
+        expectancy = round(avg_return * (win_rate / 100.0), 4)
+        confidence = gate_alpha_confidence(sample_count, win_rate, item["returns"])
+        conn.execute(
+            """
+            INSERT INTO gate_alpha_metrics (
+                gate_name, sector, market_regime, volatility_regime,
+                sample_count, wins, losses, win_rate, avg_return,
+                expectancy, confidence_score, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                gate_name,
+                sector,
+                market_regime,
+                volatility_regime,
+                sample_count,
+                wins,
+                losses,
+                win_rate,
+                avg_return,
+                expectancy,
+                confidence,
+                updated_at,
+            ),
+        )
+    return {
+        "completed_outcomes_checked": completed_rows,
+        "attribution_rows_checked": attribution_rows,
+        "metric_rows": len(metrics),
+        "last_updated_utc": updated_at,
+    }
+
+
+def gate_alpha_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "gate_name": row["gate_name"],
+        "sector": row["sector"],
+        "market_regime": row["market_regime"],
+        "volatility_regime": row["volatility_regime"],
+        "sample_count": row["sample_count"],
+        "wins": row["wins"],
+        "losses": row["losses"],
+        "win_rate": row["win_rate"],
+        "avg_return": row["avg_return"],
+        "expectancy": row["expectancy"],
+        "confidence_score": row["confidence_score"],
+        "last_updated_utc": row["last_updated_utc"],
+    }
+
+
+def get_gate_alpha_summary(conn: Optional[sqlite3.Connection] = None) -> dict[str, Any]:
+    if conn is None:
+        init_db()
+    should_close = conn is None
+    active_conn = conn or connect()
+    try:
+        global_filter = "sector = 'GLOBAL' AND market_regime = 'GLOBAL' AND volatility_regime = 'GLOBAL'"
+        total_metrics = count_rows(active_conn, "gate_alpha_metrics")
+        total_global_samples = int(
+            active_conn.execute(
+                f"SELECT COALESCE(SUM(sample_count), 0) FROM gate_alpha_metrics WHERE {global_filter}"
+            ).fetchone()[0]
+            or 0
+        )
+        top = active_conn.execute(
+            f"SELECT * FROM gate_alpha_metrics WHERE {global_filter} ORDER BY expectancy DESC, sample_count DESC LIMIT 1"
+        ).fetchone()
+        worst = active_conn.execute(
+            f"SELECT * FROM gate_alpha_metrics WHERE {global_filter} ORDER BY expectancy ASC, sample_count DESC LIMIT 1"
+        ).fetchone()
+        confidence = active_conn.execute(
+            f"SELECT * FROM gate_alpha_metrics WHERE {global_filter} ORDER BY confidence_score DESC, sample_count DESC LIMIT 1"
+        ).fetchone()
+        most_used = active_conn.execute(
+            f"SELECT * FROM gate_alpha_metrics WHERE {global_filter} ORDER BY sample_count DESC, confidence_score DESC LIMIT 1"
+        ).fetchone()
+        leaderboard = [
+            gate_alpha_row(row)
+            for row in active_conn.execute(
+                f"""
+                SELECT * FROM gate_alpha_metrics
+                WHERE {global_filter}
+                ORDER BY expectancy DESC, confidence_score DESC, sample_count DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        ]
+        return {
+            "ok": True,
+            "total_metric_rows": total_metrics,
+            "total_global_samples": total_global_samples,
+            "top_performing_gate": gate_alpha_row(top) if top else None,
+            "worst_performing_gate": gate_alpha_row(worst) if worst else None,
+            "highest_confidence_gate": gate_alpha_row(confidence) if confidence else None,
+            "most_used_gate": gate_alpha_row(most_used) if most_used else None,
+            "leaderboard": leaderboard,
+        }
+    finally:
+        if should_close:
+            active_conn.close()
+
+
+def regime_key(row: sqlite3.Row) -> str:
+    return " | ".join(
+        [
+            f"trend:{row['market_trend']}",
+            f"vol:{row['volatility_regime']}",
+            f"liq:{row['liquidity_regime']}",
+            f"macro:{row['macro_bias']}",
+        ]
+    )
+
+
+def regime_summary_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "regime": regime_key(row),
+        "market_trend": row["market_trend"],
+        "volatility_regime": row["volatility_regime"],
+        "liquidity_regime": row["liquidity_regime"],
+        "macro_bias": row["macro_bias"],
+        "sample_size": row["sample_size"],
+        "wins": row["wins"],
+        "losses": row["losses"],
+        "win_rate": row["win_rate"],
+        "avg_return": row["avg_return"],
+        "expectancy": row["expectancy"],
+    }
+
+
+def get_regime_intelligence_summary(conn: Optional[sqlite3.Connection] = None) -> dict[str, Any]:
+    if conn is None:
+        init_db()
+    should_close = conn is None
+    active_conn = conn or connect()
+    try:
+        query = """
+            SELECT rs.market_trend, rs.volatility_regime, rs.liquidity_regime, rs.macro_bias,
+                   COUNT(*) AS sample_size,
+                   SUM(CASE WHEN COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) <= 0 THEN 1 ELSE 0 END) AS losses,
+                   ROUND(
+                       SUM(CASE WHEN COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) > 0 THEN 1 ELSE 0 END)
+                       * 100.0 / COUNT(*),
+                       2
+                   ) AS win_rate,
+                   ROUND(AVG(COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d)), 4) AS avg_return,
+                   ROUND(
+                       AVG(COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d))
+                       * (
+                           SUM(CASE WHEN COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) > 0 THEN 1 ELSE 0 END)
+                           * 1.0 / COUNT(*)
+                       ),
+                       4
+                   ) AS expectancy
+            FROM regime_snapshots rs
+            JOIN scan_results sr
+              ON sr.run_id = rs.scan_id AND sr.ticker = rs.ticker
+            WHERE sr.stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+              AND COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) IS NOT NULL
+            GROUP BY rs.market_trend, rs.volatility_regime, rs.liquidity_regime, rs.macro_bias
+        """
+        rows = active_conn.execute(query).fetchall()
+        sorted_by_expectancy = sorted(rows, key=lambda row: (row["expectancy"] or 0, row["sample_size"]), reverse=True)
+        strongest_bullish = next((row for row in sorted_by_expectancy if row["market_trend"] == "bullish"), None)
+        strongest_bearish = next((row for row in sorted_by_expectancy if row["market_trend"] == "bearish"), None)
+        highest = sorted_by_expectancy[0] if sorted_by_expectancy else None
+        weakest = sorted(rows, key=lambda row: (row["expectancy"] or 0, -row["sample_size"]))[0] if rows else None
+        return {
+            "ok": True,
+            "total_regime_snapshots": count_rows(active_conn, "regime_snapshots"),
+            "completed_regime_samples": sum(int(row["sample_size"] or 0) for row in rows),
+            "strongest_bullish_regime": regime_summary_row(strongest_bullish) if strongest_bullish else None,
+            "strongest_bearish_regime": regime_summary_row(strongest_bearish) if strongest_bearish else None,
+            "highest_expectancy_regime": regime_summary_row(highest) if highest else None,
+            "weakest_regime": regime_summary_row(weakest) if weakest else None,
+            "leaderboard": [regime_summary_row(row) for row in sorted_by_expectancy[:12]],
+        }
+    finally:
+        if should_close:
+            active_conn.close()
 
 
 def completed_gate_entries(row: sqlite3.Row) -> list[dict[str, Any]]:
@@ -1957,11 +2615,15 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "feature_vectors": count_rows(conn, "feature_vectors"),
             "pattern_intelligence": count_rows(conn, "pattern_intelligence"),
             "gate_attributions": count_rows(conn, "gate_attributions"),
+            "gate_alpha_metrics": count_rows(conn, "gate_alpha_metrics"),
+            "regime_snapshots": count_rows(conn, "regime_snapshots"),
         }
         feature_intelligence = get_feature_intelligence_summary(conn)
         anomaly_monitor = get_anomaly_monitor(conn)
         pattern_intelligence = get_pattern_intelligence(conn)
         gate_attribution = get_gate_attribution_summary()
+        gate_alpha = get_gate_alpha_summary(conn)
+        regime_intelligence = get_regime_intelligence_summary(conn)
         totals = {
             "saved_scans": rows_by_table["scan_runs"],
             "saved_recommendations": rows_by_table["scan_results"],
@@ -2000,6 +2662,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "audit_log_entries": rows_by_table["outcome_update_audit"] + rows_by_table["institutional_audit_log"],
             "feature_vectors": feature_intelligence["total_feature_vectors"],
             "gate_attributions": rows_by_table["gate_attributions"],
+            "gate_alpha_metrics": rows_by_table["gate_alpha_metrics"],
+            "regime_snapshots": rows_by_table["regime_snapshots"],
         }
         unique_tickers = int(
             conn.execute("SELECT COUNT(DISTINCT ticker) FROM scan_results").fetchone()[0] or 0
@@ -2158,6 +2822,14 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "name": "Gate Attribution",
             "status": readiness_status(totals["gate_attributions"] > 0, recommendations > 0),
         },
+        {
+            "name": "Gate Alpha",
+            "status": readiness_status(totals["gate_alpha_metrics"] > 0, completed > 0),
+        },
+        {
+            "name": "Regime Intelligence",
+            "status": readiness_status(totals["regime_snapshots"] > 0, completed > 0),
+        },
     ]
 
     progress = [
@@ -2173,6 +2845,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         },
         {"name": "Pattern Learning", "percent": progress_percent(pattern_intelligence["total_patterns_discovered"] / 25 * 100)},
         {"name": "Gate Attribution", "percent": progress_percent(totals["gate_attributions"] / max(recommendations * 10, 1) * 100)},
+        {"name": "Gate Alpha", "percent": progress_percent(totals["gate_alpha_metrics"] / 100 * 100)},
+        {"name": "Regime Intelligence", "percent": progress_percent(regime_intelligence["completed_regime_samples"] / max(completed, 1) * 100)},
     ]
 
     system_health = [
@@ -2184,6 +2858,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         {"name": "Outcome Engine", "status": health_status(completed > 0, recommendations > 0 and completed == 0)},
         {"name": "Feature Store", "status": health_status(totals["feature_vectors"] > 0, missing_feature_vectors > 0)},
         {"name": "Gate Attribution", "status": health_status(totals["gate_attributions"] > 0, recommendations > 0)},
+        {"name": "Gate Alpha", "status": health_status(totals["gate_alpha_metrics"] > 0, completed > 0)},
+        {"name": "Regime Intelligence", "status": health_status(totals["regime_snapshots"] > 0, completed > 0)},
     ]
     latest_immutable_run = (
         {
@@ -2222,6 +2898,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         "feature_intelligence": feature_intelligence,
         "pattern_intelligence": pattern_intelligence,
         "gate_attribution": gate_attribution,
+        "gate_alpha": gate_alpha,
+        "regime_intelligence": regime_intelligence,
         "schema_integrity": schema_integrity,
         "anomaly_monitor": anomaly_monitor,
         "latest_immutable_run": latest_immutable_run,
@@ -2256,6 +2934,8 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             {"path": "/api/control/backfill", "description": "Backfills missing institutional snapshots and audit events."},
             {"path": "/api/control/patterns", "description": "Rebuilds and returns Pattern Intelligence from immutable records."},
             {"path": "/api/control/attribution", "description": "Returns the latest Gate Attribution Intelligence payload."},
+            {"path": "/api/control/gate-alpha", "description": "Returns Gate Alpha Intelligence from completed attributed outcomes."},
+            {"path": "/api/control/regime-intelligence", "description": "Returns regime performance from completed forward regime snapshots."},
         ],
         "safety": {
             "active_model_training": False,
