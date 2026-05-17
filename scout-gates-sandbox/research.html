@@ -433,6 +433,8 @@
         <button class="button primary" id="update-outcomes-button" type="button">Update Outcomes</button>
         <a class="button" href="/api/memory/export.csv">Export CSV</a>
         <button class="button" id="print-button" type="button">Print / Save PDF</button>
+        <button class="button primary" id="memory-tab-button" type="button">Research Memory</button>
+        <button class="button" id="audit-tab-button" type="button">Audit Log</button>
       </div>
       <p class="hint">
         Test mode copies the ticker in the search box, or the latest saved recommendation if blank,
@@ -474,7 +476,7 @@
 
     <section class="metric-grid" id="metrics"></section>
 
-    <section class="grid">
+    <section class="grid" id="memory-view">
       <article class="card wide">
         <h2>Historical Scans</h2>
         <div class="table-wrap" id="history"></div>
@@ -501,6 +503,13 @@
         <div class="table-wrap" id="options"></div>
       </article>
     </section>
+
+    <section class="grid" id="audit-view" hidden>
+      <article class="card wide">
+        <h2>Audit Log</h2>
+        <div class="table-wrap" id="audit-log"></div>
+      </article>
+    </section>
   </main>
 
   <div id="outcome-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="outcome-modal-title">
@@ -523,6 +532,7 @@
     const outcomeModalClose = document.getElementById("outcome-modal-close");
     let summary = null;
     let currentHistory = [];
+    let activeView = "memory";
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -547,6 +557,19 @@
 
     function label(value) {
       return value || "PENDING";
+    }
+
+    function prettyJson(value) {
+      return JSON.stringify(value || {}, null, 2);
+    }
+
+    function switchView(view) {
+      activeView = view;
+      document.getElementById("memory-view").hidden = view !== "memory";
+      document.getElementById("metrics").hidden = view !== "memory";
+      document.getElementById("audit-view").hidden = view !== "audit";
+      document.getElementById("memory-tab-button").classList.toggle("primary", view === "memory");
+      document.getElementById("audit-tab-button").classList.toggle("primary", view === "audit");
     }
 
     function applyFilters(history) {
@@ -602,13 +625,15 @@
         <table>
           <thead>
             <tr>
-              <th>Time</th><th>Ticker</th><th>Score</th><th>Direction</th><th>1D</th><th>3D</th><th>5D</th><th>10D</th><th>20D</th><th>Outcome</th><th>Last Updated</th><th>Failed Gates</th><th>Why Outcome?</th>
+              <th>Time</th><th>Created</th><th>Engine</th><th>Ticker</th><th>Score</th><th>Direction</th><th>1D</th><th>3D</th><th>5D</th><th>10D</th><th>20D</th><th>Outcome</th><th>Last Updated</th><th>Failed Gates</th><th>Gate Snapshot</th><th>Why Outcome?</th>
             </tr>
           </thead>
           <tbody>
             ${history.map((row) => `
               <tr>
                 <td>${escapeHtml(shortDate(row.timestamp))}</td>
+                <td>${escapeHtml(shortDate(row.created_at))}</td>
+                <td>${escapeHtml(row.engine_version || "unknown")}</td>
                 <td><strong>${escapeHtml(row.ticker)}</strong></td>
                 <td>${escapeHtml(row.scout_score)}</td>
                 <td>${escapeHtml(row.final_direction)}</td>
@@ -620,6 +645,7 @@
                 <td><span class="pill">${escapeHtml(label(row.stock_outcome_label))}</span></td>
                 <td>${escapeHtml(shortDate(row.outcome_last_updated_at))}</td>
                 <td>${(row.failed_gates || []).map((gate) => `<span class="pill">${escapeHtml(gate)}</span>`).join("") || "None"}</td>
+                <td>${renderGateSnapshot(row)}</td>
                 <td><button class="button" type="button" data-outcome-id="${row.id}">Why Outcome?</button></td>
               </tr>
             `).join("")}
@@ -633,6 +659,35 @@
           if (row) openOutcomeModal(row);
         });
       });
+    }
+
+    function renderGateSnapshot(row) {
+      const snapshot = row.gate_snapshot;
+      if (!snapshot || !Array.isArray(snapshot.gates) || !snapshot.gates.length) {
+        return "Not captured";
+      }
+      return `
+        <details>
+          <summary>Gate Snapshot</summary>
+          <div>Engine version: ${escapeHtml(row.engine_version || snapshot.engine_version || snapshot.gate_engine_version || "unknown")}</div>
+          <div>Gate engine version: ${escapeHtml(snapshot.gate_engine_version || "unknown")}</div>
+          <div>Snapshot schema: ${escapeHtml(snapshot.snapshot_schema_version || "unknown")}</div>
+          <table>
+            <thead><tr><th>#</th><th>Gate</th><th>State</th><th>Raw Score</th><th>Notes</th></tr></thead>
+            <tbody>
+              ${snapshot.gates.map((gate) => `
+                <tr>
+                  <td>${escapeHtml(gate.index)}</td>
+                  <td>${escapeHtml(gate.name || gate.key || gate.code)}</td>
+                  <td>${gate.passed ? "PASS" : "FAIL"}</td>
+                  <td>${escapeHtml(gate.raw_score ?? "n/a")}</td>
+                  <td>${escapeHtml(gate.notes || gate.actual_value || "No notes captured.")}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </details>
+      `;
     }
 
     function renderHeatmap(stats) {
@@ -771,7 +826,36 @@
       renderFailures(data.topGateFailures || []);
       renderDirectionStats(data.directionAccuracy || []);
       renderOptions(data.optionPickHistory || []);
-      statusEl.textContent = `Loaded ${history.length} recent stored scan rows from local SQLite memory.`;
+      renderAuditLog(data.outcomeAuditLog || []);
+      switchView(activeView);
+      statusEl.textContent = `Loaded ${currentHistory.length} recent stored scan rows from local SQLite memory.`;
+    }
+
+    function renderAuditLog(rows) {
+      if (!rows.length) {
+        document.getElementById("audit-log").innerHTML = "<p class=\"hint\">No outcome audit entries yet.</p>";
+        return;
+      }
+      document.getElementById("audit-log").innerHTML = `
+        <table>
+          <thead>
+            <tr><th>Timestamp</th><th>Ticker</th><th>Row ID</th><th>Engine</th><th>Source Endpoint</th><th>Old Values</th><th>New Values</th></tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(shortDate(row.timestamp))}</td>
+                <td>${escapeHtml(row.ticker)}</td>
+                <td>${escapeHtml(row.row_id)}</td>
+                <td>${escapeHtml(row.engine_version || "unknown")}</td>
+                <td>${escapeHtml(row.source_endpoint || "unknown")}</td>
+                <td><pre>${escapeHtml(prettyJson(row.old_values))}</pre></td>
+                <td><pre>${escapeHtml(prettyJson(row.new_values))}</pre></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
     }
 
     async function loadSummary() {
@@ -803,8 +887,13 @@
         body: JSON.stringify({ limit: 500, timeout: 25 }),
       });
       const result = await response.json();
-      statusEl.textContent = `Outcome update checked ${result.records_checked || 0}, updated ${result.records_updated || 0}, pending ${result.records_still_pending || 0}. ${(result.errors || []).join("; ")}`;
       await loadSummary();
+      const sample = (result.details || [])
+        .filter((detail) => detail.ticker)
+        .slice(0, 3)
+        .map((detail) => `${detail.ticker}: ${Object.keys(detail.prices_found || {}).join(", ") || detail.still_pending_reason || "checked"}`)
+        .join(" | ");
+      statusEl.textContent = `Outcome update checked ${result.records_checked || 0}, updated ${result.records_updated || 0}, pending ${result.records_pending || 0}. ${sample} ${(result.errors || []).join("; ")}`;
     }
 
     async function createOutcomeTestRecord() {
@@ -845,6 +934,8 @@
       }
     });
     document.getElementById("print-button").addEventListener("click", () => window.print());
+    document.getElementById("memory-tab-button").addEventListener("click", () => switchView("memory"));
+    document.getElementById("audit-tab-button").addEventListener("click", () => switchView("audit"));
     document.getElementById("update-outcomes-button").addEventListener("click", updateOutcomes);
     document.getElementById("create-test-record-button").addEventListener("click", createOutcomeTestRecord);
     outcomeModalClose.addEventListener("click", closeOutcomeModal);

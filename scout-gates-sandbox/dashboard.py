@@ -23,6 +23,7 @@ from memory_store import (
     get_gate_statistics,
     get_option_pick_history,
     get_outcome_analytics,
+    get_outcome_audit_log,
     get_ticker_history,
     get_top_gate_failures,
     save_scan_result,
@@ -205,6 +206,7 @@ def build_memory_summary() -> dict[str, Any]:
         "topGateFailures": get_top_gate_failures(),
         "optionPickHistory": get_option_pick_history(),
         "outcomeAnalytics": get_outcome_analytics(),
+        "outcomeAuditLog": get_outcome_audit_log(),
     }
 
 

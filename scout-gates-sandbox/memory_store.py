@@ -6,14 +6,26 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from engine_version import current_engine_version
+
 
 SANDBOX_DIR = Path(__file__).resolve().parent
 DB_PATH = SANDBOX_DIR / "scout_memory.db"
+GATE_SNAPSHOT_SCHEMA_VERSION = 1
+MEMORY_COLUMNS = {
+    "engine_version": "TEXT",
+    "gate_snapshot_json": "TEXT",
+    "feature_vector_json": "TEXT",
+}
+SCAN_RUN_COLUMNS = {
+    "universe_snapshot_json": "TEXT",
+}
 OUTCOME_COLUMNS = {
     "is_test_record": "INTEGER DEFAULT 0",
     "outcome": "TEXT",
@@ -28,6 +40,11 @@ OUTCOME_COLUMNS = {
     "return_5d": "REAL",
     "return_10d": "REAL",
     "return_20d": "REAL",
+    "stock_outcome_label_1d": "TEXT",
+    "stock_outcome_label_3d": "TEXT",
+    "stock_outcome_label_5d": "TEXT",
+    "stock_outcome_label_10d": "TEXT",
+    "stock_outcome_label_20d": "TEXT",
     "option_entry_price": "REAL",
     "option_price_after_1d": "REAL",
     "option_price_after_3d": "REAL",
@@ -105,6 +122,23 @@ def init_db() -> None:
                 ON scan_results(ticker, timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_scan_results_timestamp
                 ON scan_results(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS outcome_update_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                row_id INTEGER NOT NULL,
+                old_values_json TEXT NOT NULL,
+                new_values_json TEXT NOT NULL,
+                source_endpoint TEXT,
+                engine_version TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_outcome_audit_timestamp
+                ON outcome_update_audit(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_outcome_audit_row
+                ON outcome_update_audit(row_id, timestamp DESC);
             """
         )
         existing = {
@@ -113,6 +147,15 @@ def init_db() -> None:
         for column, column_type in OUTCOME_COLUMNS.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {column_type}")
+        for column, column_type in MEMORY_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {column_type}")
+        existing_runs = {
+            row["name"] for row in conn.execute("PRAGMA table_info(scan_runs)").fetchall()
+        }
+        for column, column_type in SCAN_RUN_COLUMNS.items():
+            if column not in existing_runs:
+                conn.execute(f"ALTER TABLE scan_runs ADD COLUMN {column} {column_type}")
 
 
 def failed_gate_names(result: dict[str, Any]) -> list[str]:
@@ -145,10 +188,178 @@ def compact_gate_results(result: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def gate_score_from_text(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    match = re.search(r"\bscore\s*:\s*(-?\d+(?:\.\d+)?)", str(value), re.I)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def gate_engine_version(result: dict[str, Any], payload: dict[str, Any], engine_version: str) -> Any:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    for source in (raw, result, payload):
+        for key in ("gate_engine_version", "gateEngineVersion", "engine_version", "version"):
+            value = source.get(key) if isinstance(source, dict) else None
+            if value not in (None, ""):
+                return value
+    return engine_version
+
+
+def build_gate_snapshot(
+    result: dict[str, Any],
+    payload: dict[str, Any],
+    engine_version: str,
+) -> dict[str, Any]:
+    explanations = result.get("explanation") or {}
+    if not isinstance(explanations, dict):
+        explanations = {}
+    explanation_by_key = {
+        str(gate.get("gate_key")): gate
+        for gate in explanations.get("gates", [])
+        if isinstance(gate, dict) and gate.get("gate_key")
+    }
+    snapshot_gates = []
+    for gate in result.get("gates", []):
+        if not isinstance(gate, dict):
+            continue
+        gate_key = str(gate.get("key") or gate.get("code") or gate.get("name") or "")
+        explanation = explanation_by_key.get(gate_key, {})
+        actual_value = explanation.get("actual_value")
+        snapshot_gates.append(
+            {
+                "index": gate.get("index"),
+                "key": gate_key,
+                "code": gate.get("code"),
+                "name": gate.get("name") or explanation.get("gate_name"),
+                "passed": gate.get("passed") is True,
+                "raw_score": gate_score_from_text(actual_value),
+                "actual_value": actual_value,
+                "required_value": explanation.get("required_value"),
+                "notes": explanation.get("explanation"),
+                "source_field": explanation.get("source_field"),
+            }
+        )
+    return {
+        "snapshot_schema_version": GATE_SNAPSHOT_SCHEMA_VERSION,
+        "gate_engine_version": gate_engine_version(result, payload, engine_version),
+        "engine_version": engine_version,
+        "ticker": result.get("ticker"),
+        "recommendation_timestamp": payload.get("runTimestamp"),
+        "api_url": payload.get("apiUrl"),
+        "gates": snapshot_gates,
+    }
+
+
+def first_present(source: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def market_cap_bucket(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        market_cap = float(value)
+    except (TypeError, ValueError):
+        return None
+    if market_cap >= 200_000_000_000:
+        return "mega"
+    if market_cap >= 10_000_000_000:
+        return "large"
+    if market_cap >= 2_000_000_000:
+        return "mid"
+    if market_cap >= 300_000_000:
+        return "small"
+    return "micro"
+
+
+def build_feature_vector(
+    result: dict[str, Any],
+    engine_version: str,
+    gate_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    source = {**raw, **result}
+    market_cap = first_present(source, ("market_cap", "marketCap", "mktCap"))
+    gate_scores = {
+        str(gate.get("key") or gate.get("code") or gate.get("name")): gate.get("raw_score")
+        for gate in gate_snapshot.get("gates", [])
+        if isinstance(gate, dict)
+    }
+    return {
+        "ticker": result.get("ticker") or raw.get("ticker"),
+        "sector": first_present(source, ("sector",)),
+        "market_cap_bucket": market_cap_bucket(market_cap),
+        "iv_rank": first_present(source, ("iv_rank", "ivRank", "iv_percentile", "ivPercentile")),
+        "beta": first_present(source, ("beta",)),
+        "atr": first_present(source, ("atr", "ATR")),
+        "rsi": first_present(source, ("rsi", "RSI")),
+        "volume_ratio": first_present(source, ("volume_ratio", "volumeRatio", "relative_volume", "relativeVolume")),
+        "float": first_present(source, ("float", "share_float", "floatShares", "sharesFloat")),
+        "earnings_days": first_present(source, ("earnings_days", "earningsDays", "days_to_earnings")),
+        "short_interest": first_present(source, ("short_interest", "shortInterest", "short_percent_float", "shortPercentFloat")),
+        "trend_state": first_present(source, ("trend_state", "trendState", "trend")),
+        "gate_scores": gate_scores,
+        "final_score": result.get("score") or raw.get("scout_score"),
+        "direction": result.get("direction") or raw.get("direction"),
+        "engine_version": engine_version,
+    }
+
+
+def rejection_reason(result: dict[str, Any]) -> str:
+    explanation = result.get("explanation") if isinstance(result.get("explanation"), dict) else {}
+    if explanation.get("summary"):
+        return str(explanation["summary"])
+    first_failed = result.get("firstFailedGate") if isinstance(result.get("firstFailedGate"), dict) else {}
+    if first_failed:
+        return f"Failed {first_failed.get('name') or first_failed.get('code') or 'gate'}."
+    failed = failed_gate_names(result)
+    if failed:
+        return f"Failed gates: {', '.join(failed)}."
+    return "Not selected as final recommendation."
+
+
+def build_universe_snapshot(payload: dict[str, Any], scan_id: int) -> dict[str, Any]:
+    scanned_tickers = [str(ticker) for ticker in payload.get("candidates") or []]
+    results = [row for row in payload.get("results", []) if isinstance(row, dict)]
+    rejected = [
+        {
+            "ticker": row.get("ticker"),
+            "score": row.get("score"),
+            "reason": rejection_reason(row),
+        }
+        for row in payload.get("rejected", [])
+        if isinstance(row, dict)
+    ]
+    top_scores = [
+        {
+            "ticker": row.get("ticker"),
+            "score": row.get("score"),
+            "direction": row.get("direction"),
+            "passed_all_gates": row.get("passedAllGates"),
+        }
+        for row in sorted(results, key=lambda item: item.get("score") or 0, reverse=True)[:20]
+    ]
+    return {
+        "scan_id": scan_id,
+        "timestamp": payload.get("runTimestamp"),
+        "universe_size": len(scanned_tickers),
+        "all_scanned_tickers": scanned_tickers,
+        "all_rejected_tickers": rejected,
+        "top_20_scores": top_scores,
+    }
+
+
 def save_scan_result(payload: dict[str, Any]) -> int:
     """Persist one completed dashboard run and all ticker rows."""
     init_db()
     timestamp = str(payload.get("runTimestamp") or "")
+    engine_version = current_engine_version()
     with connect() as conn:
         cursor = conn.execute(
             """
@@ -166,6 +377,11 @@ def save_scan_result(payload: dict[str, Any]) -> int:
             ),
         )
         run_id = int(cursor.lastrowid)
+        universe_snapshot = build_universe_snapshot(payload, run_id)
+        conn.execute(
+            "UPDATE scan_runs SET universe_snapshot_json = ? WHERE id = ?",
+            (json_dump(universe_snapshot), run_id),
+        )
 
         for result in payload.get("results", []):
             direction = result.get("directionBreakdown") or {}
@@ -174,6 +390,8 @@ def save_scan_result(payload: dict[str, Any]) -> int:
             explanations = result.get("explanation") or {}
             failed = failed_gate_names(result)
             reasons = failure_reasons(result)
+            gate_snapshot = build_gate_snapshot(result, payload, engine_version)
+            feature_vector = build_feature_vector(result, engine_version, gate_snapshot)
             raw_fmp_inputs = {
                 "raw_gate_response": result.get("raw"),
                 "option_pick": option_pick,
@@ -185,8 +403,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     run_id, timestamp, ticker, scout_score, bull_score, bear_score,
                     net_direction, final_direction, final_option_pick_json,
                     gates_json, gate_explanations_json, failed_gates_json,
-                    failure_reasons_json, raw_fmp_inputs_json, raw_result_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    failure_reasons_json, raw_fmp_inputs_json, raw_result_json,
+                    gate_snapshot_json, feature_vector_json, engine_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -204,6 +423,10 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     json_dump(reasons),
                     json_dump(raw_fmp_inputs),
                     json_dump(result),
+                    json_dump(gate_snapshot),
+                    json_dump(feature_vector),
+                    engine_version,
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
         return run_id
@@ -260,6 +483,25 @@ def create_outcome_test_record(
             ),
         )
         run_id = int(run_cursor.lastrowid)
+        test_universe_snapshot = {
+            "scan_id": run_id,
+            "timestamp": synthetic_timestamp,
+            "universe_size": 1,
+            "all_scanned_tickers": [source["ticker"]],
+            "all_rejected_tickers": [],
+            "top_20_scores": [
+                {
+                    "ticker": source["ticker"],
+                    "score": source["scout_score"],
+                    "direction": source["final_direction"],
+                    "passed_all_gates": None,
+                }
+            ],
+        }
+        conn.execute(
+            "UPDATE scan_runs SET universe_snapshot_json = ? WHERE id = ?",
+            (json_dump(test_universe_snapshot), run_id),
+        )
 
         raw_inputs = json_load(source["raw_fmp_inputs_json"]) or {}
         if not isinstance(raw_inputs, dict):
@@ -289,8 +531,9 @@ def create_outcome_test_record(
                 failure_reasons_json, raw_fmp_inputs_json, raw_result_json,
                 entry_price, option_entry_price, stock_outcome_label,
                 option_outcome_label, result_notes, is_test_record, outcome,
-                return_1d, return_3d, return_5d, return_10d, return_20d
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                return_1d, return_3d, return_5d, return_10d, return_20d,
+                gate_snapshot_json, feature_vector_json, engine_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -323,6 +566,9 @@ def create_outcome_test_record(
                 None,
                 None,
                 None,
+                source["gate_snapshot_json"],
+                source["feature_vector_json"],
+                source["engine_version"] or current_engine_version(),
             ),
         )
         result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -341,7 +587,9 @@ def row_to_result(row: sqlite3.Row) -> dict[str, Any]:
     result = {
         "id": row["id"],
         "run_id": row["run_id"],
+        "scan_id": row["run_id"],
         "timestamp": row["timestamp"],
+        "created_at": row["created_at"],
         "ticker": row["ticker"],
         "scout_score": row["scout_score"],
         "bull_score": row["bull_score"],
@@ -358,7 +606,68 @@ def row_to_result(row: sqlite3.Row) -> dict[str, Any]:
     }
     for column in OUTCOME_COLUMNS:
         result[column] = row[column]
+    for column in MEMORY_COLUMNS:
+        result[column.removesuffix("_json")] = (
+            json_load(row[column]) if column.endswith("_json") else row[column]
+        )
     return result
+
+
+def log_outcome_update_audit(
+    conn: sqlite3.Connection,
+    timestamp: str,
+    ticker: str,
+    row_id: int,
+    old_values: dict[str, Any],
+    new_values: dict[str, Any],
+    source_endpoint: str,
+    engine_version: Optional[str],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO outcome_update_audit (
+            timestamp, ticker, row_id, old_values_json, new_values_json,
+            source_endpoint, engine_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            timestamp,
+            ticker,
+            row_id,
+            json_dump(old_values),
+            json_dump(new_values),
+            source_endpoint,
+            engine_version,
+        ),
+    )
+
+
+def get_outcome_audit_log(limit: int = 100) -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM outcome_update_audit
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "timestamp": row["timestamp"],
+            "ticker": row["ticker"],
+            "row_id": row["row_id"],
+            "old_values": json_load(row["old_values_json"]) or {},
+            "new_values": json_load(row["new_values_json"]) or {},
+            "source_endpoint": row["source_endpoint"],
+            "engine_version": row["engine_version"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
 
 
 def get_ticker_history(ticker: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:

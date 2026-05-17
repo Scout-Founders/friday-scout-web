@@ -7,16 +7,41 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from memory_store import connect, init_db, json_load
+from memory_store import connect, init_db, json_load, log_outcome_update_audit
 from option_picker import fmp_api_key
 
 
-FMP_HISTORICAL_URL = "https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}"
+FMP_HISTORICAL_URL = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 STOCK_HORIZONS = (1, 3, 5, 10, 20)
 OPTION_HORIZONS = (1, 3, 5, 10)
+AUDITED_UPDATE_FIELDS = (
+    "entry_price",
+    "price_after_1d",
+    "price_after_3d",
+    "price_after_5d",
+    "price_after_10d",
+    "price_after_20d",
+    "return_1d",
+    "return_3d",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "stock_outcome_label_1d",
+    "stock_outcome_label_3d",
+    "stock_outcome_label_5d",
+    "stock_outcome_label_10d",
+    "stock_outcome_label_20d",
+    "stock_outcome_label",
+    "option_entry_price",
+    "option_outcome_label",
+    "max_favorable_move",
+    "max_adverse_move",
+    "result_notes",
+    "outcome_last_updated_at",
+)
 
 
 def parse_date(value: Any) -> Optional[date]:
@@ -32,21 +57,31 @@ def parse_date(value: Any) -> Optional[date]:
             return None
 
 
-def fetch_historical_prices(ticker: str, from_date: date, to_date: date, timeout: float = 25.0) -> dict[date, float]:
+def fetch_historical_prices(
+    ticker: str,
+    from_date: date,
+    to_date: date,
+    timeout: float = 25.0,
+) -> tuple[dict[date, float], dict[str, Any]]:
     api_key = fmp_api_key()
     if not api_key:
         raise RuntimeError("FMP API key was not found in the environment.")
 
-    base_url = FMP_HISTORICAL_URL.format(ticker=urllib.parse.quote(ticker.upper()))
     query = urllib.parse.urlencode(
-        {"from": from_date.isoformat(), "to": to_date.isoformat(), "apikey": api_key}
+        {
+            "symbol": ticker.upper(),
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+            "apikey": api_key,
+        }
     )
     request = urllib.request.Request(
-        f"{base_url}?{query}",
+        f"{FMP_HISTORICAL_URL}?{query}",
         headers={"Accept": "application/json", "User-Agent": "scout-gates-sandbox/1.0"},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -55,12 +90,20 @@ def fetch_historical_prices(ticker: str, from_date: date, to_date: date, timeout
         raise RuntimeError(f"Could not reach FMP historical endpoint: {exc.reason}") from exc
 
     prices: dict[date, float] = {}
-    for row in payload.get("historical") or []:
+    rows = payload if isinstance(payload, list) else payload.get("historical") or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
         row_date = parse_date(row.get("date"))
         close = row.get("close")
         if row_date and isinstance(close, (int, float)):
             prices[row_date] = float(close)
-    return prices
+    return prices, {
+        "status": status,
+        "from": from_date.isoformat(),
+        "to": to_date.isoformat(),
+        "prices_returned": len(prices),
+    }
 
 
 def first_price_on_or_after(prices: dict[date, float], target: date) -> Optional[float]:
@@ -68,6 +111,34 @@ def first_price_on_or_after(prices: dict[date, float], target: date) -> Optional
         if available >= target:
             return prices[available]
     return None
+
+
+def first_price_entry_on_or_after(
+    prices: dict[date, float],
+    target: date,
+) -> tuple[Optional[date], Optional[float]]:
+    for available in sorted(prices):
+        if available >= target:
+            return available, prices[available]
+    return None, None
+
+
+def trading_day_price_after(
+    prices: dict[date, float],
+    entry_trade_date: date,
+    trading_days_after_entry: int,
+) -> tuple[Optional[date], Optional[float]]:
+    available_dates = sorted(prices)
+    try:
+        entry_index = available_dates.index(entry_trade_date)
+    except ValueError:
+        return None, None
+
+    target_index = entry_index + trading_days_after_entry
+    if target_index >= len(available_dates):
+        return None, None
+    target_date = available_dates[target_index]
+    return target_date, prices[target_date]
 
 
 def raw_entry_price(row: Any) -> Optional[float]:
@@ -91,16 +162,46 @@ def option_entry_price(row: Any) -> Optional[float]:
     return None
 
 
+def stock_label_for_return(final_direction: str, result_return: float) -> str:
+    if abs(result_return) < 1:
+        return "FLAT"
+    if final_direction == "Bearish":
+        return "WIN" if result_return < 0 else "LOSS"
+    return "WIN" if result_return > 0 else "LOSS"
+
+
 def stock_label(final_direction: str, returns: list[float]) -> str:
     if not returns:
         return "PENDING"
-    latest = returns[-1]
-    directional = -latest if final_direction == "Bearish" else latest
-    if directional > 1:
-        return "WIN"
-    if directional < -1:
-        return "LOSS"
-    return "FLAT"
+    return stock_label_for_return(final_direction, returns[-1])
+
+
+def old_values_for_update(row: Any, updates: dict[str, Any]) -> dict[str, Any]:
+    return {field: row[field] for field in updates if field in AUDITED_UPDATE_FIELDS}
+
+
+def execute_audited_update(
+    conn: Any,
+    row: Any,
+    updates: dict[str, Any],
+    checked_at: str,
+    source_endpoint: str,
+) -> None:
+    assignments = ", ".join(f"{field} = ?" for field in updates)
+    conn.execute(
+        f"UPDATE scan_results SET {assignments} WHERE id = ?",
+        (*updates.values(), row["id"]),
+    )
+    log_outcome_update_audit(
+        conn,
+        checked_at,
+        row["ticker"],
+        int(row["id"]),
+        old_values_for_update(row, updates),
+        updates,
+        source_endpoint,
+        row["engine_version"],
+    )
 
 
 def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
@@ -110,11 +211,17 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
     updated = 0
     pending = 0
     errors: list[str] = []
+    details: list[dict[str, Any]] = []
 
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM scan_results
+            WHERE return_1d IS NULL
+               OR return_3d IS NULL
+               OR return_5d IS NULL
+               OR return_10d IS NULL
+               OR return_20d IS NULL
             ORDER BY timestamp ASC, id ASC
             LIMIT ?
             """,
@@ -126,92 +233,141 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
             checked_at = datetime.now(timezone.utc).isoformat()
             ticker = row["ticker"]
             entry_date = parse_date(row["timestamp"])
-            entry = raw_entry_price(row)
-            if not entry_date or entry is None:
-                pending += 1
-                conn.execute(
-                    """
-                    UPDATE scan_results
-                    SET stock_outcome_label = COALESCE(stock_outcome_label, 'PENDING'),
-                        result_notes = COALESCE(result_notes, ?),
-                        outcome_last_updated_at = COALESCE(outcome_last_updated_at, ?)
-                    WHERE id = ?
-                    """,
-                    ("Entry date or entry price was not available.", checked_at, row["id"]),
-                )
-                continue
+            saved_entry = raw_entry_price(row)
+            detail: dict[str, Any] = {
+                "id": row["id"],
+                "ticker": ticker,
+                "recommendation_timestamp": row["timestamp"],
+                "recommendation_date": entry_date.isoformat() if entry_date else None,
+                "saved_entry_price": saved_entry,
+                "entry_price": None,
+                "target_dates_checked": {},
+                "fmp_response_status": None,
+                "prices_found": {},
+                "rows_updated": 0,
+                "still_pending_reason": None,
+            }
+            details.append(detail)
+            print(
+                f"[outcomes] checking id={row['id']} ticker={ticker} "
+                f"timestamp={row['timestamp']} saved_entry={saved_entry}",
+                flush=True,
+            )
 
-            max_horizon = max(STOCK_HORIZONS)
-            if (today - entry_date).days < min(STOCK_HORIZONS):
+            if not entry_date:
                 pending += 1
-                conn.execute(
-                    """
-                    UPDATE scan_results
-                    SET entry_price = COALESCE(entry_price, ?),
-                        stock_outcome_label = 'PENDING',
-                        option_entry_price = COALESCE(option_entry_price, ?),
-                        option_outcome_label = COALESCE(option_outcome_label, 'PENDING'),
-                        result_notes = COALESCE(result_notes, ?),
-                        outcome_last_updated_at = COALESCE(outcome_last_updated_at, ?)
-                    WHERE id = ?
-                    """,
-                    (
-                        entry,
-                        option_entry_price(row),
-                        "Not enough time has passed for a 1D outcome.",
-                        checked_at,
-                        row["id"],
-                    ),
+                detail["still_pending_reason"] = "Recommendation timestamp was not available."
+                execute_audited_update(
+                    conn,
+                    row,
+                    {
+                        "stock_outcome_label": row["stock_outcome_label"] or "PENDING",
+                        "result_notes": row["result_notes"] or "Recommendation timestamp was not available.",
+                        "outcome_last_updated_at": row["outcome_last_updated_at"] or checked_at,
+                    },
+                    checked_at,
+                    "not_requested_missing_recommendation_timestamp",
                 )
+                print(f"[outcomes] pending ticker={ticker}: {detail['still_pending_reason']}", flush=True)
                 continue
 
             try:
-                prices = fetch_historical_prices(
+                prices, fmp_meta = fetch_historical_prices(
                     ticker,
                     entry_date,
                     today,
                     timeout=timeout,
                 )
+                detail["fmp_response_status"] = fmp_meta.get("status")
+                detail["fmp_prices_returned"] = fmp_meta.get("prices_returned")
             except RuntimeError as exc:
                 pending += 1
                 errors.append(f"{ticker}: {exc}")
-                conn.execute(
-                    """
-                    UPDATE scan_results
-                    SET entry_price = COALESCE(entry_price, ?),
-                        stock_outcome_label = COALESCE(stock_outcome_label, 'PENDING'),
-                        result_notes = ?,
-                        outcome_last_updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (entry, f"FMP stock outcome data unavailable: {exc}", checked_at, row["id"]),
+                if "API key was not found" in str(exc):
+                    detail["fmp_response_status"] = "not_requested_missing_api_key"
+                detail["still_pending_reason"] = f"FMP stock outcome data unavailable: {exc}"
+                execute_audited_update(
+                    conn,
+                    row,
+                    {
+                        "entry_price": row["entry_price"] if row["entry_price"] is not None else saved_entry,
+                        "stock_outcome_label": row["stock_outcome_label"] or "PENDING",
+                        "result_notes": f"FMP stock outcome data unavailable: {exc}",
+                        "outcome_last_updated_at": checked_at,
+                    },
+                    checked_at,
+                    FMP_HISTORICAL_URL,
                 )
+                print(f"[outcomes] pending ticker={ticker}: {detail['still_pending_reason']}", flush=True)
                 continue
+
+            entry_trade_date, entry = first_price_entry_on_or_after(prices, entry_date)
+            if entry_trade_date is None or entry is None:
+                pending += 1
+                detail["still_pending_reason"] = "No FMP trading price was found on or after the recommendation date."
+                execute_audited_update(
+                    conn,
+                    row,
+                    {
+                        "stock_outcome_label": row["stock_outcome_label"] or "PENDING",
+                        "result_notes": detail["still_pending_reason"],
+                        "outcome_last_updated_at": checked_at,
+                    },
+                    checked_at,
+                    FMP_HISTORICAL_URL,
+                )
+                print(f"[outcomes] pending ticker={ticker}: {detail['still_pending_reason']}", flush=True)
+                continue
+
+            detail["entry_trade_date"] = entry_trade_date.isoformat()
+            detail["entry_price"] = entry
+            for horizon in STOCK_HORIZONS:
+                detail["target_dates_checked"][f"{horizon}D"] = {
+                    "trading_day_offset": horizon,
+                    "from_entry_trading_date": entry_trade_date.isoformat(),
+                }
+            print(
+                f"[outcomes] FMP status={detail['fmp_response_status']} "
+                f"prices_returned={detail.get('fmp_prices_returned')} "
+                f"entry_date={entry_trade_date.isoformat()} entry_price={entry}",
+                flush=True,
+            )
 
             updates: dict[str, Any] = {"entry_price": entry}
             returns: list[float] = []
             available_prices: list[float] = []
             notes: list[str] = []
+            direction = row["final_direction"] or ""
 
             for horizon in STOCK_HORIZONS:
                 price_field = f"price_after_{horizon}d"
                 return_field = f"return_{horizon}d"
-                if (today - entry_date).days < horizon:
-                    notes.append(f"{horizon}D pending: not enough time has passed.")
+                label_field = f"stock_outcome_label_{horizon}d"
+                if row[return_field] is not None:
                     continue
-                target_price = first_price_on_or_after(prices, entry_date + timedelta(days=horizon))
+                target_trade_date, target_price = trading_day_price_after(
+                    prices,
+                    entry_trade_date,
+                    horizon,
+                )
                 if target_price is None:
-                    notes.append(f"{horizon}D price unavailable from FMP.")
+                    notes.append(f"{horizon}D pending: not enough future trading closes from FMP.")
                     continue
-                if row[price_field] is None:
-                    updates[price_field] = target_price
-                if row[return_field] is None:
-                    result_return = (target_price - entry) / entry * 100
-                    updates[return_field] = round(result_return, 4)
-                returns.append((target_price - entry) / entry * 100)
+                result_return = (target_price - entry) / entry * 100
+                horizon_label = stock_label_for_return(direction, result_return)
+                updates[price_field] = target_price
+                updates[return_field] = round(result_return, 4)
+                updates[label_field] = horizon_label
+                detail["prices_found"][f"{horizon}D"] = {
+                    "trading_day_offset": horizon,
+                    "trading_date": target_trade_date.isoformat() if target_trade_date else None,
+                    "price": target_price,
+                    "return": round(result_return, 4),
+                    "label": horizon_label,
+                }
+                returns.append(result_return)
                 available_prices.append(target_price)
 
-            direction = row["final_direction"] or ""
             directional_moves = [
                 (-move if direction == "Bearish" else move) for move in returns
             ]
@@ -233,20 +389,25 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
             updates["outcome_last_updated_at"] = checked_at
 
             if len(updates) > 0:
-                assignments = ", ".join(f"{field} = ?" for field in updates)
-                conn.execute(
-                    f"UPDATE scan_results SET {assignments} WHERE id = ?",
-                    (*updates.values(), row["id"]),
-                )
+                execute_audited_update(conn, row, updates, checked_at, FMP_HISTORICAL_URL)
                 updated += 1
+                detail["rows_updated"] = 1
 
             if label == "PENDING":
                 pending += 1
+                detail["still_pending_reason"] = "; ".join(notes) or "No forward prices were available."
+            print(
+                f"[outcomes] updated ticker={ticker} row={row['id']} "
+                f"label={label} prices_found={detail['prices_found']}",
+                flush=True,
+            )
 
     return {
         "ok": True,
         "records_checked": checked,
         "records_updated": updated,
+        "records_pending": pending,
         "records_still_pending": pending,
         "errors": errors,
+        "details": details,
     }
