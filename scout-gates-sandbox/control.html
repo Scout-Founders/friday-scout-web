@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Horizon-1</title>
+  <style>
+    :root {
+      --bg: #030611;
+      --panel: #0a1020;
+      --panel-soft: #11182b;
+      --border: #28304a;
+      --text: #f8efe8;
+      --muted: #b9a8a1;
+      --dim: #796e78;
+      --peach: #ffb08a;
+      --coral: #ff6f61;
+      --amber: #f9b44a;
+      --rose: #c8788f;
+      --gold: #f5d47a;
+      --navy: #071126;
+      --success: #83e6b7;
+      --warning: #f5c36a;
+      --danger: #ff7d85;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 8%, #ffb08a33, transparent 34rem),
+        radial-gradient(circle at 74% 14%, #ff6f612a, transparent 28rem),
+        radial-gradient(circle at 50% 0%, #f5d47a20, transparent 42rem),
+        linear-gradient(180deg, #071126 0%, #030611 42%, #02030a 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      width: min(1280px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 34px 0 64px;
+    }
+
+    .eyebrow,
+    .kicker,
+    th,
+    .metric-label {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+    }
+
+    .eyebrow {
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    h1 {
+      margin: 10px 0 8px;
+      max-width: 980px;
+      font-size: clamp(42px, 8vw, 94px);
+      font-weight: 750;
+      line-height: 0.92;
+      letter-spacing: -0.07em;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+
+    .lede {
+      max-width: 820px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+      font-weight: 350;
+      line-height: 1.65;
+    }
+
+    .gradient-text {
+      background: linear-gradient(90deg, var(--peach), var(--gold), var(--rose));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .top-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 30px;
+    }
+
+    .top-nav a,
+    .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #080d19cc;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .top-nav a.active,
+    .button.primary {
+      border-color: #ffb08a88;
+      background: linear-gradient(135deg, #ffb08a22, #f5d47a18);
+      color: var(--peach);
+      box-shadow: 0 0 26px #ffb08a22;
+    }
+
+    .status {
+      margin-bottom: 18px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #080d19cc;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .hero-grid,
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+
+    .card {
+      position: relative;
+      overflow: hidden;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      background:
+        linear-gradient(180deg, #11182be8, #090e1ae8),
+        radial-gradient(circle at top right, #ffb08a22, transparent 18rem);
+      box-shadow: 0 24px 80px #0009;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(135deg, #ffb08a14, transparent 36%, #f5d47a0f);
+    }
+
+    .card > * {
+      position: relative;
+    }
+
+    .wide {
+      grid-column: span 12;
+    }
+
+    .half {
+      grid-column: span 6;
+    }
+
+    .third {
+      grid-column: span 4;
+    }
+
+    .two-third {
+      grid-column: span 8;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      display: flex;
+      min-width: 0;
+      min-height: 104px;
+      flex-direction: column;
+      justify-content: center;
+      padding: 16px;
+      border: 1px solid #ffffff12;
+      border-radius: 18px;
+      background: #060a14bb;
+    }
+
+    .metric-value {
+      color: var(--gold);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 26px;
+      font-weight: 850;
+      line-height: 1.1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      word-break: break-word;
+    }
+
+    .metric-label {
+      margin-top: 5px;
+      color: var(--dim);
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .metric-secondary {
+      margin-top: 7px;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metric-value.time-value {
+      font-size: 21px;
+      white-space: pre-line;
+    }
+
+    .kicker {
+      color: var(--peach);
+      font-size: 11px;
+      font-weight: 900;
+      margin-bottom: 10px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin: 2px;
+      padding: 6px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #060a14;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .status-ready,
+    .status-online,
+    .status-pass {
+      border-color: #83e6b755;
+      color: var(--success);
+    }
+
+    .status-progress,
+    .status-warning {
+      border-color: #f5c36a55;
+      color: var(--warning);
+    }
+
+    .status-not-ready,
+    .status-offline,
+    .status-fail {
+      border-color: #ff7d8555;
+      color: var(--danger);
+    }
+
+    .progress-row {
+      display: grid;
+      grid-template-columns: 180px 1fr 52px;
+      gap: 12px;
+      align-items: center;
+      margin: 13px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .bar {
+      height: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #050812;
+      border: 1px solid #ffffff12;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--coral), var(--amber), var(--gold));
+      box-shadow: 0 0 20px #ffb08a55;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      background: #060a14;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      color: var(--dim);
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .warning-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .warning-item {
+      padding: 12px;
+      border: 1px solid #f5c36a44;
+      border-radius: 14px;
+      background: #f5c36a12;
+      color: var(--warning);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .hint {
+      color: var(--dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    @media (max-width: 880px) {
+      .half,
+      .third,
+      .two-third {
+        grid-column: span 12;
+      }
+
+      .progress-row {
+        grid-template-columns: 1fr;
+      }
+
+      .metric-grid {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      }
+
+      .metric-value {
+        font-size: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Sandbox mission control</div>
+    <h1><span class="gradient-text">Scout Horizon-1</span></h1>
+    <p class="lede">
+      Mission control for Scout's research memory, learning pipeline, system health,
+      and future intelligence architecture. This page measures training readiness,
+      not active model training.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a class="active" href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Loading Horizon-1 control summary...</div>
+
+    <section class="grid">
+      <article class="card wide">
+        <div class="kicker">Phase 4 Self-Audit</div>
+        <h2>Horizon Infrastructure Verification</h2>
+        <p class="hint">Verify that Phase 4 infrastructure is connected, measurable, and ready to inform Phase 5 planning.</p>
+        <button class="button primary" id="self-audit-button" type="button">Run Horizon Self-Audit</button>
+        <button class="button" id="backfill-button" type="button">Run Horizon Backfill</button>
+        <div id="self-audit-results" style="margin-top:16px;"></div>
+        <div id="backfill-results" style="margin-top:16px;"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Data Bank Health</div>
+        <div class="metric-grid" id="data-bank-health"></div>
+      </article>
+
+      <article class="card two-third">
+        <div class="kicker">System Maturity</div>
+        <h2>Learning Progress</h2>
+        <div id="learning-progress"></div>
+      </article>
+
+      <article class="card third">
+        <div class="kicker">Future GPT/LLM Training Readiness</div>
+        <div id="training-readiness"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Readiness Matrix</div>
+        <h2>Learning Readiness</h2>
+        <div class="table-wrap" id="learning-readiness"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Live Status</div>
+        <h2>System Health</h2>
+        <div class="table-wrap" id="system-health"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Data Volume</div>
+        <div id="data-volume"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Model / Research Versioning</div>
+        <div id="versioning"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Data Quality Warnings</div>
+        <div id="warnings"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Endpoint Registry</div>
+        <div class="table-wrap" id="endpoints"></div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function label(value) {
+      return value === null || value === undefined || value === "" ? "n/a" : value;
+    }
+
+    function number(value) {
+      return Number(value || 0).toLocaleString();
+    }
+
+    function statusClass(value) {
+      const normalized = String(value || "").toLowerCase().replaceAll(" ", "-");
+      if (normalized === "ready") return "status-ready";
+      if (normalized === "in-progress") return "status-progress";
+      if (normalized === "not-ready") return "status-not-ready";
+      if (normalized === "online") return "status-online";
+      if (normalized === "warning") return "status-warning";
+      if (normalized === "offline") return "status-offline";
+      if (normalized === "pass") return "status-pass";
+      if (normalized === "fail") return "status-fail";
+      return "";
+    }
+
+    function metric(labelText, value, options = {}) {
+      const title = options.title ? ` title="${escapeHtml(options.title)}"` : "";
+      const valueClass = options.valueClass ? ` ${escapeHtml(options.valueClass)}` : "";
+      const secondary = options.secondary
+        ? `<div class="metric-secondary" title="${escapeHtml(options.secondary)}">${escapeHtml(options.secondary)}</div>`
+        : "";
+      return `
+        <div class="metric"${title}>
+          <div class="metric-value${valueClass}">${escapeHtml(value)}</div>
+          <div class="metric-label">${escapeHtml(labelText)}</div>
+          ${secondary}
+        </div>
+      `;
+    }
+
+    function compactEngineVersion(value) {
+      const text = String(value || "unknown");
+      const match = text.match(/^(\d+\.\d+\.\d+)/);
+      return match ? match[1] : text;
+    }
+
+    function buildLabel(value) {
+      const text = String(value || "");
+      const buildMatch = text.match(/[+.](?:dirty\.)?([a-f0-9]{6,})$/i);
+      if (buildMatch) return `build ${buildMatch[1].slice(0, 7)}`;
+      return text && text !== "unknown" ? text : "";
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return { display: "n/a", secondary: "", full: "" };
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return { display: String(value), secondary: "", full: String(value) };
+      }
+      const datePart = date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      const timePart = date.toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return {
+        display: `${datePart}\n${timePart}`,
+        secondary: "",
+        full: String(value),
+      };
+    }
+
+    function renderDataBank(data) {
+      const health = data.data_bank_health || {};
+      document.getElementById("data-bank-health").innerHTML = [
+        metric("SQLite database size", data.database?.size_label || "0 MB"),
+        metric("Total saved scans", number(health.saved_scans)),
+        metric("Total saved recommendations", number(health.saved_recommendations)),
+        metric("Total completed outcomes", number(health.completed_outcomes)),
+        metric("Total pending outcomes", number(health.pending_outcomes)),
+        metric("Total gate snapshots", number(health.gate_snapshots)),
+        metric("Total universe snapshots", number(health.universe_snapshots)),
+        metric("Total audit log entries", number(health.audit_log_entries)),
+        metric("Total feature vectors", number(health.feature_vectors)),
+      ].join("");
+    }
+
+    function renderReadiness(rows) {
+      document.getElementById("learning-readiness").innerHTML = `
+        <table>
+          <thead><tr><th>Capability</th><th>Status</th></tr></thead>
+          <tbody>
+            ${(rows || []).map((row) => `
+              <tr>
+                <td>${escapeHtml(row.name)}</td>
+                <td><span class="pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderProgress(rows) {
+      document.getElementById("learning-progress").innerHTML = (rows || []).map((row) => `
+        <div class="progress-row">
+          <strong>${escapeHtml(row.name)}</strong>
+          <div class="bar"><div class="bar-fill" style="width:${Number(row.percent || 0)}%"></div></div>
+          <span>${number(row.percent)}%</span>
+        </div>
+      `).join("");
+    }
+
+    function renderTraining(data) {
+      const readiness = data.future_training_readiness || {};
+      document.getElementById("training-readiness").innerHTML = `
+        <p class="hint">This is a readiness signal only. It does not indicate active GPT or LLM training.</p>
+        <div class="metric-grid">
+          ${metric("Training records available", number(readiness.training_records_available))}
+          ${metric("Completed labeled outcomes", number(readiness.completed_labeled_outcomes))}
+          ${metric("Feature vectors available", number(readiness.feature_vectors_available))}
+          ${metric("Audit-backed records", number(readiness.audit_backed_records))}
+        </div>
+        <p><span class="pill ${statusClass(readiness.exportable_dataset_status)}">${escapeHtml(readiness.exportable_dataset_status || "NOT READY")}</span></p>
+        <p class="hint">Minimum recommended: ${escapeHtml(readiness.minimum_recommended || "1,000+ labeled records")}</p>
+        <p>${escapeHtml(readiness.recommended_next_milestone || "Collect more labeled records.")}</p>
+      `;
+    }
+
+    function renderHealth(rows) {
+      document.getElementById("system-health").innerHTML = `
+        <table>
+          <thead><tr><th>Component</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody>
+            ${(rows || []).map((row) => `
+              <tr>
+                <td>${escapeHtml(row.name)}</td>
+                <td><span class="pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span></td>
+                <td>${escapeHtml(row.detail || "")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderDataVolume(data) {
+      const volume = data.data_volume || {};
+      const rows = volume.rows_by_table || {};
+      document.getElementById("data-volume").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Estimated DB size", volume.estimated_db_size || "0 MB")}
+          ${metric("Unique tickers", number(volume.unique_tickers))}
+          ${metric("Unique sectors", number(volume.unique_sectors))}
+          ${metric("Feature vector count", number(volume.feature_vector_count))}
+          ${metric("Engine versions", number((volume.engine_versions || []).length))}
+        </div>
+        <div class="table-wrap" style="margin-top:14px;">
+          <table>
+            <thead><tr><th>Table</th><th>Rows</th></tr></thead>
+            <tbody>
+              ${Object.entries(rows).map(([table, count]) => `<tr><td>${escapeHtml(table)}</td><td>${number(count)}</td></tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderVersioning(data) {
+      const versioning = data.versioning || {};
+      const engine = versioning.current_engine_version || "unknown";
+      const scan = formatTimestamp(versioning.latest_scan_timestamp);
+      const outcome = formatTimestamp(versioning.latest_outcome_update);
+      const audit = formatTimestamp(versioning.latest_audit_event);
+      const universe = formatTimestamp(versioning.latest_universe_snapshot);
+      document.getElementById("versioning").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Current engine version", compactEngineVersion(engine), { title: engine, secondary: buildLabel(engine) })}
+          ${metric("Latest scan timestamp", scan.display, { title: scan.full, valueClass: "time-value" })}
+          ${metric("Latest outcome update", outcome.display, { title: outcome.full, valueClass: "time-value" })}
+          ${metric("Latest audit event", audit.display, { title: audit.full, valueClass: "time-value" })}
+          ${metric("Latest universe snapshot", universe.display, { title: universe.full, valueClass: "time-value" })}
+        </div>
+      `;
+    }
+
+    function renderWarnings(warnings) {
+      document.getElementById("warnings").innerHTML = warnings && warnings.length
+        ? `<div class="warning-list">${warnings.map((warning) => `<div class="warning-item">${escapeHtml(warning)}</div>`).join("")}</div>`
+        : "<p class=\"hint\">No data quality warnings detected.</p>";
+    }
+
+    function renderEndpoints(rows) {
+      document.getElementById("endpoints").innerHTML = `
+        <table>
+          <thead><tr><th>Endpoint</th><th>Description</th></tr></thead>
+          <tbody>
+            ${(rows || []).map((row) => `
+              <tr>
+                <td><code>${escapeHtml(row.path)}</code></td>
+                <td>${escapeHtml(row.description)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderSelfAudit(data) {
+      const summary = data.summary || {};
+      const checks = data.checks || [];
+      const grouped = checks.reduce((acc, check) => {
+        const category = check.category || "OTHER";
+        acc[category] = acc[category] || [];
+        acc[category].push(check);
+        return acc;
+      }, {});
+      document.getElementById("self-audit-results").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Total checks", number(summary.total_checks))}
+          ${metric("Passes", number(summary.passes))}
+          ${metric("Warnings", number(summary.warnings))}
+          ${metric("Failures", number(summary.failures))}
+        </div>
+        <p class="hint">${escapeHtml(summary.recommended_next_action || "Run self-audit to determine next action.")}</p>
+        ${Object.entries(grouped).map(([category, rows]) => `
+          <h2 style="margin-top:18px;">${escapeHtml(category)}</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Check</th><th>Status</th><th>Result</th></tr></thead>
+              <tbody>
+                ${rows.map((row) => `
+                  <tr>
+                    <td>${escapeHtml(row.name)}</td>
+                    <td><span class="pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span></td>
+                    <td>${escapeHtml(row.message)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `).join("")}
+      `;
+    }
+
+    async function runSelfAudit() {
+      const button = document.getElementById("self-audit-button");
+      button.disabled = true;
+      statusEl.textContent = "Running Horizon self-audit...";
+      try {
+        const response = await fetch("/api/control/self-audit");
+        const data = await response.json();
+        renderSelfAudit(data);
+        const summary = data.summary || {};
+        statusEl.textContent = `Self-audit complete: ${summary.passes || 0} pass, ${summary.warnings || 0} warning, ${summary.failures || 0} fail.`;
+      } catch (error) {
+        statusEl.textContent = `Could not run Horizon self-audit: ${error}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function renderBackfill(data) {
+      document.getElementById("backfill-results").innerHTML = `
+        <h2 style="margin-top:18px;">Horizon Backfill Results</h2>
+        <div class="metric-grid">
+          ${metric("Scans checked", number(data.scans_checked))}
+          ${metric("Recommendations checked", number(data.recommendations_checked))}
+          ${metric("Gate snapshots backfilled", number(data.gate_snapshots_backfilled))}
+          ${metric("Universe snapshots backfilled", number(data.universe_snapshots_backfilled))}
+          ${metric("Audit events created", number(data.audit_events_created))}
+          ${metric("Institutional audit events", number(data.total_institutional_audit_events))}
+        </div>
+        <p class="hint">Backfill is idempotent. Re-running will not duplicate snapshots or institutional audit events.</p>
+      `;
+    }
+
+    async function runBackfill() {
+      const button = document.getElementById("backfill-button");
+      button.disabled = true;
+      statusEl.textContent = "Running Horizon backfill...";
+      try {
+        const response = await fetch("/api/control/backfill", { method: "POST" });
+        const data = await response.json();
+        renderBackfill(data);
+        await loadSummary();
+        statusEl.textContent = `Backfill complete: ${data.gate_snapshots_backfilled || 0} gate snapshots, ${data.universe_snapshots_backfilled || 0} universe snapshots, ${data.audit_events_created || 0} audit events.`;
+      } catch (error) {
+        statusEl.textContent = `Could not run Horizon backfill: ${error}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function renderAll(data) {
+      renderDataBank(data);
+      renderReadiness(data.learning_readiness || []);
+      renderProgress(data.learning_progress || []);
+      renderTraining(data);
+      renderHealth(data.system_health || []);
+      renderDataVolume(data);
+      renderVersioning(data);
+      renderWarnings(data.warnings || []);
+      renderEndpoints(data.endpoints || []);
+      statusEl.textContent = `Horizon-1 summary loaded at ${new Date(data.generated_at || Date.now()).toLocaleString()}.`;
+    }
+
+    async function loadSummary() {
+      try {
+        const response = await fetch("/api/control/summary");
+        const data = await response.json();
+        renderAll(data);
+      } catch (error) {
+        statusEl.textContent = `Could not load Horizon-1 summary: ${error}`;
+      }
+    }
+
+    document.getElementById("self-audit-button").addEventListener("click", runSelfAudit);
+    document.getElementById("backfill-button").addEventListener("click", runBackfill);
+
+    loadSummary();
+  </script>
+</body>
+</html>

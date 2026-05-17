@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ MEMORY_COLUMNS = {
     "engine_version": "TEXT",
     "gate_snapshot_json": "TEXT",
     "feature_vector_json": "TEXT",
+    "explanation_json": "TEXT",
 }
 SCAN_RUN_COLUMNS = {
     "universe_snapshot_json": "TEXT",
@@ -83,6 +85,18 @@ def json_load(value: Any) -> Any:
         return value
 
 
+def parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(
@@ -139,6 +153,45 @@ def init_db() -> None:
                 ON outcome_update_audit(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_outcome_audit_row
                 ON outcome_update_audit(row_id, timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS institutional_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_key TEXT NOT NULL UNIQUE,
+                timestamp TEXT NOT NULL,
+                scan_id INTEGER,
+                recommendation_id INTEGER,
+                ticker TEXT,
+                engine_version TEXT,
+                event_type TEXT NOT NULL,
+                event_details_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_institutional_audit_timestamp
+                ON institutional_audit_log(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_institutional_audit_scan
+                ON institutional_audit_log(scan_id, timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS gate_intelligence_metrics (
+                gate_key TEXT PRIMARY KEY,
+                gate_name TEXT NOT NULL,
+                total_occurrences INTEGER NOT NULL,
+                total_passes INTEGER NOT NULL,
+                total_failures INTEGER NOT NULL,
+                win_count INTEGER NOT NULL,
+                loss_count INTEGER NOT NULL,
+                win_rate REAL NOT NULL,
+                avg_1d_return REAL,
+                avg_3d_return REAL,
+                avg_5d_return REAL,
+                avg_10d_return REAL,
+                avg_20d_return REAL,
+                bullish_win_rate REAL NOT NULL,
+                bearish_win_rate REAL NOT NULL,
+                predictive_score REAL NOT NULL,
+                confidence TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         existing = {
@@ -355,6 +408,108 @@ def build_universe_snapshot(payload: dict[str, Any], scan_id: int) -> dict[str, 
     }
 
 
+def to_optional_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def gate_names_by_state(gate_snapshot: dict[str, Any], passed: bool) -> list[str]:
+    return [
+        str(gate.get("name") or gate.get("key") or gate.get("code"))
+        for gate in gate_snapshot.get("gates", [])
+        if isinstance(gate, dict) and gate.get("passed") is passed
+    ]
+
+
+def risk_flags_for_result(result: dict[str, Any], failed: list[str]) -> list[str]:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    source = {**raw, **result}
+    flags = []
+    earnings_days = to_optional_float(
+        first_present(source, ("earnings_days", "earningsDays", "days_to_earnings"))
+    )
+    short_interest = to_optional_float(
+        first_present(source, ("short_interest", "shortInterest", "short_percent_float", "shortPercentFloat"))
+    )
+    beta = to_optional_float(first_present(source, ("beta",)))
+    net_edge = to_optional_float(
+        first_present(result.get("directionBreakdown") or {}, ("netDirectionalEdge",))
+    )
+    if earnings_days is not None and earnings_days <= 7:
+        flags.append("Earnings Soon")
+    if short_interest is not None and short_interest >= 20:
+        flags.append("High Short Interest")
+    if beta is not None and beta >= 1.5:
+        flags.append("High Beta")
+    if net_edge is not None and abs(net_edge) < 10:
+        flags.append("Low Directional Edge")
+    if any("threat" in gate.lower() for gate in failed):
+        flags.append("Threat Scan")
+    return flags
+
+
+def build_rank_maps(results: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int]]:
+    ranked = sorted(results, key=lambda item: item.get("score") or 0, reverse=True)
+    universe_ranks = {
+        str(result.get("ticker")): index
+        for index, result in enumerate(ranked, start=1)
+        if result.get("ticker")
+    }
+    sector_groups: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+        sector = first_present({**raw, **result}, ("sector",))
+        if sector:
+            sector_groups.setdefault(str(sector), []).append(result)
+    sector_ranks = {}
+    for sector_results in sector_groups.values():
+        for index, result in enumerate(
+            sorted(sector_results, key=lambda item: item.get("score") or 0, reverse=True),
+            start=1,
+        ):
+            if result.get("ticker"):
+                sector_ranks[str(result["ticker"])] = index
+    return universe_ranks, sector_ranks
+
+
+def build_decision_explanation(
+    result: dict[str, Any],
+    payload: dict[str, Any],
+    gate_snapshot: dict[str, Any],
+    engine_version: str,
+    scan_id: int,
+    universe_rank: Optional[int],
+    sector_rank: Optional[int],
+) -> dict[str, Any]:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    source = {**raw, **result}
+    passed = gate_names_by_state(gate_snapshot, True)
+    failed = gate_names_by_state(gate_snapshot, False)
+    score = result.get("score")
+    if score is None:
+        score = raw.get("scout_score")
+    return {
+        "passed_gates": passed,
+        "failed_gates": failed,
+        "total_passed": len(passed),
+        "total_failed": len(failed),
+        "score": score,
+        "direction": result.get("direction") or raw.get("direction"),
+        "universe_rank": universe_rank,
+        "universe_size": len(payload.get("candidates") or payload.get("results") or []),
+        "sector_rank": sector_rank,
+        "sector_name": first_present(source, ("sector",)),
+        "confidence_score": score,
+        "risk_flags": risk_flags_for_result(result, failed),
+        "engine_version": engine_version,
+        "scan_id": scan_id,
+    }
+
+
 def save_scan_result(payload: dict[str, Any]) -> int:
     """Persist one completed dashboard run and all ticker rows."""
     init_db()
@@ -383,7 +538,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
             (json_dump(universe_snapshot), run_id),
         )
 
-        for result in payload.get("results", []):
+        results = [row for row in payload.get("results", []) if isinstance(row, dict)]
+        universe_ranks, sector_ranks = build_rank_maps(results)
+        for result in results:
             direction = result.get("directionBreakdown") or {}
             option_pick = result.get("optionPick")
             gates = compact_gate_results(result)
@@ -392,6 +549,16 @@ def save_scan_result(payload: dict[str, Any]) -> int:
             reasons = failure_reasons(result)
             gate_snapshot = build_gate_snapshot(result, payload, engine_version)
             feature_vector = build_feature_vector(result, engine_version, gate_snapshot)
+            ticker = str(result.get("ticker") or "")
+            decision_explanation = build_decision_explanation(
+                result,
+                payload,
+                gate_snapshot,
+                engine_version,
+                run_id,
+                universe_ranks.get(ticker),
+                sector_ranks.get(ticker),
+            )
             raw_fmp_inputs = {
                 "raw_gate_response": result.get("raw"),
                 "option_pick": option_pick,
@@ -404,8 +571,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     net_direction, final_direction, final_option_pick_json,
                     gates_json, gate_explanations_json, failed_gates_json,
                     failure_reasons_json, raw_fmp_inputs_json, raw_result_json,
-                    gate_snapshot_json, feature_vector_json, engine_version, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    gate_snapshot_json, feature_vector_json, explanation_json,
+                    engine_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -425,6 +593,7 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     json_dump(result),
                     json_dump(gate_snapshot),
                     json_dump(feature_vector),
+                    json_dump(decision_explanation),
                     engine_version,
                     datetime.now(timezone.utc).isoformat(),
                 ),
@@ -532,8 +701,8 @@ def create_outcome_test_record(
                 entry_price, option_entry_price, stock_outcome_label,
                 option_outcome_label, result_notes, is_test_record, outcome,
                 return_1d, return_3d, return_5d, return_10d, return_20d,
-                gate_snapshot_json, feature_vector_json, engine_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                gate_snapshot_json, feature_vector_json, explanation_json, engine_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -568,6 +737,7 @@ def create_outcome_test_record(
                 None,
                 source["gate_snapshot_json"],
                 source["feature_vector_json"],
+                source["explanation_json"],
                 source["engine_version"] or current_engine_version(),
             ),
         )
@@ -611,6 +781,44 @@ def row_to_result(row: sqlite3.Row) -> dict[str, Any]:
             json_load(row[column]) if column.endswith("_json") else row[column]
         )
     return result
+
+
+def get_recommendation_explanation(scan_id: int) -> Optional[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM scan_results
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (scan_id,),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT * FROM scan_results
+                WHERE run_id = ?
+                ORDER BY scout_score DESC, id ASC
+                LIMIT 1
+                """,
+                (scan_id,),
+            ).fetchone()
+    if row is None:
+        return None
+    recommendation = row_to_result(row)
+    return {
+        "ok": True,
+        "recommendation": {
+            "id": recommendation["id"],
+            "scan_id": recommendation["scan_id"],
+            "ticker": recommendation["ticker"],
+            "score": recommendation["scout_score"],
+            "direction": recommendation["final_direction"],
+            "engine_version": recommendation.get("engine_version"),
+        },
+        "explanation_json": recommendation.get("explanation"),
+    }
 
 
 def log_outcome_update_audit(
@@ -668,6 +876,1130 @@ def get_outcome_audit_log(limit: int = 100) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def log_institutional_audit_event(
+    conn: sqlite3.Connection,
+    event_key: str,
+    timestamp: str,
+    scan_id: Optional[int],
+    recommendation_id: Optional[int],
+    ticker: Optional[str],
+    engine_version: Optional[str],
+    event_type: str,
+    event_details: dict[str, Any],
+) -> bool:
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO institutional_audit_log (
+            event_key, timestamp, scan_id, recommendation_id, ticker,
+            engine_version, event_type, event_details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_key,
+            timestamp,
+            scan_id,
+            recommendation_id,
+            ticker,
+            engine_version,
+            event_type,
+            json_dump(event_details),
+        ),
+    )
+    return cursor.rowcount > 0
+
+
+def compact_gate_snapshot_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    gates = json_load(row["gates_json"]) or {}
+    explanations = json_load(row["gate_explanations_json"]) or {}
+    feature_vector = json_load(row["feature_vector_json"]) or {}
+    gate_scores = feature_vector.get("gate_scores") if isinstance(feature_vector, dict) else {}
+    explanation_gates = explanations.get("gates") if isinstance(explanations, dict) else []
+    explanation_by_key = {
+        str(gate.get("gate_key") or gate.get("key") or gate.get("name")): gate
+        for gate in explanation_gates or []
+        if isinstance(gate, dict)
+    }
+    snapshot_gates = []
+    if isinstance(gates, dict):
+        for index, (key, passed) in enumerate(gates.items(), start=1):
+            explanation = explanation_by_key.get(str(key), {})
+            raw_score = gate_scores.get(str(key)) if isinstance(gate_scores, dict) else None
+            if raw_score is None:
+                raw_score = gate_score_from_text(explanation.get("actual_value"))
+            snapshot_gates.append(
+                {
+                    "index": index,
+                    "key": str(key),
+                    "code": None,
+                    "name": explanation.get("gate_name") or str(key),
+                    "passed": passed is True,
+                    "raw_score": raw_score,
+                    "actual_value": explanation.get("actual_value"),
+                    "required_value": explanation.get("required_value"),
+                    "notes": explanation.get("explanation"),
+                    "source_field": explanation.get("source_field"),
+                }
+            )
+    return {
+        "snapshot_schema_version": GATE_SNAPSHOT_SCHEMA_VERSION,
+        "backfilled": True,
+        "scan_id": row["run_id"],
+        "timestamp": row["timestamp"],
+        "ticker": row["ticker"],
+        "engine_version": row["engine_version"] or current_engine_version(),
+        "gate_engine_version": row["engine_version"] or current_engine_version(),
+        "gates": snapshot_gates,
+    }
+
+
+def backfilled_universe_snapshot(conn: sqlite3.Connection, run: sqlite3.Row) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT id, ticker, scout_score, final_direction, failed_gates_json, failure_reasons_json
+        FROM scan_results
+        WHERE run_id = ?
+        ORDER BY scout_score DESC, id ASC
+        """,
+        (run["id"],),
+    ).fetchall()
+    candidates = json_load(run["candidates_json"]) or []
+    scanned_tickers = [str(ticker) for ticker in candidates] or [row["ticker"] for row in rows]
+    rejected = []
+    for row in rows:
+        failed = json_load(row["failed_gates_json"]) or []
+        reasons = json_load(row["failure_reasons_json"]) or []
+        if failed or reasons:
+            rejected.append(
+                {
+                    "ticker": row["ticker"],
+                    "score": row["scout_score"],
+                    "reason": "; ".join(str(reason) for reason in reasons)
+                    or f"Failed gates: {', '.join(str(gate) for gate in failed)}.",
+                }
+            )
+    top_scores = [
+        {
+            "ticker": row["ticker"],
+            "score": row["scout_score"],
+            "direction": row["final_direction"],
+            "passed_all_gates": not bool(json_load(row["failed_gates_json"]) or []),
+        }
+        for row in rows[:20]
+    ]
+    return {
+        "scan_id": run["id"],
+        "timestamp": run["timestamp"],
+        "universe_size": len(scanned_tickers),
+        "all_scanned_tickers": scanned_tickers,
+        "all_rejected_tickers": rejected,
+        "top_20_scores": top_scores,
+        "backfilled": True,
+    }
+
+
+def run_horizon_backfill() -> dict[str, Any]:
+    """Backfill immutable institutional records for historical sandbox memory."""
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    result = {
+        "ok": True,
+        "gate_snapshots_backfilled": 0,
+        "universe_snapshots_backfilled": 0,
+        "audit_events_created": 0,
+        "scans_checked": 0,
+        "recommendations_checked": 0,
+    }
+    with connect() as conn:
+        runs = conn.execute("SELECT * FROM scan_runs ORDER BY id ASC").fetchall()
+        rows = conn.execute("SELECT * FROM scan_results ORDER BY id ASC").fetchall()
+        result["scans_checked"] = len(runs)
+        result["recommendations_checked"] = len(rows)
+
+        for row in rows:
+            if row["gate_snapshot_json"] in (None, ""):
+                snapshot = compact_gate_snapshot_from_row(row)
+                conn.execute(
+                    "UPDATE scan_results SET gate_snapshot_json = ? WHERE id = ?",
+                    (json_dump(snapshot), row["id"]),
+                )
+                result["gate_snapshots_backfilled"] += 1
+                if log_institutional_audit_event(
+                    conn,
+                    f"snapshot_backfilled:gate:{row['id']}",
+                    now,
+                    int(row["run_id"]),
+                    int(row["id"]),
+                    row["ticker"],
+                    row["engine_version"],
+                    "snapshot_backfilled",
+                    {"snapshot_type": "gate_snapshot", "row_id": row["id"]},
+                ):
+                    result["audit_events_created"] += 1
+
+        for run in runs:
+            if run["universe_snapshot_json"] in (None, ""):
+                snapshot = backfilled_universe_snapshot(conn, run)
+                conn.execute(
+                    "UPDATE scan_runs SET universe_snapshot_json = ? WHERE id = ?",
+                    (json_dump(snapshot), run["id"]),
+                )
+                result["universe_snapshots_backfilled"] += 1
+                if log_institutional_audit_event(
+                    conn,
+                    f"snapshot_backfilled:universe:{run['id']}",
+                    now,
+                    int(run["id"]),
+                    None,
+                    None,
+                    None,
+                    "snapshot_backfilled",
+                    {"snapshot_type": "universe_snapshot", "scan_id": run["id"]},
+                ):
+                    result["audit_events_created"] += 1
+
+        for run in runs:
+            if log_institutional_audit_event(
+                conn,
+                f"scan_created:{run['id']}",
+                run["timestamp"] or now,
+                int(run["id"]),
+                None,
+                None,
+                None,
+                "scan_created",
+                {
+                    "scan_id": run["id"],
+                    "universe_mode": run["universe_mode"],
+                    "pick_mode": run["pick_mode"],
+                },
+            ):
+                result["audit_events_created"] += 1
+
+        for row in rows:
+            if log_institutional_audit_event(
+                conn,
+                f"recommendation_created:{row['id']}",
+                row["timestamp"] or now,
+                int(row["run_id"]),
+                int(row["id"]),
+                row["ticker"],
+                row["engine_version"],
+                "recommendation_created",
+                {
+                    "row_id": row["id"],
+                    "ticker": row["ticker"],
+                    "score": row["scout_score"],
+                    "direction": row["final_direction"],
+                },
+            ):
+                result["audit_events_created"] += 1
+            if row["outcome_last_updated_at"] not in (None, "") or row["stock_outcome_label"] in ("WIN", "LOSS", "FLAT"):
+                if log_institutional_audit_event(
+                    conn,
+                    f"outcome_updated:{row['id']}",
+                    row["outcome_last_updated_at"] or row["timestamp"] or now,
+                    int(row["run_id"]),
+                    int(row["id"]),
+                    row["ticker"],
+                    row["engine_version"],
+                    "outcome_updated",
+                    {
+                        "row_id": row["id"],
+                        "ticker": row["ticker"],
+                        "stock_outcome_label": row["stock_outcome_label"],
+                        "return_1d": row["return_1d"],
+                        "return_3d": row["return_3d"],
+                        "return_5d": row["return_5d"],
+                        "return_10d": row["return_10d"],
+                        "return_20d": row["return_20d"],
+                    },
+                ):
+                    result["audit_events_created"] += 1
+
+        result["total_institutional_audit_events"] = count_rows(conn, "institutional_audit_log")
+    return result
+
+
+def average(values: list[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def standard_deviation(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return math.sqrt(variance)
+
+
+def completed_gate_entries(row: sqlite3.Row) -> list[dict[str, Any]]:
+    snapshot = json_load(row["gate_snapshot_json"])
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("gates"), list):
+        return [
+            {
+                "key": str(gate.get("key") or gate.get("code") or gate.get("name")),
+                "name": str(gate.get("name") or gate.get("key") or gate.get("code")),
+                "passed": gate.get("passed") is True,
+            }
+            for gate in snapshot["gates"]
+            if isinstance(gate, dict)
+        ]
+
+    gates = json_load(row["gates_json"]) or {}
+    if not isinstance(gates, dict):
+        return []
+    return [
+        {
+            "key": str(key),
+            "name": str(key),
+            "passed": value is True,
+        }
+        for key, value in gates.items()
+    ]
+
+
+def confidence_indicator(total_occurrences: int, predictive_score: float) -> str:
+    if total_occurrences >= 30 and predictive_score >= 70:
+        return "High"
+    if total_occurrences >= 10 and predictive_score >= 50:
+        return "Medium"
+    return "Low"
+
+
+def predictive_score_for_gate(item: dict[str, Any]) -> float:
+    total = item["total_occurrences"]
+    decided = item["win_count"] + item["loss_count"]
+    win_rate = item["win_count"] / decided if decided else 0.0
+    sample_score = min(math.log1p(total) / math.log1p(50), 1.0)
+    avg_returns = [
+        abs(value)
+        for value in (
+            average(item["return_1d"]),
+            average(item["return_3d"]),
+            average(item["return_5d"]),
+            average(item["return_10d"]),
+            average(item["return_20d"]),
+        )
+        if value is not None
+    ]
+    avg_return_score = sum(avg_returns) / len(avg_returns) if avg_returns else 0.0
+    return_score = min(avg_return_score / 20.0, 1.0)
+    variance_values = (
+        item["return_1d"]
+        + item["return_3d"]
+        + item["return_5d"]
+        + item["return_10d"]
+        + item["return_20d"]
+    )
+    stability_score = 1.0 / (1.0 + (standard_deviation(variance_values) / 10.0))
+    score = (
+        0.30 * sample_score
+        + 0.35 * win_rate
+        + 0.20 * return_score
+        + 0.15 * stability_score
+    )
+    return round(score * 100, 2)
+
+
+def refresh_gate_intelligence_metrics(conn: Optional[sqlite3.Connection] = None) -> list[dict[str, Any]]:
+    owns_connection = conn is None
+    if owns_connection:
+        init_db()
+    active_conn = conn or connect()
+    try:
+        rows = active_conn.execute(
+            """
+            SELECT *
+            FROM scan_results
+            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+            """
+        ).fetchall()
+        metrics: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            outcome = row["stock_outcome_label"]
+            direction = row["final_direction"] or ""
+            for gate in completed_gate_entries(row):
+                key = gate["key"]
+                item = metrics.setdefault(
+                    key,
+                    {
+                        "gate_key": key,
+                        "gate_name": gate["name"],
+                        "total_occurrences": 0,
+                        "total_passes": 0,
+                        "total_failures": 0,
+                        "win_count": 0,
+                        "loss_count": 0,
+                        "bullish_wins": 0,
+                        "bullish_losses": 0,
+                        "bearish_wins": 0,
+                        "bearish_losses": 0,
+                        "return_1d": [],
+                        "return_3d": [],
+                        "return_5d": [],
+                        "return_10d": [],
+                        "return_20d": [],
+                    },
+                )
+                item["total_occurrences"] += 1
+                if gate["passed"]:
+                    item["total_passes"] += 1
+                else:
+                    item["total_failures"] += 1
+                if outcome == "WIN":
+                    item["win_count"] += 1
+                    if direction == "Bullish":
+                        item["bullish_wins"] += 1
+                    elif direction == "Bearish":
+                        item["bearish_wins"] += 1
+                elif outcome == "LOSS":
+                    item["loss_count"] += 1
+                    if direction == "Bullish":
+                        item["bullish_losses"] += 1
+                    elif direction == "Bearish":
+                        item["bearish_losses"] += 1
+                for horizon in (1, 3, 5, 10, 20):
+                    value = row[f"return_{horizon}d"]
+                    if isinstance(value, (int, float)):
+                        item[f"return_{horizon}d"].append(float(value))
+
+        updated_at = datetime.now(timezone.utc).isoformat()
+        active_conn.execute("DELETE FROM gate_intelligence_metrics")
+        output = []
+        for item in metrics.values():
+            decided = item["win_count"] + item["loss_count"]
+            bullish_decided = item["bullish_wins"] + item["bullish_losses"]
+            bearish_decided = item["bearish_wins"] + item["bearish_losses"]
+            predictive_score = predictive_score_for_gate(item)
+            row = {
+                "gate_key": item["gate_key"],
+                "gate_name": item["gate_name"],
+                "total_occurrences": item["total_occurrences"],
+                "total_passes": item["total_passes"],
+                "total_failures": item["total_failures"],
+                "win_count": item["win_count"],
+                "loss_count": item["loss_count"],
+                "win_rate": round(item["win_count"] / decided * 100, 2) if decided else 0.0,
+                "avg_1d_return": average(item["return_1d"]),
+                "avg_3d_return": average(item["return_3d"]),
+                "avg_5d_return": average(item["return_5d"]),
+                "avg_10d_return": average(item["return_10d"]),
+                "avg_20d_return": average(item["return_20d"]),
+                "bullish_win_rate": (
+                    round(item["bullish_wins"] / bullish_decided * 100, 2)
+                    if bullish_decided
+                    else 0.0
+                ),
+                "bearish_win_rate": (
+                    round(item["bearish_wins"] / bearish_decided * 100, 2)
+                    if bearish_decided
+                    else 0.0
+                ),
+                "predictive_score": predictive_score,
+                "confidence": confidence_indicator(item["total_occurrences"], predictive_score),
+                "updated_at": updated_at,
+            }
+            active_conn.execute(
+                """
+                INSERT INTO gate_intelligence_metrics (
+                    gate_key, gate_name, total_occurrences, total_passes, total_failures,
+                    win_count, loss_count, win_rate, avg_1d_return, avg_3d_return,
+                    avg_5d_return, avg_10d_return, avg_20d_return, bullish_win_rate,
+                    bearish_win_rate, predictive_score, confidence, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["gate_key"],
+                    row["gate_name"],
+                    row["total_occurrences"],
+                    row["total_passes"],
+                    row["total_failures"],
+                    row["win_count"],
+                    row["loss_count"],
+                    row["win_rate"],
+                    row["avg_1d_return"],
+                    row["avg_3d_return"],
+                    row["avg_5d_return"],
+                    row["avg_10d_return"],
+                    row["avg_20d_return"],
+                    row["bullish_win_rate"],
+                    row["bearish_win_rate"],
+                    row["predictive_score"],
+                    row["confidence"],
+                    row["updated_at"],
+                ),
+            )
+            output.append(row)
+        if owns_connection:
+            active_conn.commit()
+        return sorted(output, key=lambda row: row["predictive_score"], reverse=True)
+    finally:
+        if owns_connection:
+            active_conn.close()
+
+
+def get_gate_intelligence_metrics() -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM gate_intelligence_metrics
+            ORDER BY predictive_score DESC, total_occurrences DESC, gate_name ASC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_rows(conn: sqlite3.Connection, table: str) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+
+
+def freshness_status(value: Optional[str], stale_days: int = 7) -> str:
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return "NOT READY"
+    age = datetime.now(timezone.utc) - parsed
+    return "READY" if age <= timedelta(days=stale_days) else "IN PROGRESS"
+
+
+def readiness_status(ready: bool, in_progress: bool = False) -> str:
+    if ready:
+        return "READY"
+    if in_progress:
+        return "IN PROGRESS"
+    return "NOT READY"
+
+
+def health_status(online: bool, warning: bool = False) -> str:
+    if online and not warning:
+        return "ONLINE"
+    if online or warning:
+        return "WARNING"
+    return "OFFLINE"
+
+
+def progress_percent(value: float) -> int:
+    return max(0, min(100, int(round(value))))
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not table_exists(conn, table):
+        return set()
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def audit_item(category: str, name: str, status: str, message: str) -> dict[str, str]:
+    return {
+        "category": category,
+        "name": name,
+        "status": status,
+        "message": message,
+    }
+
+
+def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
+    """Return Scout Horizon-1 sandbox control metrics without touching production systems."""
+    init_db()
+    db_size_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    db_size_mb = round(db_size_bytes / 1024 / 1024, 3)
+    now = datetime.now(timezone.utc)
+
+    with connect() as conn:
+        rows_by_table = {
+            "scan_runs": count_rows(conn, "scan_runs"),
+            "scan_results": count_rows(conn, "scan_results"),
+            "outcome_update_audit": count_rows(conn, "outcome_update_audit"),
+            "institutional_audit_log": count_rows(conn, "institutional_audit_log"),
+            "gate_intelligence_metrics": count_rows(conn, "gate_intelligence_metrics"),
+        }
+        totals = {
+            "saved_scans": rows_by_table["scan_runs"],
+            "saved_recommendations": rows_by_table["scan_results"],
+            "completed_outcomes": int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM scan_results
+                    WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+                    """
+                ).fetchone()[0]
+                or 0
+            ),
+            "pending_outcomes": int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM scan_results
+                    WHERE stock_outcome_label IS NULL
+                       OR stock_outcome_label = 'PENDING'
+                       OR stock_outcome_label = 'Pending'
+                    """
+                ).fetchone()[0]
+                or 0
+            ),
+            "gate_snapshots": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM scan_results WHERE gate_snapshot_json IS NOT NULL AND gate_snapshot_json != ''"
+                ).fetchone()[0]
+                or 0
+            ),
+            "universe_snapshots": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM scan_runs WHERE universe_snapshot_json IS NOT NULL AND universe_snapshot_json != ''"
+                ).fetchone()[0]
+                or 0
+            ),
+            "audit_log_entries": rows_by_table["outcome_update_audit"] + rows_by_table["institutional_audit_log"],
+            "feature_vectors": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM scan_results WHERE feature_vector_json IS NOT NULL AND feature_vector_json != ''"
+                ).fetchone()[0]
+                or 0
+            ),
+        }
+        unique_tickers = int(
+            conn.execute("SELECT COUNT(DISTINCT ticker) FROM scan_results").fetchone()[0] or 0
+        )
+        engine_versions = [
+            row["engine_version"]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT engine_version FROM scan_results
+                WHERE engine_version IS NOT NULL AND engine_version != ''
+                ORDER BY engine_version
+                """
+            ).fetchall()
+        ]
+        latest_scan = conn.execute("SELECT MAX(timestamp) AS value FROM scan_runs").fetchone()["value"]
+        latest_outcome_update = conn.execute(
+            "SELECT MAX(outcome_last_updated_at) AS value FROM scan_results"
+        ).fetchone()["value"]
+        latest_outcome_audit_event = conn.execute(
+            "SELECT MAX(timestamp) AS value FROM outcome_update_audit"
+        ).fetchone()["value"]
+        latest_institutional_audit_event = conn.execute(
+            "SELECT MAX(timestamp) AS value FROM institutional_audit_log"
+        ).fetchone()["value"]
+        latest_audit_event = max(
+            [value for value in (latest_outcome_audit_event, latest_institutional_audit_event) if value],
+            default=None,
+        )
+        audit_backed_recommendations = int(
+            conn.execute(
+                """
+                SELECT COUNT(DISTINCT recommendation_id)
+                FROM institutional_audit_log
+                WHERE event_type IN ('recommendation_created', 'outcome_updated')
+                  AND recommendation_id IS NOT NULL
+                """
+            ).fetchone()[0]
+            or 0
+        )
+        latest_universe_snapshot = conn.execute(
+            """
+            SELECT MAX(timestamp) AS value FROM scan_runs
+            WHERE universe_snapshot_json IS NOT NULL AND universe_snapshot_json != ''
+            """
+        ).fetchone()["value"]
+        missing_feature_vectors = totals["saved_recommendations"] - totals["feature_vectors"]
+        missing_gate_snapshots = totals["saved_recommendations"] - totals["gate_snapshots"]
+        missing_universe_snapshots = totals["saved_scans"] - totals["universe_snapshots"]
+        stale_pending_outcomes = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM scan_results
+                WHERE (stock_outcome_label IS NULL OR stock_outcome_label IN ('PENDING', 'Pending'))
+                  AND datetime(timestamp) < datetime('now', '-7 days')
+                """
+            ).fetchone()[0]
+            or 0
+        )
+        duplicate_test_rows = int(
+            conn.execute(
+                """
+                SELECT COALESCE(SUM(extra_rows), 0)
+                FROM (
+                    SELECT COUNT(*) - 1 AS extra_rows
+                    FROM scan_results
+                    WHERE COALESCE(is_test_record, 0) = 1
+                    GROUP BY ticker, timestamp
+                    HAVING COUNT(*) > 1
+                )
+                """
+            ).fetchone()[0]
+            or 0
+        )
+        feature_rows = conn.execute(
+            """
+            SELECT feature_vector_json FROM scan_results
+            WHERE feature_vector_json IS NOT NULL AND feature_vector_json != ''
+            """
+        ).fetchall()
+
+    unique_sectors = set()
+    for row in feature_rows:
+        feature = json_load(row["feature_vector_json"])
+        if isinstance(feature, dict) and feature.get("sector"):
+            unique_sectors.add(str(feature["sector"]))
+
+    completed = totals["completed_outcomes"]
+    pending = totals["pending_outcomes"]
+    recommendations = totals["saved_recommendations"]
+    gate_intelligence_count = rows_by_table["gate_intelligence_metrics"]
+    audit_backed_records = min(audit_backed_recommendations, recommendations)
+    stale_scan = latest_scan and freshness_status(latest_scan) != "READY"
+    stale_outcome = latest_outcome_update and freshness_status(latest_outcome_update) != "READY"
+
+    warnings = []
+    if not fmp_key_present:
+        warnings.append("Missing FMP API key. Outcome refreshes will remain limited.")
+    if completed < 25:
+        warnings.append("Too few completed outcomes for reliable gate-level conclusions.")
+    if recommendations and pending / max(recommendations, 1) > 0.5:
+        warnings.append("Too many pending outcomes relative to saved recommendations.")
+    if duplicate_test_rows:
+        warnings.append(f"Duplicate sandbox test rows detected: {duplicate_test_rows}.")
+    if missing_feature_vectors:
+        warnings.append(f"Missing feature vectors: {missing_feature_vectors}.")
+    if missing_gate_snapshots:
+        warnings.append(f"Missing gate snapshots: {missing_gate_snapshots}.")
+    if missing_universe_snapshots:
+        warnings.append(f"Missing universe snapshots: {missing_universe_snapshots}.")
+    if stale_pending_outcomes:
+        warnings.append(f"Stale pending outcomes older than 7 days: {stale_pending_outcomes}.")
+    if stale_scan:
+        warnings.append("Latest scan is stale. Run a sandbox scan to refresh memory.")
+    if stale_outcome:
+        warnings.append("Latest outcome update is stale. Run Update Outcomes when ready.")
+
+    learning_readiness = [
+        {
+            "name": "Gate Intelligence",
+            "status": readiness_status(gate_intelligence_count > 0, completed > 0),
+        },
+        {
+            "name": "Outcome Tracking",
+            "status": readiness_status(completed > 0, recommendations > 0),
+        },
+        {
+            "name": "Feature Store",
+            "status": readiness_status(
+                recommendations > 0 and missing_feature_vectors == 0,
+                totals["feature_vectors"] > 0,
+            ),
+        },
+        {
+            "name": "Universe Snapshot",
+            "status": readiness_status(
+                totals["saved_scans"] > 0 and missing_universe_snapshots == 0,
+                totals["universe_snapshots"] > 0,
+            ),
+        },
+        {
+            "name": "Audit Trail",
+            "status": readiness_status(totals["audit_log_entries"] > 0, completed > 0),
+        },
+        {
+            "name": "Pattern Learning",
+            "status": readiness_status(completed >= 1000, completed > 0),
+        },
+    ]
+
+    progress = [
+        {"name": "Data Collection", "percent": progress_percent(recommendations / 1000 * 100)},
+        {
+            "name": "Outcome Coverage",
+            "percent": progress_percent(completed / max(recommendations, 1) * 100),
+        },
+        {"name": "Gate Intelligence", "percent": progress_percent(gate_intelligence_count / 14 * 100)},
+        {
+            "name": "Feature Store",
+            "percent": progress_percent(totals["feature_vectors"] / max(recommendations, 1) * 100),
+        },
+        {"name": "Pattern Learning", "percent": progress_percent(completed / 1000 * 100)},
+    ]
+
+    system_health = [
+        {"name": "FMP API", "status": health_status(fmp_key_present, not fmp_key_present)},
+        {"name": "SQLite", "status": health_status(DB_PATH.exists())},
+        {"name": "Scheduler", "status": "WARNING", "detail": "Production scheduler not touched by sandbox."},
+        {"name": "Sandbox Engine", "status": health_status(True)},
+        {"name": "Memory Layer", "status": health_status(True, recommendations == 0)},
+        {"name": "Outcome Engine", "status": health_status(completed > 0, recommendations > 0 and completed == 0)},
+        {"name": "Feature Store", "status": health_status(totals["feature_vectors"] > 0, missing_feature_vectors > 0)},
+    ]
+
+    return {
+        "ok": True,
+        "generated_at": now.isoformat(),
+        "database": {
+            "path": str(DB_PATH),
+            "size_bytes": db_size_bytes,
+            "size_mb": db_size_mb,
+            "size_label": f"{db_size_mb:.3f} MB" if db_size_mb < 1024 else f"{db_size_mb / 1024:.2f} GB",
+            "rows_by_table": rows_by_table,
+        },
+        "data_bank_health": {
+            "sqlite_database_size": db_size_bytes,
+            **totals,
+        },
+        "learning_readiness": learning_readiness,
+        "data_volume": {
+            "estimated_db_size": f"{db_size_mb:.3f} MB",
+            "rows_by_table": rows_by_table,
+            "unique_tickers": unique_tickers,
+            "unique_sectors": len(unique_sectors),
+            "engine_versions": engine_versions,
+            "feature_vector_count": totals["feature_vectors"],
+        },
+        "versioning": {
+            "current_engine_version": current_engine_version(),
+            "latest_scan_timestamp": latest_scan,
+            "latest_outcome_update": latest_outcome_update,
+            "latest_audit_event": latest_audit_event,
+            "latest_universe_snapshot": latest_universe_snapshot,
+        },
+        "warnings": warnings,
+        "learning_progress": progress,
+        "future_training_readiness": {
+            "label": "Future GPT/LLM Training Readiness",
+            "training_records_available": recommendations,
+            "completed_labeled_outcomes": completed,
+            "feature_vectors_available": totals["feature_vectors"],
+            "audit_backed_records": audit_backed_records,
+            "exportable_dataset_status": readiness_status(completed > 0 and totals["feature_vectors"] > 0),
+            "minimum_recommended": "1,000+ labeled records",
+            "recommended_next_milestone": (
+                "Reach 1,000+ completed labeled outcomes with feature vectors and audit coverage."
+                if completed < 1000
+                else "Expand cross-sector coverage and monitor drift before export."
+            ),
+        },
+        "system_health": system_health,
+        "endpoints": [
+            {"path": "/control", "description": "Scout Horizon-1 mission control page."},
+            {"path": "/api/control/summary", "description": "JSON summary for sandbox memory health and training readiness."},
+            {"path": "/api/control/self-audit", "description": "Runs Phase 4 infrastructure readiness checks."},
+            {"path": "/api/control/backfill", "description": "Backfills missing institutional snapshots and audit events."},
+        ],
+        "safety": {
+            "active_model_training": False,
+            "scope": "Sandbox only",
+            "production_scheduler_touched": False,
+        },
+    }
+
+
+def get_horizon_self_audit(
+    fmp_key_present: bool = False,
+    control_route_available: bool = True,
+) -> dict[str, Any]:
+    """Verify sandbox Phase 4 infrastructure connectivity and measurable readiness."""
+    summary = get_control_summary(fmp_key_present=fmp_key_present)
+    checks: list[dict[str, str]] = []
+    rows_by_table = summary["database"]["rows_by_table"]
+    health = summary["data_bank_health"]
+    versioning = summary["versioning"]
+    warnings = summary["warnings"]
+
+    with connect() as conn:
+        scan_runs_exists = table_exists(conn, "scan_runs")
+        scan_results_exists = table_exists(conn, "scan_results")
+        scan_result_columns = table_columns(conn, "scan_results")
+        scan_run_columns = table_columns(conn, "scan_runs")
+        audit_exists = table_exists(conn, "outcome_update_audit") and table_exists(conn, "institutional_audit_log")
+        intelligence_exists = table_exists(conn, "gate_intelligence_metrics")
+        feature_vector_table_exists = table_exists(conn, "feature_vectors")
+        outcome_fields = {
+            "return_1d",
+            "return_3d",
+            "return_5d",
+            "return_10d",
+            "return_20d",
+            "stock_outcome_label",
+        }
+        duplicate_test_records = int(
+            conn.execute(
+                """
+                SELECT COALESCE(SUM(extra_rows), 0)
+                FROM (
+                    SELECT COUNT(*) - 1 AS extra_rows
+                    FROM scan_results
+                    WHERE COALESCE(is_test_record, 0) = 1
+                    GROUP BY ticker, timestamp
+                    HAVING COUNT(*) > 1
+                )
+                """
+            ).fetchone()[0]
+            or 0
+        )
+        stale_outcomes = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM scan_results
+                WHERE (stock_outcome_label IS NULL OR stock_outcome_label IN ('PENDING', 'Pending'))
+                  AND datetime(timestamp) < datetime('now', '-7 days')
+                """
+            ).fetchone()[0]
+            or 0
+        )
+
+    checks.extend(
+        [
+            audit_item(
+                "SYSTEM",
+                "/control route loads",
+                "PASS" if control_route_available else "FAIL",
+                "PASS - Horizon-1 route file is available."
+                if control_route_available
+                else "FAIL - /control route file is missing.",
+            ),
+            audit_item(
+                "SYSTEM",
+                "/api/control/summary returns valid JSON",
+                "PASS" if summary.get("ok") else "FAIL",
+                "PASS - Control summary returned valid JSON."
+                if summary.get("ok")
+                else "FAIL - Control summary did not return a valid payload.",
+            ),
+            audit_item(
+                "SYSTEM",
+                "SQLite database is reachable",
+                "PASS" if DB_PATH.exists() else "WARNING",
+                "PASS - SQLite database is reachable."
+                if DB_PATH.exists()
+                else "WARNING - SQLite database initialized but no prior memory existed.",
+            ),
+            audit_item(
+                "SYSTEM",
+                "FMP API key is detected",
+                "PASS" if fmp_key_present else "WARNING",
+                "PASS - FMP API key detected."
+                if fmp_key_present
+                else "WARNING - Missing FMP API key; live outcome refreshes are limited.",
+            ),
+            audit_item(
+                "SYSTEM",
+                "FMP API status can be checked",
+                "PASS" if fmp_key_present else "WARNING",
+                "PASS - FMP status check is ready because a key is present."
+                if fmp_key_present
+                else "WARNING - FMP status cannot be checked until an API key is loaded.",
+            ),
+        ]
+    )
+
+    checks.extend(
+        [
+            audit_item(
+                "DATA LAYERS",
+                "Research memory table exists",
+                "PASS" if scan_runs_exists else "FAIL",
+                "PASS - scan_runs table exists."
+                if scan_runs_exists
+                else "FAIL - scan_runs table is missing.",
+            ),
+            audit_item(
+                "DATA LAYERS",
+                "Recommendations table exists",
+                "PASS" if scan_results_exists and "ticker" in scan_result_columns else "FAIL",
+                "PASS - scan_results recommendation table exists."
+                if scan_results_exists and "ticker" in scan_result_columns
+                else "FAIL - scan_results table is missing.",
+            ),
+            audit_item(
+                "DATA LAYERS",
+                "Outcome fields exist",
+                "PASS" if outcome_fields.issubset(scan_result_columns) else "FAIL",
+                "PASS - Outcome fields are present."
+                if outcome_fields.issubset(scan_result_columns)
+                else "FAIL - One or more outcome fields are missing.",
+            ),
+            audit_item(
+                "DATA LAYERS",
+                "Gate snapshots exist",
+                "PASS" if "gate_snapshot_json" in scan_result_columns else "FAIL",
+                "PASS - Gate snapshot column exists."
+                if "gate_snapshot_json" in scan_result_columns
+                else "FAIL - Gate snapshot column is missing.",
+            ),
+            audit_item(
+                "DATA LAYERS",
+                "Universe snapshots exist",
+                "PASS" if "universe_snapshot_json" in scan_run_columns else "FAIL",
+                "PASS - Universe snapshot column exists."
+                if "universe_snapshot_json" in scan_run_columns
+                else "FAIL - Universe snapshot column is missing.",
+            ),
+            audit_item(
+                "DATA LAYERS",
+                "Audit log exists",
+                "PASS" if audit_exists else "FAIL",
+                "PASS - Outcome audit table exists."
+                if audit_exists
+                else "FAIL - Outcome audit table is missing.",
+            ),
+            audit_item(
+                "DATA LAYERS",
+                "Feature vector store exists",
+                "PASS" if "feature_vector_json" in scan_result_columns or feature_vector_table_exists else "FAIL",
+                "PASS - Feature vector JSON store exists."
+                if "feature_vector_json" in scan_result_columns
+                else "FAIL - Feature vector store is missing.",
+            ),
+        ]
+    )
+
+    checks.extend(
+        [
+            audit_item(
+                "DATA PRESENCE",
+                "At least one scan exists",
+                "PASS" if health["saved_scans"] > 0 else "WARNING",
+                f"{'PASS' if health['saved_scans'] > 0 else 'WARNING'} - {health['saved_scans']} saved scans found.",
+            ),
+            audit_item(
+                "DATA PRESENCE",
+                "At least one recommendation exists",
+                "PASS" if health["saved_recommendations"] > 0 else "WARNING",
+                f"{'PASS' if health['saved_recommendations'] > 0 else 'WARNING'} - {health['saved_recommendations']} recommendations found.",
+            ),
+            audit_item(
+                "DATA PRESENCE",
+                "At least one completed outcome exists",
+                "PASS" if health["completed_outcomes"] > 0 else "WARNING",
+                f"{'PASS' if health['completed_outcomes'] > 0 else 'WARNING'} - {health['completed_outcomes']} completed outcomes found.",
+            ),
+        ]
+    )
+
+    checks.extend(
+        [
+            audit_item(
+                "INTELLIGENCE",
+                "Gate intelligence data exists",
+                "PASS" if rows_by_table["gate_intelligence_metrics"] > 0 else "WARNING",
+                f"{'PASS' if rows_by_table['gate_intelligence_metrics'] > 0 else 'WARNING'} - {rows_by_table['gate_intelligence_metrics']} gate intelligence rows found.",
+            ),
+            audit_item(
+                "INTELLIGENCE",
+                "Engine version exists",
+                "PASS" if versioning.get("current_engine_version") else "FAIL",
+                "PASS - Engine version is available."
+                if versioning.get("current_engine_version")
+                else "FAIL - Engine version is missing.",
+            ),
+            audit_item(
+                "INTELLIGENCE",
+                "Latest scan timestamp exists",
+                "PASS" if versioning.get("latest_scan_timestamp") else "WARNING",
+                "PASS - Latest scan timestamp exists."
+                if versioning.get("latest_scan_timestamp")
+                else "WARNING - No latest scan timestamp yet.",
+            ),
+            audit_item(
+                "INTELLIGENCE",
+                "Latest outcome timestamp exists",
+                "PASS" if versioning.get("latest_outcome_update") else "WARNING",
+                "PASS - Latest outcome update timestamp exists."
+                if versioning.get("latest_outcome_update")
+                else "WARNING - No outcome update timestamp yet.",
+            ),
+            audit_item(
+                "INTELLIGENCE",
+                "Latest audit event exists",
+                "PASS" if versioning.get("latest_audit_event") else "WARNING",
+                "PASS - Latest audit event exists."
+                if versioning.get("latest_audit_event")
+                else "WARNING - No audit event exists yet.",
+            ),
+        ]
+    )
+
+    missing_feature_vectors = max(health["saved_recommendations"] - health["feature_vectors"], 0)
+    missing_gate_snapshots = max(health["saved_recommendations"] - health["gate_snapshots"], 0)
+    missing_universe_snapshots = max(health["saved_scans"] - health["universe_snapshots"], 0)
+    stale_scans = 1 if versioning.get("latest_scan_timestamp") and freshness_status(versioning["latest_scan_timestamp"]) != "READY" else 0
+    checks.extend(
+        [
+            audit_item(
+                "QUALITY",
+                "Duplicate test records count",
+                "PASS" if duplicate_test_records == 0 else "WARNING",
+                f"{'PASS' if duplicate_test_records == 0 else 'WARNING'} - Duplicate test records: {duplicate_test_records}.",
+            ),
+            audit_item(
+                "QUALITY",
+                "Stale outcomes check",
+                "PASS" if stale_outcomes == 0 else "WARNING",
+                f"{'PASS' if stale_outcomes == 0 else 'WARNING'} - Stale pending outcomes: {stale_outcomes}.",
+            ),
+            audit_item(
+                "QUALITY",
+                "Stale scans check",
+                "PASS" if stale_scans == 0 else "WARNING",
+                "PASS - Latest scan freshness is acceptable."
+                if stale_scans == 0
+                else "WARNING - Latest scan is stale.",
+            ),
+            audit_item(
+                "QUALITY",
+                "Missing feature vectors check",
+                "PASS" if missing_feature_vectors == 0 else "WARNING",
+                f"{'PASS' if missing_feature_vectors == 0 else 'WARNING'} - Missing feature vectors: {missing_feature_vectors}.",
+            ),
+            audit_item(
+                "QUALITY",
+                "Missing snapshots check",
+                "PASS" if missing_gate_snapshots == 0 and missing_universe_snapshots == 0 else "WARNING",
+                (
+                    "PASS - Gate and universe snapshots are complete."
+                    if missing_gate_snapshots == 0 and missing_universe_snapshots == 0
+                    else f"WARNING - Missing gate snapshots: {missing_gate_snapshots}; missing universe snapshots: {missing_universe_snapshots}."
+                ),
+            ),
+        ]
+    )
+
+    passes = sum(1 for item in checks if item["status"] == "PASS")
+    warning_count = sum(1 for item in checks if item["status"] == "WARNING")
+    failures = sum(1 for item in checks if item["status"] == "FAIL")
+    if failures:
+        next_action = "Fix failing infrastructure checks before starting Phase 5."
+    elif warning_count:
+        if missing_gate_snapshots or missing_universe_snapshots:
+            next_action = "Resolve warnings by adding fresh scans, completed outcomes, and complete snapshots before Phase 5."
+        elif missing_feature_vectors:
+            next_action = "Resolve remaining warnings; feature vectors are the next institutional record gap."
+        else:
+            next_action = "Resolve remaining warnings before Phase 5 planning."
+    else:
+        next_action = "Phase 4 infrastructure is connected and ready for Phase 5 planning."
+
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "total_checks": len(checks),
+            "passes": passes,
+            "warnings": warning_count,
+            "failures": failures,
+            "recommended_next_action": next_action,
+        },
+        "checks": checks,
+        "warnings": warnings,
+    }
 
 
 def get_ticker_history(ticker: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:

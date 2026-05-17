@@ -419,6 +419,7 @@
     <nav class="top-nav" aria-label="Sandbox navigation">
       <a href="/">Scout Gate Sandbox</a>
       <a class="active" href="/research">Research Memory</a>
+      <a href="/control">Scout Horizon-1</a>
     </nav>
 
     <div class="status" id="status">Loading local memory...</div>
@@ -480,6 +481,11 @@
       <article class="card wide">
         <h2>Historical Scans</h2>
         <div class="table-wrap" id="history"></div>
+      </article>
+
+      <article class="card wide">
+        <h2>Gate Intelligence</h2>
+        <div class="table-wrap" id="gate-intelligence"></div>
       </article>
 
       <article class="card">
@@ -625,7 +631,7 @@
         <table>
           <thead>
             <tr>
-              <th>Time</th><th>Created</th><th>Engine</th><th>Ticker</th><th>Score</th><th>Direction</th><th>1D</th><th>3D</th><th>5D</th><th>10D</th><th>20D</th><th>Outcome</th><th>Last Updated</th><th>Failed Gates</th><th>Gate Snapshot</th><th>Why Outcome?</th>
+              <th>Time</th><th>Created</th><th>Engine</th><th>Ticker</th><th>Score</th><th>Direction</th><th>1D</th><th>3D</th><th>5D</th><th>10D</th><th>20D</th><th>Outcome</th><th>Last Updated</th><th>Failed Gates</th><th>Gate Snapshot</th><th>Horizon Trace</th><th>Why Outcome?</th>
             </tr>
           </thead>
           <tbody>
@@ -646,6 +652,7 @@
                 <td>${escapeHtml(shortDate(row.outcome_last_updated_at))}</td>
                 <td>${(row.failed_gates || []).map((gate) => `<span class="pill">${escapeHtml(gate)}</span>`).join("") || "None"}</td>
                 <td>${renderGateSnapshot(row)}</td>
+                <td><button class="button" type="button" data-horizon-trace-id="${row.id}" title="Internal decision audit for operators, partners, investors, and future employees.">Horizon Trace</button></td>
                 <td><button class="button" type="button" data-outcome-id="${row.id}">Why Outcome?</button></td>
               </tr>
             `).join("")}
@@ -657,6 +664,13 @@
           const id = Number(button.getAttribute("data-outcome-id"));
           const row = currentHistory.find((item) => item.id === id);
           if (row) openOutcomeModal(row);
+        });
+      });
+      document.querySelectorAll("[data-horizon-trace-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const id = Number(button.getAttribute("data-horizon-trace-id"));
+          const row = currentHistory.find((item) => item.id === id);
+          if (row) openHorizonTraceModal(row);
         });
       });
     }
@@ -687,6 +701,45 @@
             </tbody>
           </table>
         </details>
+      `;
+    }
+
+    function renderGateIntelligence(rows) {
+      if (!rows.length) {
+        document.getElementById("gate-intelligence").innerHTML = "<p class=\"hint\">No gate intelligence yet. Update outcomes after completed recommendations are available.</p>";
+        return;
+      }
+      const most = [...rows].sort((a, b) => (b.predictive_score || 0) - (a.predictive_score || 0)).slice(0, 7);
+      const least = [...rows].sort((a, b) => (a.predictive_score || 0) - (b.predictive_score || 0)).slice(0, 7);
+      const rowHtml = (row) => `
+        <tr>
+          <td>${escapeHtml(row.gate_name)}</td>
+          <td>${escapeHtml(row.total_occurrences)}</td>
+          <td>${escapeHtml(row.total_passes)} / ${escapeHtml(row.total_failures)}</td>
+          <td>${escapeHtml(row.win_count)} / ${escapeHtml(row.loss_count)}</td>
+          <td>${escapeHtml(row.win_rate)}%</td>
+          <td>${escapeHtml(pct(row.avg_1d_return))}</td>
+          <td>${escapeHtml(pct(row.avg_3d_return))}</td>
+          <td>${escapeHtml(pct(row.avg_5d_return))}</td>
+          <td>${escapeHtml(pct(row.avg_10d_return))}</td>
+          <td>${escapeHtml(pct(row.avg_20d_return))}</td>
+          <td>${escapeHtml(row.bullish_win_rate)}%</td>
+          <td>${escapeHtml(row.bearish_win_rate)}%</td>
+          <td>${escapeHtml(row.predictive_score)}</td>
+          <td><span class="pill">${escapeHtml(row.confidence)}</span></td>
+        </tr>
+      `;
+      document.getElementById("gate-intelligence").innerHTML = `
+        <h2>Most Predictive Gates</h2>
+        <table>
+          <thead><tr><th>Gate</th><th>Samples</th><th>Pass / Fail</th><th>Wins / Losses</th><th>Win Rate</th><th>Avg 1D</th><th>Avg 3D</th><th>Avg 5D</th><th>Avg 10D</th><th>Avg 20D</th><th>Bull Win</th><th>Bear Win</th><th>Predictive</th><th>Confidence</th></tr></thead>
+          <tbody>${most.map(rowHtml).join("")}</tbody>
+        </table>
+        <h2 style="margin-top:18px;">Least Predictive Gates</h2>
+        <table>
+          <thead><tr><th>Gate</th><th>Samples</th><th>Pass / Fail</th><th>Wins / Losses</th><th>Win Rate</th><th>Avg 1D</th><th>Avg 3D</th><th>Avg 5D</th><th>Avg 10D</th><th>Avg 20D</th><th>Bull Win</th><th>Bear Win</th><th>Predictive</th><th>Confidence</th></tr></thead>
+          <tbody>${least.map(rowHtml).join("")}</tbody>
+        </table>
       `;
     }
 
@@ -789,6 +842,67 @@
       outcomeModal.classList.remove("hidden");
     }
 
+    function compactEngineVersion(value) {
+      const text = String(value || "unknown");
+      const match = text.match(/^(\d+\.\d+\.\d+)/);
+      return match ? match[1] : text;
+    }
+
+    function listItems(items) {
+      if (!Array.isArray(items) || !items.length) {
+        return "<p class=\"hint\">Collecting intelligence...</p>";
+      }
+      return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    }
+
+    function valueOrCollecting(value) {
+      return value === null || value === undefined || value === ""
+        ? "Collecting intelligence..."
+        : value;
+    }
+
+    async function openHorizonTraceModal(row) {
+      document.getElementById("outcome-modal-title").textContent = `${row.ticker} Horizon Trace`;
+      outcomeModalBody.innerHTML = "<p class=\"hint\">Collecting intelligence...</p>";
+      outcomeModal.classList.remove("hidden");
+      try {
+        const response = await fetch(`/api/horizon-trace/${encodeURIComponent(row.id)}`);
+        const payload = await response.json();
+        const explanation = payload.explanation_json || {};
+        if (!explanation || !Object.keys(explanation).length) {
+          outcomeModalBody.innerHTML = "<p class=\"hint\">Collecting intelligence...</p>";
+          return;
+        }
+        const universeRank = explanation.universe_rank && explanation.universe_size
+          ? `${explanation.universe_rank} / ${explanation.universe_size}`
+          : valueOrCollecting(null);
+        outcomeModalBody.innerHTML = `
+          <div class="eyebrow">Horizon Trace</div>
+          <h2 style="margin-top:8px;">HORIZON TRACE</h2>
+          <p class="hint">Internal decision audit for operators, partners, investors, and future employees.</p>
+          <div class="detail-grid">
+            <div class="detail"><div class="detail-label">Ticker</div><div>${escapeHtml(payload.recommendation?.ticker || row.ticker)}</div></div>
+            <div class="detail"><div class="detail-label">Direction</div><div>${escapeHtml(valueOrCollecting(explanation.direction))}</div></div>
+            <div class="detail"><div class="detail-label">Score</div><div>${escapeHtml(valueOrCollecting(explanation.score))}</div></div>
+            <div class="detail"><div class="detail-label">Universe Rank</div><div>${escapeHtml(universeRank)}</div></div>
+            <div class="detail"><div class="detail-label">Sector</div><div>${escapeHtml(valueOrCollecting(explanation.sector_name))}</div></div>
+            <div class="detail"><div class="detail-label">Sector Rank</div><div>${escapeHtml(valueOrCollecting(explanation.sector_rank))}</div></div>
+            <div class="detail"><div class="detail-label">Confidence</div><div>${escapeHtml(typeof explanation.confidence_score === "number" ? `${explanation.confidence_score}%` : valueOrCollecting(explanation.confidence_score))}</div></div>
+            <div class="detail"><div class="detail-label">Engine</div><div>${escapeHtml(compactEngineVersion(explanation.engine_version))}</div></div>
+            <div class="detail"><div class="detail-label">Scan</div><div>${escapeHtml(valueOrCollecting(explanation.scan_id))}</div></div>
+          </div>
+          <h2 style="margin-top:18px;">Passed Gates</h2>
+          ${listItems(explanation.passed_gates)}
+          <h2 style="margin-top:18px;">Failed Gates</h2>
+          ${listItems(explanation.failed_gates)}
+          <h2 style="margin-top:18px;">Risk Flags</h2>
+          ${listItems(explanation.risk_flags)}
+        `;
+      } catch (error) {
+        outcomeModalBody.innerHTML = `<p class="hint">Collecting intelligence...</p><p class="hint">${escapeHtml(error)}</p>`;
+      }
+    }
+
     function closeOutcomeModal() {
       outcomeModal.classList.add("hidden");
     }
@@ -822,6 +936,7 @@
       currentHistory = applyFilters(data.recentScans || []);
       renderMetrics(currentHistory, data.outcomeAnalytics || {});
       renderHistory(currentHistory);
+      renderGateIntelligence(data.gateIntelligence || []);
       renderHeatmap(data.gateStatistics || []);
       renderFailures(data.topGateFailures || []);
       renderDirectionStats(data.directionAccuracy || []);

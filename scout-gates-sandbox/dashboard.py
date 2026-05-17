@@ -19,16 +19,21 @@ from explainability import build_explanation
 from memory_store import (
     create_outcome_test_record,
     export_csv,
+    get_control_summary,
     get_direction_accuracy,
+    get_gate_intelligence_metrics,
     get_gate_statistics,
+    get_horizon_self_audit,
     get_option_pick_history,
     get_outcome_analytics,
     get_outcome_audit_log,
+    get_recommendation_explanation,
     get_ticker_history,
     get_top_gate_failures,
+    run_horizon_backfill,
     save_scan_result,
 )
-from option_picker import choose_option_contract
+from option_picker import choose_option_contract, fmp_api_key
 from performance_tracker import update_outcomes
 from run_gates import (
     DEFAULT_CANDIDATES,
@@ -45,6 +50,7 @@ from run_gates import (
 SANDBOX_DIR = Path(__file__).resolve().parent
 DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
 RESEARCH_HTML = SANDBOX_DIR / "research.html"
+CONTROL_HTML = SANDBOX_DIR / "control.html"
 
 
 def first_failed_gate_payload(result: CandidateResult) -> Optional[dict[str, Any]]:
@@ -202,12 +208,28 @@ def build_memory_summary() -> dict[str, Any]:
         "ok": True,
         "recentScans": get_ticker_history(limit=100),
         "gateStatistics": get_gate_statistics(),
+        "gateIntelligence": get_gate_intelligence_metrics(),
         "directionAccuracy": get_direction_accuracy(),
         "topGateFailures": get_top_gate_failures(),
         "optionPickHistory": get_option_pick_history(),
         "outcomeAnalytics": get_outcome_analytics(),
         "outcomeAuditLog": get_outcome_audit_log(),
     }
+
+
+def build_control_summary() -> dict[str, Any]:
+    return get_control_summary(fmp_key_present=bool(fmp_api_key()))
+
+
+def build_horizon_self_audit() -> dict[str, Any]:
+    return get_horizon_self_audit(
+        fmp_key_present=bool(fmp_api_key()),
+        control_route_available=CONTROL_HTML.exists(),
+    )
+
+
+def execute_horizon_backfill() -> dict[str, Any]:
+    return run_horizon_backfill()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -221,8 +243,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/research", "/research.html"):
             self.send_file(RESEARCH_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/control", "/control.html"):
+            self.send_file(CONTROL_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
+            return
+        if parsed.path == "/api/control/summary":
+            self.send_json(build_control_summary())
+            return
+        if parsed.path == "/api/control/self-audit":
+            self.send_json(build_horizon_self_audit())
+            return
+        if parsed.path.startswith("/api/explanation/") or parsed.path.startswith("/api/horizon-trace/"):
+            scan_id_text = parsed.path.rsplit("/", 1)[-1]
+            try:
+                scan_id = int(scan_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Horizon Trace scan_id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            response = get_recommendation_explanation(scan_id)
+            if response is None:
+                self.send_json(
+                    {"ok": False, "message": "Horizon Trace was not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self.send_json(response)
             return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
@@ -272,6 +322,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": False, "message": f"Outcome test record error: {exc}"},
                     status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/control/backfill":
+            try:
+                self.send_json(execute_horizon_backfill())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Horizon backfill error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
 

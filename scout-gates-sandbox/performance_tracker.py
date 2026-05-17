@@ -10,7 +10,13 @@ import urllib.request
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from memory_store import connect, init_db, json_load, log_outcome_update_audit
+from memory_store import (
+    connect,
+    init_db,
+    json_load,
+    log_outcome_update_audit,
+    refresh_gate_intelligence_metrics,
+)
 from option_picker import fmp_api_key
 
 
@@ -402,6 +408,8 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                 flush=True,
             )
 
+        gate_intelligence = refresh_gate_intelligence_metrics(conn)
+
     return {
         "ok": True,
         "records_checked": checked,
@@ -410,4 +418,5 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
         "records_still_pending": pending,
         "errors": errors,
         "details": details,
+        "gate_intelligence_updated": len(gate_intelligence),
     }
