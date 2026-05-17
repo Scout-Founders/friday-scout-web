@@ -275,6 +275,12 @@
       color: var(--danger);
     }
 
+    .status-drift-detected {
+      border-color: #ff7d8588;
+      color: var(--danger);
+      box-shadow: 0 0 24px #ff7d8522;
+    }
+
     .progress-row {
       display: grid;
       grid-template-columns: 180px 1fr 52px;
@@ -418,6 +424,25 @@
         <div id="training-readiness"></div>
       </article>
 
+      <article class="card wide">
+        <div class="kicker">Feature Intelligence</div>
+        <h2>Horizon-1 Feature Engine</h2>
+        <div id="feature-intelligence"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Schema Integrity</div>
+        <h2>Schema Lock</h2>
+        <p class="hint">Registry status: PASS, WARNING, or DRIFT DETECTED. Validation is read-only and never migrates data.</p>
+        <div id="schema-integrity"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Anomaly Monitor</div>
+        <h2>Data Anomaly Detection</h2>
+        <div id="anomaly-monitor"></div>
+      </article>
+
       <article class="card half">
         <div class="kicker">Readiness Matrix</div>
         <h2>Learning Readiness</h2>
@@ -438,6 +463,12 @@
       <article class="card half">
         <div class="kicker">Model / Research Versioning</div>
         <div id="versioning"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Immutable Run Identity</div>
+        <h2>Latest Immutable Run</h2>
+        <div id="immutable-run"></div>
       </article>
 
       <article class="card wide">
@@ -482,6 +513,7 @@
       if (normalized === "offline") return "status-offline";
       if (normalized === "pass") return "status-pass";
       if (normalized === "fail") return "status-fail";
+      if (normalized === "drift-detected") return "status-drift-detected";
       return "";
     }
 
@@ -594,6 +626,72 @@
       `;
     }
 
+    function renderFeatureIntelligence(data) {
+      const feature = data.feature_intelligence || {};
+      document.getElementById("feature-intelligence").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Total feature vectors", number(feature.total_feature_vectors))}
+          ${metric("Labeled vectors", number(feature.labeled_vectors))}
+          ${metric("Unlabeled vectors", number(feature.unlabeled_vectors))}
+          ${metric("Unique tickers", number(feature.unique_tickers))}
+          ${metric("Unique sectors", number(feature.unique_sectors))}
+          ${metric("Engine versions", number((feature.engine_versions || []).length))}
+          ${metric("Feature readiness score", `${Number(feature.feature_readiness_score || 0).toFixed(1)}%`)}
+        </div>
+        <p class="hint">Hybrid intelligence model: 60% Technical + Flow, 25% Macro + Sector, 15% Fundamentals.</p>
+      `;
+    }
+
+    function renderSchemaIntegrity(data) {
+      const schema = data.schema_integrity || { status: "WARNING", checks: [] };
+      document.getElementById("schema-integrity").innerHTML = `
+        <p><span class="pill ${statusClass(schema.status)}">${escapeHtml(schema.status || "WARNING")}</span></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Schema</th><th>Status</th><th>Message</th></tr></thead>
+            <tbody>
+              ${(schema.checks || []).map((row) => `
+                <tr>
+                  <td>${escapeHtml(row.name)}</td>
+                  <td><span class="pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span></td>
+                  <td>${escapeHtml(row.message)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderAnomalyMonitor(data) {
+      const monitor = data.anomaly_monitor || {};
+      const latest = monitor.latest_anomaly || {};
+      document.getElementById("anomaly-monitor").innerHTML = `
+        <div class="metric-grid">
+          ${metric("Anomaly count", number(monitor.anomaly_count))}
+          ${metric("Latest anomaly", latest.type || "None")}
+          ${metric("Affected scan_id", monitor.affected_scan_id || "n/a")}
+        </div>
+        ${(monitor.anomalies || []).length ? `
+          <div class="table-wrap" style="margin-top:14px;">
+            <table>
+              <thead><tr><th>Type</th><th>Ticker</th><th>scan_id</th><th>Message</th></tr></thead>
+              <tbody>
+                ${(monitor.anomalies || []).slice(0, 10).map((row) => `
+                  <tr>
+                    <td>${escapeHtml(row.type)}</td>
+                    <td>${escapeHtml(row.ticker || "n/a")}</td>
+                    <td>${escapeHtml(row.scan_id || "n/a")}</td>
+                    <td>${escapeHtml(row.message)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : "<p class=\"hint\">No anomalies detected.</p>"}
+      `;
+    }
+
     function renderHealth(rows) {
       document.getElementById("system-health").innerHTML = `
         <table>
@@ -647,6 +745,18 @@
           ${metric("Latest outcome update", outcome.display, { title: outcome.full, valueClass: "time-value" })}
           ${metric("Latest audit event", audit.display, { title: audit.full, valueClass: "time-value" })}
           ${metric("Latest universe snapshot", universe.display, { title: universe.full, valueClass: "time-value" })}
+        </div>
+      `;
+    }
+
+    function renderImmutableRun(data) {
+      const run = data.latest_immutable_run || {};
+      const commit = run.git_commit_hash || "n/a";
+      document.getElementById("immutable-run").innerHTML = `
+        <div class="metric-grid">
+          ${metric("scan_id", run.scan_id || "n/a")}
+          ${metric("engine version", compactEngineVersion(run.engine_version || "unknown"), { title: run.engine_version || "" })}
+          ${metric("commit hash", commit === "n/a" ? "n/a" : commit.slice(0, 12), { title: commit })}
         </div>
       `;
     }
@@ -764,9 +874,13 @@
       renderReadiness(data.learning_readiness || []);
       renderProgress(data.learning_progress || []);
       renderTraining(data);
+      renderFeatureIntelligence(data);
+      renderSchemaIntegrity(data);
+      renderAnomalyMonitor(data);
       renderHealth(data.system_health || []);
       renderDataVolume(data);
       renderVersioning(data);
+      renderImmutableRun(data);
       renderWarnings(data.warnings || []);
       renderEndpoints(data.endpoints || []);
       statusEl.textContent = `Horizon-1 summary loaded at ${new Date(data.generated_at || Date.now()).toLocaleString()}.`;

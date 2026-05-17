@@ -63,3 +63,10 @@ def current_engine_version() -> str:
     if gate_logic_has_uncommitted_changes():
         return f"{ENGINE_VERSION_MAJOR}.{ENGINE_VERSION_MINOR}.{patch + 1}-dirty.{fingerprint}"
     return f"{ENGINE_VERSION_MAJOR}.{ENGINE_VERSION_MINOR}.{patch}+{fingerprint}"
+
+
+def current_git_commit_hash() -> str:
+    try:
+        return git_output(["rev-parse", "HEAD"])
+    except Exception:
+        return "unknown"

@@ -13,7 +13,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from engine_version import current_engine_version
+from engine_version import current_engine_version, current_git_commit_hash
+from feature_store import (
+    build_feature_vector as build_institutional_feature_vector,
+    get_feature_intelligence_summary,
+    init_feature_store,
+    refresh_feature_vector_labels,
+    save_feature_vector,
+)
+from schema_registry import validate_schema
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -27,6 +35,9 @@ MEMORY_COLUMNS = {
 }
 SCAN_RUN_COLUMNS = {
     "universe_snapshot_json": "TEXT",
+    "engine_version": "TEXT",
+    "git_commit_hash": "TEXT",
+    "created_at_utc": "TEXT",
 }
 OUTCOME_COLUMNS = {
     "is_test_record": "INTEGER DEFAULT 0",
@@ -209,6 +220,7 @@ def init_db() -> None:
         for column, column_type in SCAN_RUN_COLUMNS.items():
             if column not in existing_runs:
                 conn.execute(f"ALTER TABLE scan_runs ADD COLUMN {column} {column_type}")
+        init_feature_store(conn)
 
 
 def failed_gate_names(result: dict[str, Any]) -> list[str]:
@@ -515,12 +527,15 @@ def save_scan_result(payload: dict[str, Any]) -> int:
     init_db()
     timestamp = str(payload.get("runTimestamp") or "")
     engine_version = current_engine_version()
+    git_commit_hash = current_git_commit_hash()
+    created_at_utc = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
         cursor = conn.execute(
             """
             INSERT INTO scan_runs (
-                timestamp, universe_mode, pick_mode, timeout, candidates_json, api_url
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                timestamp, universe_mode, pick_mode, timeout, candidates_json, api_url,
+                engine_version, git_commit_hash, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 timestamp,
@@ -529,6 +544,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 payload.get("timeout"),
                 json_dump(payload.get("candidates") or []),
                 payload.get("apiUrl"),
+                engine_version,
+                git_commit_hash,
+                created_at_utc,
             ),
         )
         run_id = int(cursor.lastrowid)
@@ -564,7 +582,7 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 "option_pick": option_pick,
                 "direction_breakdown": direction,
             }
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO scan_results (
                     run_id, timestamp, ticker, scout_score, bull_score, bear_score,
@@ -598,6 +616,22 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+            recommendation_id = int(cursor.lastrowid)
+            try:
+                save_feature_vector(
+                    conn,
+                    build_institutional_feature_vector(
+                        result,
+                        payload,
+                        gate_snapshot,
+                        engine_version,
+                        run_id,
+                        recommendation_id,
+                        sector_ranks.get(ticker),
+                    ),
+                )
+            except Exception:
+                pass
         return run_id
 
 
@@ -1122,6 +1156,65 @@ def run_horizon_backfill() -> dict[str, Any]:
     return result
 
 
+def run_feature_vector_backfill() -> dict[str, Any]:
+    """Create feature-store rows for historical recommendations without duplicating vectors."""
+    init_db()
+    result = {
+        "ok": True,
+        "recommendations_checked": 0,
+        "feature_vectors_created": 0,
+        "feature_vectors_total": 0,
+    }
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM scan_results ORDER BY run_id ASC, id ASC").fetchall()
+        result["recommendations_checked"] = len(rows)
+        by_run: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            by_run.setdefault(int(row["run_id"]), []).append(row)
+        existing_ids = {
+            int(row["recommendation_id"])
+            for row in conn.execute(
+                "SELECT recommendation_id FROM feature_vectors WHERE recommendation_id IS NOT NULL"
+            ).fetchall()
+        }
+        for run_id, run_rows in by_run.items():
+            rank_source = [
+                {
+                    "ticker": row["ticker"],
+                    "score": row["scout_score"],
+                    "raw": json_load(row["raw_result_json"]) if isinstance(json_load(row["raw_result_json"]), dict) else {},
+                }
+                for row in run_rows
+            ]
+            _, sector_ranks = build_rank_maps(rank_source)
+            for row in run_rows:
+                raw_result = json_load(row["raw_result_json"])
+                if not isinstance(raw_result, dict):
+                    raw_result = {"ticker": row["ticker"], "score": row["scout_score"], "direction": row["final_direction"]}
+                raw_result.setdefault("ticker", row["ticker"])
+                raw_result.setdefault("score", row["scout_score"])
+                raw_result.setdefault("direction", row["final_direction"])
+                gate_snapshot = json_load(row["gate_snapshot_json"]) or compact_gate_snapshot_from_row(row)
+                payload = {"runTimestamp": row["timestamp"], "results": rank_source}
+                save_feature_vector(
+                    conn,
+                    build_institutional_feature_vector(
+                        raw_result,
+                        payload,
+                        gate_snapshot,
+                        row["engine_version"] or current_engine_version(),
+                        int(row["run_id"]),
+                        int(row["id"]),
+                        sector_ranks.get(str(row["ticker"])),
+                    ),
+                )
+                if int(row["id"]) not in existing_ids:
+                    result["feature_vectors_created"] += 1
+        refresh_feature_vector_labels(conn)
+        result["feature_vectors_total"] = count_rows(conn, "feature_vectors")
+    return result
+
+
 def average(values: list[float]) -> Optional[float]:
     return round(sum(values) / len(values), 4) if values else None
 
@@ -1410,9 +1503,151 @@ def audit_item(category: str, name: str, status: str, message: str) -> dict[str,
     }
 
 
+def anomaly_item(
+    anomaly_type: str,
+    message: str,
+    scan_id: Optional[int],
+    ticker: Optional[str],
+    timestamp: Optional[str],
+) -> dict[str, Any]:
+    return {
+        "type": anomaly_type,
+        "message": message,
+        "scan_id": scan_id,
+        "ticker": ticker,
+        "timestamp": timestamp,
+    }
+
+
+def get_anomaly_monitor(conn: sqlite3.Connection) -> dict[str, Any]:
+    anomalies: list[dict[str, Any]] = []
+    for row in conn.execute(
+        """
+        SELECT id, run_id, ticker, timestamp, return_1d, return_3d, return_5d,
+               return_10d, return_20d, entry_price, price_after_1d,
+               price_after_3d, price_after_5d, price_after_10d, price_after_20d
+        FROM scan_results
+        """
+    ).fetchall():
+        for field in ("return_1d", "return_3d", "return_5d", "return_10d", "return_20d"):
+            value = row[field]
+            if isinstance(value, (int, float)) and abs(float(value)) > 300:
+                anomalies.append(
+                    anomaly_item(
+                        "returns > 300%",
+                        f"{row['ticker']} has {field}={value}%.",
+                        row["run_id"],
+                        row["ticker"],
+                        row["timestamp"],
+                    )
+                )
+        for field in (
+            "entry_price",
+            "price_after_1d",
+            "price_after_3d",
+            "price_after_5d",
+            "price_after_10d",
+            "price_after_20d",
+        ):
+            value = row[field]
+            if isinstance(value, (int, float)) and float(value) < 0:
+                anomalies.append(
+                    anomaly_item(
+                        "negative prices",
+                        f"{row['ticker']} has {field}={value}.",
+                        row["run_id"],
+                        row["ticker"],
+                        row["timestamp"],
+                    )
+                )
+
+    duplicate_rows = conn.execute(
+        """
+        SELECT recommendation_id, scan_id, ticker, COUNT(*) AS total, MAX(timestamp) AS latest
+        FROM feature_vectors
+        GROUP BY recommendation_id
+        HAVING recommendation_id IS NOT NULL AND COUNT(*) > 1
+        """
+    ).fetchall()
+    for row in duplicate_rows:
+        anomalies.append(
+            anomaly_item(
+                "duplicate vectors",
+                f"{row['ticker']} has {row['total']} feature vectors for recommendation {row['recommendation_id']}.",
+                row["scan_id"],
+                row["ticker"],
+                row["latest"],
+            )
+        )
+
+    for row in conn.execute(
+        """
+        SELECT scan_id, ticker, timestamp, sector_name
+        FROM feature_vectors
+        WHERE sector_name IS NULL OR sector_name = ''
+        """
+    ).fetchall():
+        anomalies.append(
+            anomaly_item(
+                "missing sector labels",
+                f"{row['ticker']} feature vector is missing sector_name.",
+                row["scan_id"],
+                row["ticker"],
+                row["timestamp"],
+            )
+        )
+
+    for row in conn.execute(
+        """
+        SELECT scan_id, ticker, timestamp
+        FROM feature_vectors
+        WHERE timestamp IS NULL OR timestamp = ''
+        """
+    ).fetchall():
+        anomalies.append(
+            anomaly_item(
+                "missing timestamps",
+                f"{row['ticker']} feature vector is missing timestamp.",
+                row["scan_id"],
+                row["ticker"],
+                row["timestamp"],
+            )
+        )
+
+    for row in conn.execute(
+        """
+        SELECT scan_id, ticker, timestamp, relative_volume, volume_spike_percent, options_volume_score
+        FROM feature_vectors
+        WHERE relative_volume = 0 OR volume_spike_percent = 0 OR options_volume_score = 0
+        """
+    ).fetchall():
+        anomalies.append(
+            anomaly_item(
+                "zero-volume entries",
+                f"{row['ticker']} has zero volume-derived feature values.",
+                row["scan_id"],
+                row["ticker"],
+                row["timestamp"],
+            )
+        )
+
+    latest = sorted(
+        anomalies,
+        key=lambda item: item.get("timestamp") or "",
+        reverse=True,
+    )[0] if anomalies else None
+    return {
+        "anomaly_count": len(anomalies),
+        "latest_anomaly": latest,
+        "affected_scan_id": latest.get("scan_id") if latest else None,
+        "anomalies": anomalies[:50],
+    }
+
+
 def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
     """Return Scout Horizon-1 sandbox control metrics without touching production systems."""
     init_db()
+    schema_integrity = validate_schema(DB_PATH)
     db_size_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
     db_size_mb = round(db_size_bytes / 1024 / 1024, 3)
     now = datetime.now(timezone.utc)
@@ -1424,7 +1659,10 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "outcome_update_audit": count_rows(conn, "outcome_update_audit"),
             "institutional_audit_log": count_rows(conn, "institutional_audit_log"),
             "gate_intelligence_metrics": count_rows(conn, "gate_intelligence_metrics"),
+            "feature_vectors": count_rows(conn, "feature_vectors"),
         }
+        feature_intelligence = get_feature_intelligence_summary(conn)
+        anomaly_monitor = get_anomaly_monitor(conn)
         totals = {
             "saved_scans": rows_by_table["scan_runs"],
             "saved_recommendations": rows_by_table["scan_results"],
@@ -1461,12 +1699,7 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
                 or 0
             ),
             "audit_log_entries": rows_by_table["outcome_update_audit"] + rows_by_table["institutional_audit_log"],
-            "feature_vectors": int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM scan_results WHERE feature_vector_json IS NOT NULL AND feature_vector_json != ''"
-                ).fetchone()[0]
-                or 0
-            ),
+            "feature_vectors": feature_intelligence["total_feature_vectors"],
         }
         unique_tickers = int(
             conn.execute("SELECT COUNT(DISTINCT ticker) FROM scan_results").fetchone()[0] or 0
@@ -1512,6 +1745,17 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             WHERE universe_snapshot_json IS NOT NULL AND universe_snapshot_json != ''
             """
         ).fetchone()["value"]
+        latest_immutable_run_row = conn.execute(
+            """
+            SELECT id, engine_version, git_commit_hash, created_at_utc
+            FROM scan_runs
+            WHERE engine_version IS NOT NULL
+               OR git_commit_hash IS NOT NULL
+               OR created_at_utc IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
         missing_feature_vectors = totals["saved_recommendations"] - totals["feature_vectors"]
         missing_gate_snapshots = totals["saved_recommendations"] - totals["gate_snapshots"]
         missing_universe_snapshots = totals["saved_scans"] - totals["universe_snapshots"]
@@ -1540,19 +1784,6 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             ).fetchone()[0]
             or 0
         )
-        feature_rows = conn.execute(
-            """
-            SELECT feature_vector_json FROM scan_results
-            WHERE feature_vector_json IS NOT NULL AND feature_vector_json != ''
-            """
-        ).fetchall()
-
-    unique_sectors = set()
-    for row in feature_rows:
-        feature = json_load(row["feature_vector_json"])
-        if isinstance(feature, dict) and feature.get("sector"):
-            unique_sectors.add(str(feature["sector"]))
-
     completed = totals["completed_outcomes"]
     pending = totals["pending_outcomes"]
     recommendations = totals["saved_recommendations"]
@@ -1582,6 +1813,12 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         warnings.append("Latest scan is stale. Run a sandbox scan to refresh memory.")
     if stale_outcome:
         warnings.append("Latest outcome update is stale. Run Update Outcomes when ready.")
+    if schema_integrity["status"] == "WARNING":
+        warnings.extend(schema_integrity.get("warnings") or [])
+    if schema_integrity["status"] == "DRIFT DETECTED":
+        warnings.append("SCHEMA DRIFT warning: live SQLite schema differs from registry.")
+    if anomaly_monitor["anomaly_count"]:
+        warnings.append(f"Anomaly Monitor warning: {anomaly_monitor['anomaly_count']} anomalies detected.")
 
     learning_readiness = [
         {
@@ -1639,6 +1876,16 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         {"name": "Outcome Engine", "status": health_status(completed > 0, recommendations > 0 and completed == 0)},
         {"name": "Feature Store", "status": health_status(totals["feature_vectors"] > 0, missing_feature_vectors > 0)},
     ]
+    latest_immutable_run = (
+        {
+            "scan_id": latest_immutable_run_row["id"],
+            "engine_version": latest_immutable_run_row["engine_version"],
+            "git_commit_hash": latest_immutable_run_row["git_commit_hash"],
+            "created_at_utc": latest_immutable_run_row["created_at_utc"],
+        }
+        if latest_immutable_run_row is not None
+        else None
+    )
 
     return {
         "ok": True,
@@ -1659,10 +1906,14 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
             "estimated_db_size": f"{db_size_mb:.3f} MB",
             "rows_by_table": rows_by_table,
             "unique_tickers": unique_tickers,
-            "unique_sectors": len(unique_sectors),
+            "unique_sectors": feature_intelligence["unique_sectors"],
             "engine_versions": engine_versions,
             "feature_vector_count": totals["feature_vectors"],
         },
+        "feature_intelligence": feature_intelligence,
+        "schema_integrity": schema_integrity,
+        "anomaly_monitor": anomaly_monitor,
+        "latest_immutable_run": latest_immutable_run,
         "versioning": {
             "current_engine_version": current_engine_version(),
             "latest_scan_timestamp": latest_scan,

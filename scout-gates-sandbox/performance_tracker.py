@@ -16,6 +16,7 @@ from memory_store import (
     json_load,
     log_outcome_update_audit,
     refresh_gate_intelligence_metrics,
+    refresh_feature_vector_labels,
 )
 from option_picker import fmp_api_key
 
@@ -409,6 +410,7 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
             )
 
         gate_intelligence = refresh_gate_intelligence_metrics(conn)
+        feature_vector_labels_updated = refresh_feature_vector_labels(conn)
 
     return {
         "ok": True,
@@ -419,4 +421,5 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
         "errors": errors,
         "details": details,
         "gate_intelligence_updated": len(gate_intelligence),
+        "feature_vector_labels_updated": feature_vector_labels_updated,
     }
