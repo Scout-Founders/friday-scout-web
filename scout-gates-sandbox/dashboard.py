@@ -17,15 +17,18 @@ from typing import Any, Optional
 from directionality import build_directional_breakdown
 from explainability import build_explanation
 from memory_store import (
+    create_outcome_test_record,
     export_csv,
     get_direction_accuracy,
     get_gate_statistics,
     get_option_pick_history,
+    get_outcome_analytics,
     get_ticker_history,
     get_top_gate_failures,
     save_scan_result,
 )
 from option_picker import choose_option_contract
+from performance_tracker import update_outcomes
 from run_gates import (
     DEFAULT_CANDIDATES,
     GATES,
@@ -201,6 +204,7 @@ def build_memory_summary() -> dict[str, Any]:
         "directionAccuracy": get_direction_accuracy(),
         "topGateFailures": get_top_gate_failures(),
         "optionPickHistory": get_option_pick_history(),
+        "outcomeAnalytics": get_outcome_analytics(),
     }
 
 
@@ -239,6 +243,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/memory/update-outcomes":
+            try:
+                payload = self.read_json()
+                response = update_outcomes(
+                    limit=int(payload.get("limit") or 250),
+                    timeout=float(payload.get("timeout") or 25),
+                )
+                self.send_json(response)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Outcome update error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/memory/create-outcome-test-record":
+            try:
+                payload = self.read_json()
+                response = create_outcome_test_record(
+                    ticker=str(payload.get("ticker") or "").strip().upper() or None,
+                    days_old=int(payload.get("daysOld") or 30),
+                )
+                self.send_json(response)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Outcome test record error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
         if parsed.path != "/api/run":
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
