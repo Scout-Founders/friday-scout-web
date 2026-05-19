@@ -57,7 +57,10 @@ def parse_date(value: Any) -> Optional[date]:
         return None
     text = str(value).replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(text).date()
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().date()
+        return parsed.date()
     except ValueError:
         try:
             return datetime.strptime(str(value).split("T", 1)[0], "%Y-%m-%d").date()
@@ -218,6 +221,9 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
     checked = 0
     updated = 0
     pending = 0
+    outcomes_updated = 0
+    still_pending_not_old_enough = 0
+    missing_price_data = 0
     errors: list[str] = []
     details: list[dict[str, Any]] = []
 
@@ -264,6 +270,7 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
 
             if not entry_date:
                 pending += 1
+                missing_price_data += 1
                 detail["still_pending_reason"] = "Recommendation timestamp was not available."
                 execute_audited_update(
                     conn,
@@ -290,6 +297,7 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                 detail["fmp_prices_returned"] = fmp_meta.get("prices_returned")
             except RuntimeError as exc:
                 pending += 1
+                missing_price_data += 1
                 errors.append(f"{ticker}: {exc}")
                 if "API key was not found" in str(exc):
                     detail["fmp_response_status"] = "not_requested_missing_api_key"
@@ -312,6 +320,7 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
             entry_trade_date, entry = first_price_entry_on_or_after(prices, entry_date)
             if entry_trade_date is None or entry is None:
                 pending += 1
+                missing_price_data += 1
                 detail["still_pending_reason"] = "No FMP trading price was found on or after the recommendation date."
                 execute_audited_update(
                     conn,
@@ -373,6 +382,7 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                     "return": round(result_return, 4),
                     "label": horizon_label,
                 }
+                outcomes_updated += 1
                 returns.append(result_return)
                 available_prices.append(target_price)
 
@@ -404,6 +414,8 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
             if label == "PENDING":
                 pending += 1
                 detail["still_pending_reason"] = "; ".join(notes) or "No forward prices were available."
+                if any("not enough future trading closes" in note for note in notes):
+                    still_pending_not_old_enough += 1
             print(
                 f"[outcomes] updated ticker={ticker} row={row['id']} "
                 f"label={label} prices_found={detail['prices_found']}",
@@ -420,6 +432,9 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
         "records_updated": updated,
         "records_pending": pending,
         "records_still_pending": pending,
+        "outcomes_updated": outcomes_updated,
+        "still_pending_not_old_enough": still_pending_not_old_enough,
+        "missing_price_data": missing_price_data,
         "errors": errors,
         "details": details,
         "gate_intelligence_updated": len(gate_intelligence),

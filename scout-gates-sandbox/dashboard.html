@@ -323,6 +323,17 @@
       font-weight: 700;
     }
 
+    .pill-button {
+      cursor: pointer;
+    }
+
+    .pill-button:hover,
+    .pill-button:focus {
+      border-color: #00e5a066;
+      color: var(--text);
+      outline: none;
+    }
+
     .direction-pills {
       display: flex;
       flex-wrap: wrap;
@@ -725,6 +736,15 @@
             </select>
           </div>
 
+          <div class="field">
+            <label for="storage-mode">Scan Storage Mode</label>
+            <select id="storage-mode">
+              <option value="preview" selected>Preview Only</option>
+              <option value="save_eligible">Save Eligible</option>
+            </select>
+            <div class="hint">Preview scans do not enter Research Memory or Horizon training data.</div>
+          </div>
+
           <div class="field row">
             <div>
               <label for="timeout">Timeout</label>
@@ -737,7 +757,7 @@
           </div>
 
           <div class="field">
-            <button id="print-button" class="secondary-action" type="button" disabled>Save / Print Results</button>
+            <button id="save-button" class="secondary-action" type="button" disabled>Save Results to Memory</button>
           </div>
 
           <div class="hint">
@@ -798,12 +818,26 @@
     </section>
   </div>
 
+  <div id="net-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="net-modal-title">
+    <section class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">Net Attribution</div>
+          <h2 id="net-modal-title">Net Direction Breakdown</h2>
+        </div>
+        <button id="net-modal-close" class="modal-close" type="button" aria-label="Close net direction breakdown">X</button>
+      </div>
+      <div id="net-modal-body" class="modal-body"></div>
+    </section>
+  </div>
+
   <script>
     const form = document.getElementById("run-form");
     const statusEl = document.getElementById("status");
     const outputEl = document.getElementById("output");
     const runButton = document.getElementById("run-button");
-    const printButton = document.getElementById("print-button");
+    const saveButton = document.getElementById("save-button");
+    const storageModeEl = document.getElementById("storage-mode");
     const optionModal = document.getElementById("option-modal");
     const optionModalBody = document.getElementById("option-modal-body");
     const optionModalClose = document.getElementById("option-modal-close");
@@ -813,8 +847,13 @@
     const directionModal = document.getElementById("direction-modal");
     const directionModalBody = document.getElementById("direction-modal-body");
     const directionModalClose = document.getElementById("direction-modal-close");
+    const netModal = document.getElementById("net-modal");
+    const netModalBody = document.getElementById("net-modal-body");
+    const netModalClose = document.getElementById("net-modal-close");
     let currentPayload = null;
     let currentRequest = null;
+    let currentScanSaved = false;
+    let currentSaveInFlight = false;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -848,7 +887,7 @@
           <span class="pill">Direction ${escapeHtml(direction.direction || result.direction || "n/a")}</span>
           <span class="pill">Bull ${escapeHtml(displayValue(direction.bullConviction))}</span>
           <span class="pill">Bear ${escapeHtml(displayValue(direction.bearConviction))}</span>
-          <span class="pill ${edgeClass(direction.netDirectionalEdge)}">Net ${escapeHtml(signedNumber(direction.netDirectionalEdge))}</span>
+          <button class="pill pill-button ${edgeClass(direction.netDirectionalEdge)}" type="button" data-net-ticker="${escapeHtml(result.ticker)}">Net ${escapeHtml(signedNumber(direction.netDirectionalEdge))}</button>
         </div>
       `;
     }
@@ -1167,6 +1206,88 @@
       directionModal.classList.add("hidden");
     }
 
+    function netContributorRows(contributors, sign) {
+      return (contributors || [])
+        .map((contributor) => {
+          const points = Number(contributor?.points);
+          if (!Number.isFinite(points) || points <= 0 || !contributor?.gate) {
+            return null;
+          }
+          const signedPoints = sign > 0 ? `+${points}` : `-${points}`;
+          const reason = contributor.reason || contributor.description || "No reason returned.";
+          return `<li><strong>${escapeHtml(contributor.gate)}:</strong> ${escapeHtml(signedPoints)} points — ${escapeHtml(reason)}</li>`;
+        })
+        .filter(Boolean);
+    }
+
+    function validateNetAttribution(attribution, direction) {
+      if (!attribution) {
+        return;
+      }
+      const bullTotal = Number(attribution.bullTotal ?? direction.bullConviction);
+      const bearTotal = Number(attribution.bearTotal ?? direction.bearConviction);
+      const bullSum = (attribution.bullContributors || []).reduce((sum, item) => sum + Number(item.points || 0), 0);
+      const bearSum = (attribution.bearContributors || []).reduce((sum, item) => sum + Number(item.points || 0), 0);
+      const net = Number(attribution.net ?? (bullTotal - bearTotal));
+      const checks = [
+        ["Bull contributor sum", bullSum, bullTotal],
+        ["Bear contributor sum", bearSum, bearTotal],
+        ["Net equals Bull - Bear", net, bullTotal - bearTotal],
+      ];
+      checks.forEach(([label, actual, expected]) => {
+        if (actual !== expected) {
+          console.warn(`[Net Attribution] ${label} mismatch: got ${actual}, expected ${expected}`);
+        }
+      });
+    }
+
+    function renderNetDetails(result) {
+      const direction = result.directionBreakdown || {};
+      const attribution = direction.netAttribution || result.netAttribution || null;
+      const bull = attribution?.bullTotal ?? direction.bullConviction;
+      const bear = attribution?.bearTotal ?? direction.bearConviction;
+      const net = attribution?.net ?? direction.netDirectionalEdge;
+      const bullRows = netContributorRows(attribution?.bullContributors, 1);
+      const bearRows = netContributorRows(attribution?.bearContributors, -1);
+      const hasDetailedAttribution = Boolean(attribution && (bullRows.length || bearRows.length));
+      validateNetAttribution(attribution, direction);
+      return `
+        <div class="explain-summary">
+          <div class="meta">
+            <span class="pill">${escapeHtml(result.ticker)}</span>
+            <span class="pill">Direction ${escapeHtml(direction.direction || result.direction || "n/a")}</span>
+            <span class="pill">Bull ${escapeHtml(displayValue(bull))}</span>
+            <span class="pill">Bear ${escapeHtml(displayValue(bear))}</span>
+            <span class="pill ${edgeClass(net)}">Net ${escapeHtml(signedNumber(net))}</span>
+          </div>
+          <div class="hint">Formula: Net = Bull - Bear</div>
+          <div style="margin-top: 10px;">
+            Bull ${escapeHtml(displayValue(bull))} - Bear ${escapeHtml(displayValue(bear))} = Net ${escapeHtml(signedNumber(net))}
+          </div>
+        </div>
+        ${hasDetailedAttribution ? `
+          <div class="section-title"><h3>Bull Contributors</h3></div>
+          ${bullRows.length ? `<ul class="explain-text">${bullRows.join("")}</ul>` : "<div class=\"modal-note\">No explicit bull contributor points were returned.</div>"}
+          <div class="section-title"><h3>Bear Contributors</h3></div>
+          ${bearRows.length ? `<ul class="explain-text">${bearRows.join("")}</ul>` : "<div class=\"modal-note\">No explicit bear contributor points were returned.</div>"}
+        ` : `
+          <div class="modal-note">
+            Detailed gate-level net attribution is not available yet. Current Net is calculated from Bull score minus Bear score.
+          </div>
+        `}
+      `;
+    }
+
+    function openNetModal(result) {
+      document.getElementById("net-modal-title").textContent = "Net Direction Breakdown";
+      netModalBody.innerHTML = renderNetDetails(result);
+      netModal.classList.remove("hidden");
+    }
+
+    function closeNetModal() {
+      netModal.classList.add("hidden");
+    }
+
     function renderResults(payload) {
       const pick = payload.finalPick;
       const rawJson = escapeHtml(JSON.stringify(payload, null, 2));
@@ -1271,6 +1392,15 @@
           const result = payload.results.find((item) => item.ticker === ticker);
           if (result) {
             openDirectionModal(result);
+          }
+        });
+      });
+      document.querySelectorAll("[data-net-ticker]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const ticker = button.getAttribute("data-net-ticker");
+          const result = payload.results.find((item) => item.ticker === ticker);
+          if (result) {
+            openNetModal(result);
           }
         });
       });
@@ -1484,20 +1614,57 @@
         </html>`;
     }
 
-    function savePrintResults() {
+    function updateSaveButton() {
+      if (!currentPayload || !currentPayload.ok) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Save Results to Memory";
+        return;
+      }
+      if (currentScanSaved || currentPayload.savedToMemory) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Already saved.";
+        return;
+      }
+      if (currentSaveInFlight) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Saving...";
+        return;
+      }
+      saveButton.disabled = false;
+      saveButton.textContent = "Save Results to Memory";
+    }
+
+    async function saveResultsToMemory() {
       if (!currentPayload || !currentRequest) {
         return;
       }
-      const report = buildPrintableReport(currentPayload, currentRequest);
-      const reportUrl = URL.createObjectURL(new Blob([report], { type: "text/html" }));
-      const anchor = document.createElement("a");
-      anchor.href = reportUrl;
-      anchor.download = `scout-gate-report-${new Date().toISOString().slice(0, 10)}.html`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setStatus("Report downloaded as HTML. Open it in a browser to print or save as PDF.");
-      setTimeout(() => URL.revokeObjectURL(reportUrl), 5000);
+      if (currentScanSaved || currentPayload.savedToMemory || currentSaveInFlight) {
+        setStatus("Already saved.");
+        updateSaveButton();
+        return;
+      }
+      currentSaveInFlight = true;
+      updateSaveButton();
+      try {
+        const response = await fetch("/api/run/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scan: currentPayload }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message || "Save failed.");
+        }
+        currentPayload.memoryRunId = payload.memoryRunId;
+        currentPayload.savedToMemory = true;
+        currentScanSaved = true;
+        setStatus(payload.alreadySaved ? "Already saved." : payload.message);
+      } catch (error) {
+        setStatus(error.message || String(error), true);
+      } finally {
+        currentSaveInFlight = false;
+        updateSaveButton();
+      }
     }
 
     function setStatus(message, isError = false) {
@@ -1508,12 +1675,18 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       runButton.disabled = true;
+      currentPayload = null;
+      currentRequest = null;
+      currentScanSaved = false;
+      currentSaveInFlight = false;
+      updateSaveButton();
       setStatus("Running gates. This can take a moment for larger universes...");
 
       const request = {
         tickers: document.getElementById("tickers").value,
         universeMode: document.getElementById("universe-mode").value,
         pickMode: document.getElementById("pick-mode").value,
+        storageMode: storageModeEl.value,
         timeout: Number(document.getElementById("timeout").value || 25),
       };
 
@@ -1529,14 +1702,17 @@
         }
         currentPayload = payload;
         currentRequest = request;
-        printButton.disabled = false;
+        currentScanSaved = false;
+        updateSaveButton();
         renderResults(payload);
         const errorText = payload.errors.length ? `\\nScan errors: ${payload.errors.join("; ")}` : "";
-        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.${errorText}`);
+        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.\\nStorage mode: ${labelForSelect("storage-mode", request.storageMode)}. No memory write occurred.${errorText}`);
       } catch (error) {
         currentPayload = null;
         currentRequest = null;
-        printButton.disabled = true;
+        currentScanSaved = false;
+        currentSaveInFlight = false;
+        updateSaveButton();
         outputEl.className = "empty";
         outputEl.innerHTML = "<div><strong>Run failed.</strong><br>Check the status message for details.</div>";
         setStatus(error.message || String(error), true);
@@ -1545,10 +1721,12 @@
       }
     });
 
-    printButton.addEventListener("click", savePrintResults);
+    storageModeEl.addEventListener("change", updateSaveButton);
+    saveButton.addEventListener("click", saveResultsToMemory);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);
     directionModalClose.addEventListener("click", closeDirectionModal);
+    netModalClose.addEventListener("click", closeNetModal);
     optionModal.addEventListener("click", (event) => {
       if (event.target === optionModal) {
         closeOptionModal();
@@ -1564,11 +1742,17 @@
         closeDirectionModal();
       }
     });
+    netModal.addEventListener("click", (event) => {
+      if (event.target === netModal) {
+        closeNetModal();
+      }
+    });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeOptionModal();
         closeWhyModal();
         closeDirectionModal();
+        closeNetModal();
       }
     });
   </script>

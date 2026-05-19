@@ -206,6 +206,50 @@
       overflow-x: auto;
     }
 
+    .table-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 4px 0 14px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .table-control-group {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .table-controls label {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .table-controls select {
+      min-width: 140px;
+      height: 36px;
+      border-radius: 999px;
+    }
+
+    .table-controls .button {
+      height: 36px;
+      padding: 0 13px;
+    }
+
+    .button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -480,6 +524,24 @@
     <section class="grid" id="memory-view">
       <article class="card wide">
         <h2>Historical Scans</h2>
+        <div class="table-controls" aria-label="Historical scans pagination controls">
+          <div class="table-control-group">
+            <label for="history-page-size">Rows</label>
+            <select id="history-page-size">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="all">Show All</option>
+            </select>
+            <span id="history-count" class="hint">Showing 0 rows</span>
+          </div>
+          <div class="table-control-group">
+            <button class="button" id="history-prev" type="button">Previous</button>
+            <span id="history-page-label">Page 1 of 1</span>
+            <button class="button" id="history-next" type="button">Next</button>
+          </div>
+        </div>
         <div class="table-wrap" id="history"></div>
       </article>
 
@@ -539,6 +601,7 @@
     let summary = null;
     let currentHistory = [];
     let activeView = "memory";
+    let historyPage = 1;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -622,11 +685,57 @@
       `;
     }
 
+    function historyPageSize() {
+      const value = document.getElementById("history-page-size").value;
+      return value === "all" ? "all" : Number(value || 25);
+    }
+
+    function historyPageInfo(totalRows) {
+      const pageSize = historyPageSize();
+      if (pageSize === "all") {
+        return {
+          pageSize,
+          totalPages: 1,
+          page: 1,
+          start: 0,
+          end: totalRows,
+        };
+      }
+      const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+      historyPage = Math.min(Math.max(1, historyPage), totalPages);
+      const start = (historyPage - 1) * pageSize;
+      return {
+        pageSize,
+        totalPages,
+        page: historyPage,
+        start,
+        end: Math.min(start + pageSize, totalRows),
+      };
+    }
+
+    function updateHistoryPaginationControls(totalRows, pageInfo) {
+      const countEl = document.getElementById("history-count");
+      const pageLabelEl = document.getElementById("history-page-label");
+      const prevButton = document.getElementById("history-prev");
+      const nextButton = document.getElementById("history-next");
+      const showingText = totalRows
+        ? `Showing ${pageInfo.start + 1}-${pageInfo.end} of ${totalRows} rows`
+        : "Showing 0 rows";
+
+      countEl.textContent = showingText;
+      pageLabelEl.textContent = `Page ${pageInfo.page} of ${pageInfo.totalPages}`;
+      prevButton.disabled = pageInfo.page <= 1 || pageInfo.pageSize === "all";
+      nextButton.disabled = pageInfo.page >= pageInfo.totalPages || pageInfo.pageSize === "all";
+    }
+
     function renderHistory(history) {
+      const pageInfo = historyPageInfo(history.length);
+      updateHistoryPaginationControls(history.length, pageInfo);
       if (!history.length) {
         document.getElementById("history").innerHTML = "<p class=\"hint\">No scan history yet. Run the sandbox scanner to seed memory.</p>";
         return;
       }
+      const visibleHistory = history.slice(pageInfo.start, pageInfo.end);
       document.getElementById("history").innerHTML = `
         <table>
           <thead>
@@ -635,7 +744,7 @@
             </tr>
           </thead>
           <tbody>
-            ${history.map((row) => `
+            ${visibleHistory.map((row) => `
               <tr>
                 <td>${escapeHtml(shortDate(row.timestamp))}</td>
                 <td>${escapeHtml(shortDate(row.created_at))}</td>
@@ -982,6 +1091,7 @@
     async function searchTicker() {
       const ticker = document.getElementById("ticker-search").value.trim().toUpperCase();
       if (!ticker) {
+        historyPage = 1;
         loadSummary();
         return;
       }
@@ -989,6 +1099,7 @@
       const data = await response.json();
       summary = { ...(summary || {}), recentScans: data.history || [] };
       currentHistory = applyFilters(data.history || []);
+      historyPage = 1;
       renderMetrics(currentHistory, summary.outcomeAnalytics || {});
       renderHistory(currentHistory);
       statusEl.textContent = `Loaded ${currentHistory.length} stored scan rows for ${ticker}.`;
@@ -1002,13 +1113,29 @@
         body: JSON.stringify({ limit: 500, timeout: 25 }),
       });
       const result = await response.json();
+      if (!response.ok || result.ok === false) {
+        statusEl.textContent = result.message || "Outcome update failed.";
+        return;
+      }
       await loadSummary();
       const sample = (result.details || [])
         .filter((detail) => detail.ticker)
-        .slice(0, 3)
-        .map((detail) => `${detail.ticker}: ${Object.keys(detail.prices_found || {}).join(", ") || detail.still_pending_reason || "checked"}`)
+        .slice(0, 5)
+        .map((detail) => {
+          const found = Object.keys(detail.prices_found || {}).join(", ");
+          return `${detail.ticker}: ${found || detail.still_pending_reason || "checked"}`;
+        })
         .join(" | ");
-      statusEl.textContent = `Outcome update checked ${result.records_checked || 0}, updated ${result.records_updated || 0}, pending ${result.records_pending || 0}. ${sample} ${(result.errors || []).join("; ")}`;
+      const errors = (result.errors || []).length
+        ? `\nErrors: ${(result.errors || []).join("; ")}`
+        : "";
+      const sampleText = sample ? `\nDetails: ${sample}` : "";
+      statusEl.textContent = [
+        `Updated ${result.outcomes_updated || 0} outcomes`,
+        `${result.still_pending_not_old_enough || 0} still pending because not old enough`,
+        `${result.missing_price_data || 0} failed due to missing price data`,
+        `Checked ${result.records_checked || 0} rows; updated ${result.records_updated || 0} rows.`,
+      ].join("\n") + sampleText + errors;
     }
 
     async function createOutcomeTestRecord() {
@@ -1037,11 +1164,30 @@
       document.getElementById("failed-gate-filter").value = "";
       document.getElementById("min-score-filter").value = "";
       document.getElementById("max-score-filter").value = "";
+      historyPage = 1;
       loadSummary();
     });
     ["outcome-filter", "direction-filter", "failed-gate-filter", "min-score-filter", "max-score-filter"].forEach((id) => {
-      document.getElementById(id).addEventListener("input", () => renderAll(summary || { recentScans: [] }));
-      document.getElementById(id).addEventListener("change", () => renderAll(summary || { recentScans: [] }));
+      document.getElementById(id).addEventListener("input", () => {
+        historyPage = 1;
+        renderAll(summary || { recentScans: [] });
+      });
+      document.getElementById(id).addEventListener("change", () => {
+        historyPage = 1;
+        renderAll(summary || { recentScans: [] });
+      });
+    });
+    document.getElementById("history-page-size").addEventListener("change", () => {
+      historyPage = 1;
+      renderHistory(currentHistory);
+    });
+    document.getElementById("history-prev").addEventListener("click", () => {
+      historyPage = Math.max(1, historyPage - 1);
+      renderHistory(currentHistory);
+    });
+    document.getElementById("history-next").addEventListener("click", () => {
+      historyPage += 1;
+      renderHistory(currentHistory);
     });
     document.getElementById("ticker-search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {

@@ -37,7 +37,7 @@ from memory_store import (
     run_horizon_backfill,
     rebuild_gate_alpha,
     rebuild_patterns,
-    save_scan_result,
+    save_scan_result_once,
 )
 from option_picker import choose_option_contract, fmp_api_key
 from performance_tracker import update_outcomes
@@ -205,7 +205,8 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
         "directionBreakdowns": direction_breakdowns,
         "errors": errors,
     }
-    payload["memoryRunId"] = save_scan_result(payload)
+    payload["memoryRunId"] = None
+    payload["savedToMemory"] = False
     return payload
 
 
@@ -393,6 +394,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": False, "message": f"Regime Intelligence error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/run/save":
+            try:
+                payload = self.read_json()
+                scan_payload = payload.get("scan") if isinstance(payload.get("scan"), dict) else payload
+                self.send_json(save_scan_result_once(scan_payload))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Save Results error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
                 )
             return
 

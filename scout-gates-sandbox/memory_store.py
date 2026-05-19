@@ -1011,6 +1011,60 @@ def save_scan_result(payload: dict[str, Any]) -> int:
         return run_id
 
 
+def saved_scan_run_id(payload: dict[str, Any]) -> Optional[int]:
+    init_db()
+    timestamp = str(payload.get("runTimestamp") or "")
+    if not timestamp:
+        return None
+    candidates_json = json_dump(payload.get("candidates") or [])
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM scan_runs
+            WHERE timestamp = ?
+              AND COALESCE(candidates_json, '') = ?
+              AND COALESCE(api_url, '') = COALESCE(?, '')
+              AND COALESCE(universe_mode, '') = COALESCE(?, '')
+              AND COALESCE(pick_mode, '') = COALESCE(?, '')
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (
+                timestamp,
+                candidates_json,
+                payload.get("apiUrl"),
+                payload.get("universeMode"),
+                payload.get("pickMode"),
+            ),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def save_scan_result_once(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist a preview scan once, using its immutable run timestamp as the batch key."""
+    results = [row for row in payload.get("results", []) if isinstance(row, dict)]
+    if not results:
+        raise ValueError("No completed recommendations were available to save.")
+    existing_id = saved_scan_run_id(payload)
+    if existing_id is not None:
+        return {
+            "ok": True,
+            "alreadySaved": True,
+            "memoryRunId": existing_id,
+            "recommendationsSaved": len(results),
+            "message": "Already saved.",
+        }
+    run_id = save_scan_result(payload)
+    return {
+        "ok": True,
+        "alreadySaved": False,
+        "memoryRunId": run_id,
+        "recommendationsSaved": len(results),
+        "message": f"Saved {len(results)} recommendations to Research Memory.",
+    }
+
+
 def create_outcome_test_record(
     ticker: Optional[str] = None,
     days_old: int = 30,

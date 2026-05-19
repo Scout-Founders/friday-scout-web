@@ -14,6 +14,24 @@ from typing import Any
 from explainability import clean_line, split_gate_blocks
 
 
+GATE_NAME_TO_CODE: dict[str, str] = {
+    "Market Filter": "SENTINEL",
+    "Core Strength": "ATLAS",
+    "Forward Vision": "ORACLE",
+    "Smart Money": "PHANTOM",
+    "Event Trigger": "CATALYST",
+    "Threat Scan": "SPECTER",
+    "Sector Wind": "MERIDIAN",
+    "Trend Lock": "COMPASS",
+    "Volatility Read": "PULSE",
+    "Strategy Select": "ARCHER",
+}
+
+
+def gate_code(gate_name: str) -> str:
+    return GATE_NAME_TO_CODE.get(gate_name, gate_name.upper().replace(" ", "_"))
+
+
 def clamp(value: float, low: int = 0, high: int = 100) -> int:
     return max(low, min(high, int(round(value))))
 
@@ -72,6 +90,109 @@ def direction_label(direction: str) -> str:
     if "BEAR" in normalized:
         return "Bearish"
     return "Neutral"
+
+
+def reconcile_contributor_sum(
+    contributors: list[dict[str, Any]],
+    target: int,
+) -> list[dict[str, Any]]:
+    if target <= 0:
+        return []
+    if not contributors:
+        return contributors
+    current = sum(item["points"] for item in contributors)
+    if current == target:
+        return contributors
+    if current <= 0:
+        return contributors
+    factor = target / current
+    scaled = [
+        {**item, "points": int(round(item["points"] * factor))}
+        for item in contributors
+    ]
+    drift = target - sum(item["points"] for item in scaled)
+    if drift:
+        index = max(range(len(scaled)), key=lambda idx: scaled[idx]["points"])
+        scaled[index] = {
+            **scaled[index],
+            "points": max(0, scaled[index]["points"] + drift),
+        }
+    return scaled
+
+
+def scale_contributors(
+    contributors: list[dict[str, Any]],
+    factor: float,
+) -> list[dict[str, Any]]:
+    if not contributors or factor == 1.0:
+        return contributors
+    target = int(round(sum(item["points"] for item in contributors) * factor))
+    scaled = [
+        {**item, "points": int(round(item["points"] * factor))}
+        for item in contributors
+    ]
+    return reconcile_contributor_sum(scaled, target)
+
+
+def contributors_from_signals(
+    signals: list[dict[str, Any]],
+    side: str,
+) -> list[dict[str, Any]]:
+    contributors: list[dict[str, Any]] = []
+    for signal in signals:
+        if signal.get("side") != side:
+            continue
+        points = int(round(float(signal.get("weight") or 0)))
+        if points <= 0:
+            continue
+        contributors.append(
+            {
+                "gate": gate_code(str(signal.get("gate") or "UNKNOWN")),
+                "points": points,
+                "reason": str(signal.get("description") or "No reason returned."),
+            }
+        )
+    return contributors
+
+
+def build_net_attribution(
+    signals: list[dict[str, Any]],
+    direction: str,
+    bull_conviction: int,
+    bear_conviction: int,
+) -> dict[str, Any]:
+    bull_contributors = contributors_from_signals(signals, "bull")
+    bear_contributors = contributors_from_signals(signals, "bear")
+
+    if direction == "Bullish":
+        bull_contributors.append(
+            {
+                "gate": "DIRECTION",
+                "points": 25,
+                "reason": "Scout's returned direction was bullish.",
+            }
+        )
+        bear_contributors = scale_contributors(bear_contributors, 0.65)
+    elif direction == "Bearish":
+        bear_contributors.append(
+            {
+                "gate": "DIRECTION",
+                "points": 25,
+                "reason": "Scout's returned direction was bearish.",
+            }
+        )
+        bull_contributors = scale_contributors(bull_contributors, 0.65)
+
+    bull_contributors = reconcile_contributor_sum(bull_contributors, bull_conviction)
+    bear_contributors = reconcile_contributor_sum(bear_contributors, bear_conviction)
+
+    return {
+        "bullTotal": bull_conviction,
+        "bearTotal": bear_conviction,
+        "net": bull_conviction - bear_conviction,
+        "bullContributors": bull_contributors,
+        "bearContributors": bear_contributors,
+    }
 
 
 def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
@@ -400,6 +521,13 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
             f"and bear conviction ({bear_conviction}) were close or direction was not returned."
         )
 
+    net_attribution = build_net_attribution(
+        signals,
+        direction,
+        bull_conviction,
+        bear_conviction,
+    )
+
     return {
         "ticker": ticker,
         "scoutScore": result_data.get("scout_score"),
@@ -415,4 +543,5 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
         "bullishSignals": top_bull,
         "bearishSignals": top_bear,
         "allSignals": signals,
+        "netAttribution": net_attribution,
     }
