@@ -11,6 +11,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from earnings_intelligence import (
+    build_earnings_intelligence,
+    earnings_context_for_gates,
+    secondary_gate_weight,
+)
 from explainability import clean_line, split_gate_blocks
 
 
@@ -44,8 +49,12 @@ def add_signal(
     value: Any,
     weight: float,
     source_field: str,
+    weight_multiplier: float = 1.0,
 ) -> None:
     if value is None or value == "":
+        return
+    adjusted_weight = weight * weight_multiplier
+    if adjusted_weight <= 0:
         return
     signals.append(
         {
@@ -53,7 +62,7 @@ def add_signal(
             "gate": gate,
             "description": description,
             "value": value,
-            "weight": weight,
+            "weight": adjusted_weight,
             "source_field": source_field,
         }
     )
@@ -198,7 +207,16 @@ def build_net_attribution(
 def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
     ticker = str(result_data.get("ticker") or "")
     direction = direction_label(str(result_data.get("direction") or ""))
+    earnings_intel = build_earnings_intelligence(result_data)
+    earnings_gate_context = earnings_context_for_gates(result_data, earnings_intel)
     signals: list[dict[str, Any]] = []
+
+    def gate_weight(gate_name: str, line_text: Any, base_weight: float) -> float:
+        catalyst_scale = float(earnings_gate_context.get("catalyst_weighting", 1.0))
+        reference_scale = secondary_gate_weight(gate_name, line_text, earnings_gate_context)
+        if gate_name == "Event Trigger" and earnings_gate_context.get("primary_interpreter_active"):
+            return base_weight * reference_scale * catalyst_scale
+        return base_weight * reference_scale
 
     rsi = result_data.get("rsi")
     if isinstance(rsi, (int, float)):
@@ -381,7 +399,7 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
             "Event Trigger",
             "Positive catalyst language supported the bullish side.",
             positive_line,
-            12,
+            gate_weight("Event Trigger", positive_line, 12),
             "raw_output.gate_5",
         )
     if negative_line:
@@ -391,7 +409,7 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
             "Event Trigger",
             "Negative catalyst language supported the bearish side.",
             negative_line,
-            14,
+            gate_weight("Event Trigger", negative_line, 14),
             "raw_output.gate_5",
         )
     multi_negative = find_line(catalyst_lines, "multiple negative")
@@ -402,7 +420,7 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
             "Event Trigger",
             "Multiple negative headlines added bearish pressure.",
             multi_negative,
-            12,
+            gate_weight("Event Trigger", multi_negative, 12),
             "raw_output.gate_5",
         )
 
@@ -429,8 +447,24 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
             "Volatility Read",
             "Elevated volatility increased downside or caution pressure.",
             pulse_line,
-            12,
+            gate_weight("Volatility Read", pulse_line, 12),
             "raw_output.gate_10",
+        )
+
+    signal_lines = block_lines(result_data, 11)
+    for line in signal_lines:
+        lower = line.lower()
+        if not any(term in lower for term in ("intel", "headline", "news", "flow", "sentiment")):
+            continue
+        side = "bull" if any(term in lower for term in ("positive", "bullish", "support")) else "bear"
+        add_signal(
+            signals,
+            side,
+            "Intel Feed",
+            "Intel feed context referenced the directional read.",
+            line,
+            gate_weight("Intel Feed", line, 10),
+            "raw_output.gate_11",
         )
 
     archer_lines = block_lines(result_data, 13)
@@ -544,4 +578,5 @@ def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
         "bearishSignals": top_bear,
         "allSignals": signals,
         "netAttribution": net_attribution,
+        "earningsIntelligence": earnings_intel,
     }

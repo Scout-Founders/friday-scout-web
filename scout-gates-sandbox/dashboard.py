@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from directionality import build_directional_breakdown
+from earnings_intelligence import attach_adjusted_scout_score, build_earnings_intelligence
 from explainability import build_explanation
 from memory_store import (
     create_outcome_test_record,
@@ -73,7 +74,8 @@ def serialize_result(
     explanation: Optional[dict[str, Any]] = None,
     direction_breakdown: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    return {
+    earnings_intelligence = build_earnings_intelligence(result.data)
+    payload = {
         "ticker": result.data.get("ticker", result.ticker),
         "score": result.score,
         "price": result.data.get("price"),
@@ -95,8 +97,10 @@ def serialize_result(
         "optionPick": option_pick,
         "explanation": explanation,
         "directionBreakdown": direction_breakdown,
+        "earningsIntelligence": earnings_intelligence,
         "raw": result.data,
     }
+    return attach_adjusted_scout_score(payload, earnings_intelligence)
 
 
 def pick_winner(results: list[CandidateResult], pick_mode: str) -> CandidateResult:

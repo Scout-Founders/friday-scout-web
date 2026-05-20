@@ -334,6 +334,26 @@
       outline: none;
     }
 
+    .earnings-panel {
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #070b14;
+    }
+
+    .earnings-components {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .earnings-components li strong {
+      color: var(--text);
+    }
+
     .direction-pills {
       display: flex;
       flex-wrap: wrap;
@@ -1288,6 +1308,56 @@
       netModal.classList.add("hidden");
     }
 
+    function signedComponent(value) {
+      const points = Number(value || 0);
+      if (!points) {
+        return "0";
+      }
+      return points > 0 ? `+${points}` : `${points}`;
+    }
+
+    function renderEarningsIntelligence(result) {
+      const earnings = result.earningsIntelligence;
+      if (!earnings || !earnings.active) {
+        return "";
+      }
+      const components = earnings.components || {};
+      const rows = [
+        ["EPS surprise", components.eps_surprise],
+        ["Revenue surprise", components.revenue_surprise],
+        ["Guidance", components.guidance],
+        ["Market reaction", components.market_reaction],
+        ["Quality modifier", components.quality_modifier],
+      ];
+      const componentList = rows
+        .map(([label, value]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(signedComponent(value))}</li>`)
+        .join("");
+      const adjustment = Number(result.earningsConvictionAdjustment || 0);
+      const baseScore = Number(result.scoutScoreBase ?? result.score ?? 0);
+      const adjustedScore = Number(result.adjustedScoutScore ?? result.score ?? 0);
+      const cap = Number(earnings.conviction_cap || 8);
+      const recency = Number(earnings.recency_multiplier || 1);
+      return `
+        <div class="earnings-panel">
+          <div class="section-title" style="margin:0;">
+            <h3>Earnings Intelligence</h3>
+            <span class="pill">Score ${escapeHtml(displayValue(earnings.earnings_score))}</span>
+            <span class="pill">${escapeHtml(earnings.label || "n/a")}</span>
+          </div>
+          <div class="hint" style="margin-top:8px;">
+            Primary earnings interpreter. Event Trigger, Intel Feed, and Volatility Read reference earnings lightly when active.
+          </div>
+          <ul class="earnings-components">${componentList}</ul>
+          <div class="hint" style="margin-top:10px;">
+            Recency multiplier: ${escapeHtml(recency.toFixed(2))} |
+            Catalyst weighting: ${escapeHtml(Number(earnings.catalyst_weighting || recency).toFixed(2))} |
+            Scout base ${escapeHtml(displayValue(baseScore))} → adjusted ${escapeHtml(displayValue(adjustedScore))}
+            (${escapeHtml(signedComponent(adjustment))} capped at ±${escapeHtml(cap)})
+          </div>
+        </div>
+      `;
+    }
+
     function renderResults(payload) {
       const pick = payload.finalPick;
       const rawJson = escapeHtml(JSON.stringify(payload, null, 2));
@@ -1315,6 +1385,7 @@
               <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalDirectionButton}</div>
             </div>
           </section>
+          ${renderEarningsIntelligence(pick)}
 
           <div class="section-title">
             <h3>Full Gate Breakdown</h3>
