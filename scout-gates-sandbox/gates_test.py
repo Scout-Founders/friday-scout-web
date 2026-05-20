@@ -218,6 +218,20 @@ class ResearchMemoryHistoryTests(unittest.TestCase):
         self.assertIn("scout_score <= ?", sql)
         self.assertEqual(params, ["%NVDA%", 70.0, 90.0])
 
+    def test_normalize_history_filters_drops_accidental_zero_scores(self) -> None:
+        from memory_store import HistoryFilters, count_scan_results, normalize_history_filters
+
+        normalized = normalize_history_filters(HistoryFilters(min_score=0, max_score=0))
+        self.assertIsNone(normalized.min_score)
+        self.assertIsNone(normalized.max_score)
+        self.assertEqual(count_scan_results(filters=normalized), count_scan_results())
+
+    def test_normalize_history_filters_drops_placeholder_failed_gate(self) -> None:
+        from memory_store import HistoryFilters, normalize_history_filters
+
+        normalized = normalize_history_filters(HistoryFilters(failed_gate="Threat Scan"))
+        self.assertIsNone(normalized.failed_gate)
+
 
 class OutcomeAnalyticsTests(unittest.TestCase):
     def test_bullish_directional_accuracy_uses_forward_return_sign(self) -> None:

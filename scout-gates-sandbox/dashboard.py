@@ -302,6 +302,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(build_memory_summary())
             return
         if parsed.path == "/api/memory/history":
+            from memory_store import DB_PATH
+
             params = urllib.parse.parse_qs(parsed.query)
             filters = parse_history_filters(params)
             try:
@@ -312,9 +314,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 offset = max(int((params.get("offset") or ["0"])[0]), 0)
             except ValueError:
                 offset = 0
-            self.send_json(
-                build_memory_history_payload(limit=limit, offset=offset, filters=filters)
+            payload = build_memory_history_payload(limit=limit, offset=offset, filters=filters)
+            print(
+                "[dashboard] /api/memory/history "
+                f"db={DB_PATH} total={payload.get('total')} "
+                f"filtered={payload.get('filteredTotal')} returned={len(payload.get('history') or [])} "
+                f"limit={limit} offset={offset} filters={payload.get('debug', {}).get('filters')}",
+                flush=True,
             )
+            self.send_json(payload)
             return
         if parsed.path == "/api/memory/audit":
             params = urllib.parse.parse_qs(parsed.query)
@@ -327,7 +335,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/memory/ticker":
             params = urllib.parse.parse_qs(parsed.query)
             ticker = (params.get("ticker") or [""])[0].strip().upper()
-            filters = parse_history_filters({"ticker": [ticker]} if ticker else {}})
+            filters = parse_history_filters({"ticker": [ticker]} if ticker else {})
             payload = build_memory_history_payload(
                 limit=MAX_HISTORY_PAGE_SIZE,
                 offset=0,

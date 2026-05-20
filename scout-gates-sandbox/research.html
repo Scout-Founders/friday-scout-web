@@ -535,15 +535,15 @@
         </div>
         <div>
           <label for="failed-gate-filter">Failed Gate</label>
-          <input id="failed-gate-filter" placeholder="Threat Scan">
+          <input id="failed-gate-filter" type="search" placeholder="e.g. Threat Scan" autocomplete="off" spellcheck="false">
         </div>
         <div>
           <label for="min-score-filter">Min Score</label>
-          <input id="min-score-filter" type="number" min="0" max="100" placeholder="0">
+          <input id="min-score-filter" type="number" min="0" max="100" autocomplete="off">
         </div>
         <div>
           <label for="max-score-filter">Max Score</label>
-          <input id="max-score-filter" type="number" min="0" max="100" placeholder="100">
+          <input id="max-score-filter" type="number" min="0" max="100" autocomplete="off">
         </div>
       </div>
     </section>
@@ -557,8 +557,8 @@
           <div class="table-control-group">
             <label for="history-page-size">Rows</label>
             <select id="history-page-size">
-              <option value="10">10</option>
-              <option value="25" selected>25</option>
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
               <option value="50">50</option>
               <option value="100">100</option>
               <option value="all">Show All</option>
@@ -635,6 +635,9 @@
     let historyPage = 1;
     let auditLoaded = false;
     let filterReloadTimer = null;
+    let historyFiltersEnabled = false;
+    let historyFetchController = null;
+    const FAILED_GATE_PLACEHOLDERS = new Set(["threat scan", "e.g. threat scan", "gate name"]);
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -739,7 +742,10 @@
       }
     }
 
-    function historyFilterQuery() {
+    function historyFilterQuery({ includeFilters = true } = {}) {
+      if (!includeFilters) {
+        return "";
+      }
       const params = new URLSearchParams();
       const ticker = document.getElementById("ticker-search").value.trim().toUpperCase();
       const outcome = document.getElementById("outcome-filter").value;
@@ -747,12 +753,19 @@
       const failedGate = document.getElementById("failed-gate-filter").value.trim();
       const minScore = document.getElementById("min-score-filter").value;
       const maxScore = document.getElementById("max-score-filter").value;
+      const failedGateKey = failedGate.toLowerCase();
       if (ticker) params.set("ticker", ticker);
       if (outcome) params.set("outcome", outcome);
       if (direction) params.set("direction", direction);
-      if (failedGate) params.set("failedGate", failedGate);
-      if (minScore !== "") params.set("minScore", minScore);
-      if (maxScore !== "") params.set("maxScore", maxScore);
+      if (failedGate && !FAILED_GATE_PLACEHOLDERS.has(failedGateKey)) {
+        params.set("failedGate", failedGate);
+      }
+      if (minScore !== "" && !(minScore === "0" && maxScore === "0")) {
+        params.set("minScore", minScore);
+      }
+      if (maxScore !== "" && maxScore !== "0" && !(minScore === "0" && maxScore === "0")) {
+        params.set("maxScore", maxScore);
+      }
       return params.toString();
     }
 
@@ -817,7 +830,7 @@
         ${metricCard(escapeHtml(analytics.worst_performing_ticker?.ticker || "n/a"), "Worst ticker", "Lowest realized forward return in memory.")}
         ${metricCard(escapeHtml(analytics.most_predictive_gate?.gate || "n/a"), "Most predictive gate", "Gate with the highest label-based win rate among completed outcomes.")}
         ${metricCard(escapeHtml(analytics.least_predictive_gate?.gate || "n/a"), "Least predictive gate", "Gate with the lowest label-based win rate among completed outcomes.")}
-      `      `;
+      `;
     }
 
     function historyPageSize() {
@@ -1220,6 +1233,9 @@
     }
 
     function scheduleHistoryReload() {
+      if (!historyFiltersEnabled) {
+        return;
+      }
       clearTimeout(filterReloadTimer);
       filterReloadTimer = setTimeout(() => {
         loadHistory({ resetPage: true }).catch((error) => {
@@ -1228,23 +1244,44 @@
       }, 300);
     }
 
-    async function loadHistory({ resetPage = false } = {}) {
+    function historyRowsFromPayload(data) {
+      const rows = data.history ?? data.rows ?? data.records ?? data.items ?? [];
+      return Array.isArray(rows) ? rows : [];
+    }
+
+    async function loadHistory({ resetPage = false, skipFilters = false } = {}) {
       if (resetPage) {
         historyPage = 1;
       }
+      if (historyFetchController) {
+        historyFetchController.abort();
+      }
+      historyFetchController = new AbortController();
+      const activeController = historyFetchController;
       const pageSize = historyPageSize();
       const limit = pageSize === "all" ? 500 : pageSize;
       const offset = pageSize === "all" ? 0 : (historyPage - 1) * pageSize;
-      const filterQs = historyFilterQuery();
+      const filterQs = historyFilterQuery({ includeFilters: !skipFilters });
       const url = `/api/memory/history?limit=${limit}&offset=${offset}${filterQs ? `&${filterQs}` : ""}`;
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: activeController.signal });
       const data = await response.json();
+      if (activeController !== historyFetchController) {
+        return data;
+      }
       if (!response.ok || data.ok === false) {
         throw new Error(data.message || "History request failed.");
       }
-      currentHistory = data.history || [];
+      const rows = historyRowsFromPayload(data);
+      currentHistory = rows;
       historyTotal = data.total ?? historyTotal;
-      historyFilteredTotal = data.filteredTotal ?? currentHistory.length;
+      historyFilteredTotal = data.filteredTotal ?? data.filtered_total ?? rows.length;
+      console.info("[research-memory] history loaded", {
+        url,
+        rows: rows.length,
+        total: historyTotal,
+        filteredTotal: historyFilteredTotal,
+        debug: data.debug,
+      });
       if (pageSize !== "all") {
         const totalPages = Math.max(1, Math.ceil(historyFilteredTotal / pageSize));
         historyPage = Math.min(Math.max(1, historyPage), totalPages);
@@ -1305,11 +1342,15 @@
       historyTotal = summaryData.historyTotal || 0;
       renderSummaryPanels(summaryData);
       statusEl.textContent = `Summaries loaded (${formatTimings(summaryData.timings)}). Loading scan history...`;
-      const historyData = await loadHistory({ resetPage: true });
+      const historyData = await loadHistory({ resetPage: true, skipFilters: true });
+      historyFiltersEnabled = true;
+      const debug = historyData.debug || {};
       statusEl.textContent = [
         `Ready: ${historyTotal} stored scan(s), ${historyFilteredTotal} matching filter(s), showing ${currentHistory.length} on this page.`,
+        debug.dbPath ? `DB: ${debug.dbPath}` : "",
+        debug.filters ? `Filters: ${JSON.stringify(debug.filters)}` : "",
         formatTimings({ ...summaryData.timings, ...historyData.timings }),
-      ].join(" ");
+      ].filter(Boolean).join(" ");
     }
 
     async function searchTicker() {

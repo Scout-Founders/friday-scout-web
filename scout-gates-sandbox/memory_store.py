@@ -315,15 +315,45 @@ class HistoryFilters:
     max_score: Optional[float] = None
 
 
+# UI placeholder / autofill noise — never treat as an active filter.
+_FAILED_GATE_PLACEHOLDER_VALUES = frozenset(
+    {
+        "threat scan",
+        "e.g. threat scan",
+        "e.g. specter",
+        "gate name",
+    }
+)
+
+
+def normalize_history_filters(filters: Optional[HistoryFilters]) -> HistoryFilters:
+    """Drop empty or placeholder filter values so defaults show all rows."""
+    filters = filters or HistoryFilters()
+    failed_gate = (filters.failed_gate or "").strip().lower() or None
+    if failed_gate in _FAILED_GATE_PLACEHOLDER_VALUES:
+        failed_gate = None
+    min_score = filters.min_score
+    max_score = filters.max_score
+    # min=0 max=0 (or max=0 alone) is almost always accidental and matches no rows.
+    if max_score == 0:
+        max_score = None
+    if min_score == 0 and max_score in (0, None):
+        min_score = None
+    return HistoryFilters(
+        ticker=(filters.ticker or "").strip().upper() or None,
+        outcome=(filters.outcome or "").strip().upper() or None,
+        direction=(filters.direction or "").strip() or None,
+        failed_gate=failed_gate,
+        min_score=min_score,
+        max_score=max_score,
+    )
+
+
 def parse_history_filters(params: dict[str, list[str]]) -> HistoryFilters:
     def first(key: str) -> str:
         values = params.get(key) or []
         return str(values[0]).strip() if values else ""
 
-    ticker = first("ticker").upper() or None
-    outcome = first("outcome").upper() or None
-    direction = first("direction") or None
-    failed_gate = first("failedGate").lower() or None
     def optional_float(raw: str) -> Optional[float]:
         if not raw:
             return None
@@ -332,20 +362,26 @@ def parse_history_filters(params: dict[str, list[str]]) -> HistoryFilters:
         except ValueError:
             return None
 
+    ticker = first("ticker").upper() or None
+    outcome = first("outcome").upper() or None
+    direction = first("direction") or None
+    failed_gate = first("failedGate").lower() or None
     min_score = optional_float(first("minScore"))
     max_score = optional_float(first("maxScore"))
-    return HistoryFilters(
-        ticker=ticker,
-        outcome=outcome if outcome else None,
-        direction=direction if direction else None,
-        failed_gate=failed_gate if failed_gate else None,
-        min_score=min_score,
-        max_score=max_score,
+    return normalize_history_filters(
+        HistoryFilters(
+            ticker=ticker,
+            outcome=outcome if outcome else None,
+            direction=direction if direction else None,
+            failed_gate=failed_gate if failed_gate else None,
+            min_score=min_score,
+            max_score=max_score,
+        )
     )
 
 
 def history_where_clause(filters: Optional[HistoryFilters]) -> tuple[str, list[Any]]:
-    filters = filters or HistoryFilters()
+    filters = normalize_history_filters(filters)
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -3933,6 +3969,18 @@ def build_memory_summary_payload() -> dict[str, Any]:
     return payload
 
 
+def _history_filters_debug(filters: Optional[HistoryFilters]) -> dict[str, Any]:
+    normalized = normalize_history_filters(filters)
+    return {
+        "ticker": normalized.ticker,
+        "outcome": normalized.outcome,
+        "direction": normalized.direction,
+        "failedGate": normalized.failed_gate,
+        "minScore": normalized.min_score,
+        "maxScore": normalized.max_score,
+    }
+
+
 def build_memory_history_payload(
     *,
     limit: int = 100,
@@ -3942,6 +3990,7 @@ def build_memory_history_payload(
     timings: dict[str, float] = {}
     started = time.perf_counter()
     init_db()
+    normalized_filters = normalize_history_filters(filters)
     safe_limit = min(max(int(limit), 1), MAX_HISTORY_PAGE_SIZE)
     safe_offset = max(int(offset), 0)
     with connect() as conn:
@@ -3949,15 +3998,23 @@ def build_memory_history_payload(
             history = query_scan_results(
                 limit=safe_limit,
                 offset=safe_offset,
-                filters=filters,
+                filters=normalized_filters,
                 lightweight=True,
                 conn=conn,
             )
         with log_timing(timings, "count_ms"):
             total = count_scan_results(conn=conn)
-            filtered_total = count_scan_results(filters=filters, conn=conn)
+            filtered_total = count_scan_results(filters=normalized_filters, conn=conn)
     timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
-    filter_label = filters.ticker if filters and filters.ticker else "ALL"
+    filter_label = normalized_filters.ticker or "ALL"
+    print(
+        "[memory-history] "
+        f"db={DB_PATH} total={total} filtered={filtered_total} "
+        f"returned={len(history)} limit={safe_limit} offset={safe_offset} "
+        f"filters={json.dumps(_history_filters_debug(normalized_filters), sort_keys=True)}",
+        file=sys.stderr,
+        flush=True,
+    )
     log_memory_load(
         timings,
         f"history limit={safe_limit} offset={safe_offset} ticker={filter_label}",
@@ -3970,6 +4027,15 @@ def build_memory_history_payload(
         "limit": safe_limit,
         "offset": safe_offset,
         "timings": timings,
+        "debug": {
+            "dbPath": str(DB_PATH),
+            "total": total,
+            "filteredTotal": filtered_total,
+            "returned": len(history),
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "filters": _history_filters_debug(normalized_filters),
+        },
     }
 
 
