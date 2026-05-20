@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,7 +15,9 @@ from memory_store import (
     connect,
     init_db,
     json_load,
+    log_memory_load,
     log_outcome_update_audit,
+    log_timing,
     refresh_gate_intelligence_metrics,
     refresh_feature_vector_labels,
     refresh_gate_alpha_metrics,
@@ -49,17 +52,19 @@ AUDITED_UPDATE_FIELDS = (
     "max_adverse_move",
     "result_notes",
     "outcome_last_updated_at",
+    "outcome_horizon_debug_json",
 )
 
 
 def parse_date(value: Any) -> Optional[date]:
+    """Parse an ISO date or datetime into a calendar date (UTC for aware values)."""
     if not value:
         return None
     text = str(value).replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(text)
         if parsed.tzinfo is not None:
-            return parsed.astimezone().date()
+            return parsed.astimezone(timezone.utc).date()
         return parsed.date()
     except ValueError:
         try:
@@ -117,13 +122,6 @@ def fetch_historical_prices(
     }
 
 
-def first_price_on_or_after(prices: dict[date, float], target: date) -> Optional[float]:
-    for available in sorted(prices):
-        if available >= target:
-            return prices[available]
-    return None
-
-
 def first_price_entry_on_or_after(
     prices: dict[date, float],
     target: date,
@@ -134,22 +132,48 @@ def first_price_entry_on_or_after(
     return None, None
 
 
+def trading_dates_through(prices: dict[date, float], as_of: date) -> list[date]:
+    return [row_date for row_date in sorted(prices) if row_date <= as_of]
+
+
 def trading_day_price_after(
     prices: dict[date, float],
     entry_trade_date: date,
     trading_days_after_entry: int,
-) -> tuple[Optional[date], Optional[float]]:
-    available_dates = sorted(prices)
+    as_of: Optional[date] = None,
+) -> tuple[Optional[date], Optional[float], dict[str, Any]]:
+    """Price at N trading sessions after the entry close (not calendar days)."""
+    as_of = as_of or date.today()
+    available_dates = trading_dates_through(prices, as_of)
+    meta: dict[str, Any] = {
+        "trading_day_offset": trading_days_after_entry,
+        "entry_trade_date": entry_trade_date.isoformat(),
+        "as_of": as_of.isoformat(),
+        "available_sessions": len(available_dates),
+    }
     try:
         entry_index = available_dates.index(entry_trade_date)
     except ValueError:
-        return None, None
+        meta["status"] = "pending"
+        meta["reason"] = "Entry trading date was not present in the FMP close series."
+        return None, None, meta
 
     target_index = entry_index + trading_days_after_entry
+    sessions_after_entry = max(0, len(available_dates) - entry_index - 1)
+    meta["sessions_after_entry"] = sessions_after_entry
     if target_index >= len(available_dates):
-        return None, None
+        meta["status"] = "pending"
+        meta["reason"] = (
+            f"Pending: need {trading_days_after_entry} trading day(s) after entry; "
+            f"only {sessions_after_entry} trading session(s) have elapsed so far."
+        )
+        return None, None, meta
+
     target_date = available_dates[target_index]
-    return target_date, prices[target_date]
+    meta["status"] = "resolved"
+    meta["reason"] = "Resolved from FMP EOD close."
+    meta["target_trade_date"] = target_date.isoformat()
+    return target_date, prices[target_date], meta
 
 
 def raw_entry_price(row: Any) -> Optional[float]:
@@ -181,10 +205,129 @@ def stock_label_for_return(final_direction: str, result_return: float) -> str:
     return "WIN" if result_return > 0 else "LOSS"
 
 
-def stock_label(final_direction: str, returns: list[float]) -> str:
-    if not returns:
-        return "PENDING"
-    return stock_label_for_return(final_direction, returns[-1])
+def stock_label(final_direction: str, returns_by_horizon: dict[int, float]) -> str:
+    for horizon in reversed(STOCK_HORIZONS):
+        if horizon in returns_by_horizon:
+            return stock_label_for_return(final_direction, returns_by_horizon[horizon])
+    return "PENDING"
+
+
+def horizon_return_value(row: Any, horizon: int, updates: dict[str, Any]) -> Optional[float]:
+    field = f"return_{horizon}d"
+    if updates.get(field) is not None:
+        return float(updates[field])
+    if row[field] is not None:
+        return float(row[field])
+    return None
+
+
+def collect_returns_by_horizon(row: Any, updates: dict[str, Any]) -> dict[int, float]:
+    returns: dict[int, float] = {}
+    for horizon in STOCK_HORIZONS:
+        value = horizon_return_value(row, horizon, updates)
+        if value is not None:
+            returns[horizon] = value
+    return returns
+
+
+def build_horizon_debug(
+    row: Any,
+    entry_trade_date: date,
+    entry_price: float,
+    prices: dict[date, float],
+    direction: str,
+    updates: dict[str, Any],
+    as_of: date,
+) -> dict[str, Any]:
+    debug: dict[str, Any] = {}
+    for horizon in STOCK_HORIZONS:
+        key = f"{horizon}D"
+        price_field = f"price_after_{horizon}d"
+        return_field = f"return_{horizon}d"
+        label_field = f"stock_outcome_label_{horizon}d"
+        existing_return = row[return_field]
+        if existing_return is not None:
+            debug[key] = {
+                "status": "resolved",
+                "reason": "Stored from a previous outcome refresh.",
+                "return_pct": float(existing_return),
+                "price": row[price_field],
+                "label": row[label_field],
+                "target_trade_date": None,
+            }
+            continue
+
+        target_trade_date, target_price, meta = trading_day_price_after(
+            prices,
+            entry_trade_date,
+            horizon,
+            as_of=as_of,
+        )
+        if target_price is None:
+            debug[key] = {
+                "status": "pending",
+                "reason": meta.get("reason"),
+                "sessions_after_entry": meta.get("sessions_after_entry"),
+                "trading_day_offset": horizon,
+            }
+            continue
+
+        result_return = (target_price - entry_price) / entry_price * 100
+        debug[key] = {
+            "status": "resolved",
+            "reason": meta.get("reason"),
+            "return_pct": round(result_return, 4),
+            "price": target_price,
+            "label": stock_label_for_return(direction, result_return),
+            "target_trade_date": target_trade_date.isoformat() if target_trade_date else None,
+            "sessions_after_entry": meta.get("sessions_after_entry"),
+            "trading_day_offset": horizon,
+        }
+    return debug
+
+
+def apply_horizon_updates(
+    row: Any,
+    entry_trade_date: date,
+    entry_price: float,
+    prices: dict[date, float],
+    direction: str,
+    as_of: date,
+) -> tuple[dict[str, Any], list[str], int]:
+    updates: dict[str, Any] = {"entry_price": entry_price}
+    notes: list[str] = []
+    filled = 0
+
+    for horizon in STOCK_HORIZONS:
+        price_field = f"price_after_{horizon}d"
+        return_field = f"return_{horizon}d"
+        label_field = f"stock_outcome_label_{horizon}d"
+        if row[return_field] is not None:
+            continue
+
+        target_trade_date, target_price, meta = trading_day_price_after(
+            prices,
+            entry_trade_date,
+            horizon,
+            as_of=as_of,
+        )
+        if target_price is None:
+            reason = meta.get("reason") or f"{horizon}D pending."
+            notes.append(reason)
+            continue
+
+        result_return = (target_price - entry_price) / entry_price * 100
+        updates[price_field] = target_price
+        updates[return_field] = round(result_return, 4)
+        updates[label_field] = stock_label_for_return(direction, result_return)
+        filled += 1
+        print(
+            f"[outcomes] resolved {horizon}D id={row['id']} ticker={row['ticker']} "
+            f"date={target_trade_date} return={result_return:.4f}%",
+            flush=True,
+        )
+
+    return updates, notes, filled
 
 
 def old_values_for_update(row: Any, updates: dict[str, Any]) -> dict[str, Any]:
@@ -216,7 +359,10 @@ def execute_audited_update(
 
 
 def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
-    init_db()
+    refresh_timings: dict[str, float] = {}
+    refresh_started = time.perf_counter()
+    with log_timing(refresh_timings, "init_db_ms"):
+        init_db()
     today = date.today()
     checked = 0
     updated = 0
@@ -224,6 +370,7 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
     outcomes_updated = 0
     still_pending_not_old_enough = 0
     missing_price_data = 0
+    label_refreshed = 0
     errors: list[str] = []
     details: list[dict[str, Any]] = []
 
@@ -236,6 +383,8 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                OR return_5d IS NULL
                OR return_10d IS NULL
                OR return_20d IS NULL
+               OR stock_outcome_label IS NULL
+               OR stock_outcome_label = 'PENDING'
             ORDER BY timestamp ASC, id ASC
             LIMIT ?
             """,
@@ -255,9 +404,10 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                 "recommendation_date": entry_date.isoformat() if entry_date else None,
                 "saved_entry_price": saved_entry,
                 "entry_price": None,
-                "target_dates_checked": {},
+                "entry_trade_date": None,
                 "fmp_response_status": None,
                 "prices_found": {},
+                "horizons": {},
                 "rows_updated": 0,
                 "still_pending_reason": None,
             }
@@ -277,13 +427,16 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                     row,
                     {
                         "stock_outcome_label": row["stock_outcome_label"] or "PENDING",
-                        "result_notes": row["result_notes"] or "Recommendation timestamp was not available.",
+                        "result_notes": row["result_notes"] or detail["still_pending_reason"],
                         "outcome_last_updated_at": row["outcome_last_updated_at"] or checked_at,
+                        "outcome_horizon_debug_json": json.dumps(
+                            {f"{horizon}D": {"status": "pending", "reason": detail["still_pending_reason"]}
+                             for horizon in STOCK_HORIZONS}
+                        ),
                     },
                     checked_at,
                     "not_requested_missing_recommendation_timestamp",
                 )
-                print(f"[outcomes] pending ticker={ticker}: {detail['still_pending_reason']}", flush=True)
                 continue
 
             try:
@@ -308,13 +461,16 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                     {
                         "entry_price": row["entry_price"] if row["entry_price"] is not None else saved_entry,
                         "stock_outcome_label": row["stock_outcome_label"] or "PENDING",
-                        "result_notes": f"FMP stock outcome data unavailable: {exc}",
+                        "result_notes": detail["still_pending_reason"],
                         "outcome_last_updated_at": checked_at,
+                        "outcome_horizon_debug_json": json.dumps(
+                            {f"{horizon}D": {"status": "pending", "reason": detail["still_pending_reason"]}
+                             for horizon in STOCK_HORIZONS}
+                        ),
                     },
                     checked_at,
                     FMP_HISTORICAL_URL,
                 )
-                print(f"[outcomes] pending ticker={ticker}: {detail['still_pending_reason']}", flush=True)
                 continue
 
             entry_trade_date, entry = first_price_entry_on_or_after(prices, entry_date)
@@ -329,72 +485,64 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                         "stock_outcome_label": row["stock_outcome_label"] or "PENDING",
                         "result_notes": detail["still_pending_reason"],
                         "outcome_last_updated_at": checked_at,
+                        "outcome_horizon_debug_json": json.dumps(
+                            {f"{horizon}D": {"status": "pending", "reason": detail["still_pending_reason"]}
+                             for horizon in STOCK_HORIZONS}
+                        ),
                     },
                     checked_at,
                     FMP_HISTORICAL_URL,
                 )
-                print(f"[outcomes] pending ticker={ticker}: {detail['still_pending_reason']}", flush=True)
                 continue
 
             detail["entry_trade_date"] = entry_trade_date.isoformat()
             detail["entry_price"] = entry
-            for horizon in STOCK_HORIZONS:
-                detail["target_dates_checked"][f"{horizon}D"] = {
-                    "trading_day_offset": horizon,
-                    "from_entry_trading_date": entry_trade_date.isoformat(),
-                }
-            print(
-                f"[outcomes] FMP status={detail['fmp_response_status']} "
-                f"prices_returned={detail.get('fmp_prices_returned')} "
-                f"entry_date={entry_trade_date.isoformat()} entry_price={entry}",
-                flush=True,
-            )
-
-            updates: dict[str, Any] = {"entry_price": entry}
-            returns: list[float] = []
-            available_prices: list[float] = []
-            notes: list[str] = []
             direction = row["final_direction"] or ""
 
+            updates, notes, filled = apply_horizon_updates(
+                row,
+                entry_trade_date,
+                entry,
+                prices,
+                direction,
+                today,
+            )
+            outcomes_updated += filled
+
+            horizon_debug = build_horizon_debug(
+                row,
+                entry_trade_date,
+                entry,
+                prices,
+                direction,
+                updates,
+                today,
+            )
+            detail["horizons"] = horizon_debug
             for horizon in STOCK_HORIZONS:
-                price_field = f"price_after_{horizon}d"
-                return_field = f"return_{horizon}d"
-                label_field = f"stock_outcome_label_{horizon}d"
-                if row[return_field] is not None:
-                    continue
-                target_trade_date, target_price = trading_day_price_after(
-                    prices,
-                    entry_trade_date,
-                    horizon,
-                )
-                if target_price is None:
-                    notes.append(f"{horizon}D pending: not enough future trading closes from FMP.")
-                    continue
-                result_return = (target_price - entry) / entry * 100
-                horizon_label = stock_label_for_return(direction, result_return)
-                updates[price_field] = target_price
-                updates[return_field] = round(result_return, 4)
-                updates[label_field] = horizon_label
-                detail["prices_found"][f"{horizon}D"] = {
-                    "trading_day_offset": horizon,
-                    "trading_date": target_trade_date.isoformat() if target_trade_date else None,
-                    "price": target_price,
-                    "return": round(result_return, 4),
-                    "label": horizon_label,
-                }
-                outcomes_updated += 1
-                returns.append(result_return)
-                available_prices.append(target_price)
+                key = f"{horizon}D"
+                info = horizon_debug.get(key, {})
+                if info.get("status") == "resolved":
+                    detail["prices_found"][key] = {
+                        "trading_date": info.get("target_trade_date"),
+                        "price": info.get("price"),
+                        "return": info.get("return_pct"),
+                        "label": info.get("label"),
+                    }
+
+            returns_by_horizon = collect_returns_by_horizon(row, updates)
+            label = stock_label(direction, returns_by_horizon)
+            if label != (row["stock_outcome_label"] or "PENDING"):
+                label_refreshed += 1
+            if row["stock_outcome_label"] in (None, "PENDING") or label != "PENDING":
+                updates["stock_outcome_label"] = label
 
             directional_moves = [
-                (-move if direction == "Bearish" else move) for move in returns
+                (-move if direction == "Bearish" else move) for move in returns_by_horizon.values()
             ]
             if directional_moves:
                 updates["max_favorable_move"] = round(max(directional_moves), 4)
                 updates["max_adverse_move"] = round(min(directional_moves), 4)
-            label = stock_label(direction, returns)
-            if row["stock_outcome_label"] in (None, "PENDING") or label != "PENDING":
-                updates["stock_outcome_label"] = label
 
             opt_entry = option_entry_price(row)
             if opt_entry is not None:
@@ -403,28 +551,52 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                 updates["option_outcome_label"] = "PENDING"
                 notes.append("Option historical pricing is not available from the current sandbox FMP setup.")
 
-            updates["result_notes"] = "; ".join(notes) if notes else "Outcome update completed with available FMP stock prices."
+            pending_horizons = [
+                key for key, info in horizon_debug.items() if info.get("status") == "pending"
+            ]
+            if notes:
+                updates["result_notes"] = "; ".join(dict.fromkeys(notes))
+            elif pending_horizons:
+                updates["result_notes"] = (
+                    f"Outcome refresh completed. Still pending horizons: {', '.join(pending_horizons)}."
+                )
+            else:
+                updates["result_notes"] = "Outcome update completed with available FMP stock prices."
+
+            updates["outcome_horizon_debug_json"] = json.dumps(horizon_debug)
             updates["outcome_last_updated_at"] = checked_at
 
-            if len(updates) > 0:
+            if updates:
                 execute_audited_update(conn, row, updates, checked_at, FMP_HISTORICAL_URL)
                 updated += 1
                 detail["rows_updated"] = 1
 
-            if label == "PENDING":
+            if label == "PENDING" or pending_horizons:
                 pending += 1
-                detail["still_pending_reason"] = "; ".join(notes) or "No forward prices were available."
-                if any("not enough future trading closes" in note for note in notes):
+                detail["still_pending_reason"] = "; ".join(
+                    info.get("reason", "")
+                    for info in horizon_debug.values()
+                    if info.get("status") == "pending" and info.get("reason")
+                ) or "No forward prices were available."
+                if any("trading session" in (info.get("reason") or "") for info in horizon_debug.values()):
                     still_pending_not_old_enough += 1
+
             print(
-                f"[outcomes] updated ticker={ticker} row={row['id']} "
-                f"label={label} prices_found={detail['prices_found']}",
+                f"[outcomes] row={row['id']} ticker={ticker} label={label} "
+                f"resolved={[k for k, v in horizon_debug.items() if v.get('status') == 'resolved']} "
+                f"pending={[k for k, v in horizon_debug.items() if v.get('status') == 'pending']}",
                 flush=True,
             )
 
-        gate_intelligence = refresh_gate_intelligence_metrics(conn)
-        feature_vector_labels_updated = refresh_feature_vector_labels(conn)
-        gate_alpha = refresh_gate_alpha_metrics(conn)
+        with log_timing(refresh_timings, "gate_intelligence_ms"):
+            gate_intelligence = refresh_gate_intelligence_metrics(conn)
+        with log_timing(refresh_timings, "feature_vector_labels_ms"):
+            feature_vector_labels_updated = refresh_feature_vector_labels(conn)
+        with log_timing(refresh_timings, "gate_alpha_ms"):
+            gate_alpha = refresh_gate_alpha_metrics(conn)
+
+    refresh_timings["total_ms"] = round((time.perf_counter() - refresh_started) * 1000, 2)
+    log_memory_load(refresh_timings, "outcome_refresh")
 
     return {
         "ok": True,
@@ -435,9 +607,11 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
         "outcomes_updated": outcomes_updated,
         "still_pending_not_old_enough": still_pending_not_old_enough,
         "missing_price_data": missing_price_data,
+        "label_refreshed": label_refreshed,
         "errors": errors,
         "details": details,
         "gate_intelligence_updated": len(gate_intelligence),
         "feature_vector_labels_updated": feature_vector_labels_updated,
         "gate_alpha_metrics_updated": gate_alpha["metric_rows"],
+        "timings": refresh_timings,
     }

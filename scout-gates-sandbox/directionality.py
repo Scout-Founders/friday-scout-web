@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from earnings_intelligence import (
-    build_earnings_intelligence,
+    build_earnings_intelligence_for_result,
     earnings_context_for_gates,
     secondary_gate_weight,
 )
@@ -207,7 +207,7 @@ def build_net_attribution(
 def build_directional_breakdown(result_data: dict[str, Any]) -> dict[str, Any]:
     ticker = str(result_data.get("ticker") or "")
     direction = direction_label(str(result_data.get("direction") or ""))
-    earnings_intel = build_earnings_intelligence(result_data)
+    earnings_intel = build_earnings_intelligence_for_result(result_data)
     earnings_gate_context = earnings_context_for_gates(result_data, earnings_intel)
     signals: list[dict[str, Any]] = []
 

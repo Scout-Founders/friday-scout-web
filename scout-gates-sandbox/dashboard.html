@@ -354,6 +354,48 @@
       color: var(--text);
     }
 
+    .earnings-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .earnings-metric-block {
+      padding: 12px 14px;
+      border: 1px solid #1a2233;
+      border-radius: 12px;
+      background: #0a101a;
+    }
+
+    .earnings-metric-block h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    .earnings-metric-lines {
+      display: grid;
+      gap: 4px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .earnings-metric-lines span {
+      color: var(--text);
+    }
+
+    .earnings-score-row {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #1a2233;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
     .direction-pills {
       display: flex;
       flex-wrap: wrap;
@@ -1308,6 +1350,17 @@
       netModal.classList.add("hidden");
     }
 
+    function earningsScorePills(result) {
+      const baseScore = Number(result.scoutScoreBase ?? result.score ?? 0);
+      const adjustedScore = Number(result.adjustedScoutScore ?? result.score ?? 0);
+      const adjustment = Number(result.earningsConvictionAdjustment || 0);
+      return `
+        <span class="pill">Scout Base ${escapeHtml(displayValue(baseScore))}</span>
+        <span class="pill">Adjusted ${escapeHtml(displayValue(adjustedScore))}</span>
+        <span class="pill">EI Adj ${escapeHtml(signedComponent(adjustment))}</span>
+      `;
+    }
+
     function signedComponent(value) {
       const points = Number(value || 0);
       if (!points) {
@@ -1316,44 +1369,216 @@
       return points > 0 ? `+${points}` : `${points}`;
     }
 
+    function format_eps(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      return `$${num.toFixed(2)}`;
+    }
+
+    function format_currency_compact(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      const abs = Math.abs(num);
+      const sign = num < 0 ? "-" : "";
+      if (abs >= 1e12) {
+        return `${sign}$${(abs / 1e12).toFixed(2)}T`;
+      }
+      if (abs >= 1e9) {
+        return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+      }
+      if (abs >= 1e6) {
+        return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+      }
+      if (abs >= 1e3) {
+        return `${sign}$${(abs / 1e3).toFixed(2)}K`;
+      }
+      return `${sign}$${abs.toFixed(2)}`;
+    }
+
+    function format_percent(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      const sign = num > 0 ? "+" : "";
+      return `${sign}${num.toFixed(1)}%`;
+    }
+
+    function format_missing(kind) {
+      const labels = {
+        estimate: "Pending",
+        actual: "Not yet reported",
+        surprise: "Pending",
+        guidance: "Unknown",
+        reaction: "Pending",
+        generic: "Pending",
+      };
+      return labels[kind] || labels.generic;
+    }
+
+    function format_guidance(value) {
+      if (value === null || value === undefined || value === "") {
+        return format_missing("guidance");
+      }
+      const text = String(value).trim().toLowerCase();
+      if (!text || text === "unknown" || text === "n/a" || text === "na") {
+        return format_missing("guidance");
+      }
+      return text
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
+    function format_eps_field(value, fieldKind) {
+      const formatted = format_eps(value);
+      return formatted || format_missing(fieldKind);
+    }
+
+    function format_revenue_field(value, fieldKind) {
+      const formatted = format_currency_compact(value);
+      return formatted || format_missing(fieldKind);
+    }
+
+    function format_surprise_field(value) {
+      const formatted = format_percent(value);
+      return formatted || format_missing("surprise");
+    }
+
+    function format_reaction_field(value) {
+      const formatted = format_percent(value);
+      return formatted || format_missing("reaction");
+    }
+
+    function renderEarningsMetricBlock(title, lines, scorePoints) {
+      const scoreRow = scorePoints === null || scorePoints === undefined
+        ? ""
+        : `<div class="earnings-score-row">Tier score: <span>${escapeHtml(signedComponent(scorePoints))}</span></div>`;
+      const lineHtml = lines
+        .map(([label, value]) => `<div>${escapeHtml(label)}: <span>${escapeHtml(value)}</span></div>`)
+        .join("");
+      return `
+        <div class="earnings-metric-block">
+          <h4>${escapeHtml(title)}</h4>
+          <div class="earnings-metric-lines">${lineHtml}</div>
+          ${scoreRow}
+        </div>
+      `;
+    }
+
+    function format_actual_display(value, mode, formatter) {
+      const formatted = formatter(value);
+      if (formatted) {
+        return formatted;
+      }
+      if (mode === "awaiting_provider") {
+        return format_missing("actual");
+      }
+      return format_missing("estimate");
+    }
+
     function renderEarningsIntelligence(result) {
       const earnings = result.earningsIntelligence;
-      if (!earnings || !earnings.active) {
-        return "";
+      if (!earnings) {
+        return `
+          <div class="earnings-panel">
+            <div class="section-title" style="margin:0;"><h3>Earnings Intelligence</h3></div>
+            <div class="modal-note">Earnings Intelligence was not attached to this result payload.</div>
+          </div>
+        `;
       }
       const components = earnings.components || {};
-      const rows = [
-        ["EPS surprise", components.eps_surprise],
-        ["Revenue surprise", components.revenue_surprise],
-        ["Guidance", components.guidance],
-        ["Market reaction", components.market_reaction],
-        ["Quality modifier", components.quality_modifier],
-      ];
-      const componentList = rows
-        .map(([label, value]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(signedComponent(value))}</li>`)
-        .join("");
+      const inputs = earnings.inputs || {};
+      const mode = earnings.mode || result.earningsIntelligenceMode || "unavailable";
+      const metricsHtml = [
+        renderEarningsMetricBlock(
+          "EPS",
+          [
+            ["Estimate", format_eps_field(inputs.eps_estimate, "estimate")],
+            ["Actual", format_actual_display(inputs.eps_actual, mode, format_eps)],
+            ["Surprise", format_surprise_field(inputs.eps_surprise_pct)],
+          ],
+          components.eps_surprise,
+        ),
+        renderEarningsMetricBlock(
+          "Revenue",
+          [
+            ["Estimate", format_revenue_field(inputs.revenue_estimate, "estimate")],
+            ["Actual", format_actual_display(inputs.revenue_actual, mode, format_currency_compact)],
+            ["Surprise", format_surprise_field(inputs.revenue_surprise_pct)],
+          ],
+          components.revenue_surprise,
+        ),
+        renderEarningsMetricBlock(
+          "Guidance",
+          [["Signal", format_guidance(inputs.guidance)]],
+          components.guidance,
+        ),
+        renderEarningsMetricBlock(
+          "Market Reaction",
+          [["Move", format_reaction_field(inputs.market_reaction_pct)]],
+          components.market_reaction,
+        ),
+        renderEarningsMetricBlock(
+          "Quality Modifier",
+          [["Adjustment", components.quality_modifier === null || components.quality_modifier === undefined
+            ? format_missing("generic")
+            : signedComponent(components.quality_modifier)]],
+          null,
+        ),
+      ].join("");
+      const ingestion = earnings.ingestion || {};
+      const ingestionHint = ingestion.missing_fields && ingestion.missing_fields.length
+        ? `Provider: ${ingestion.provider || "n/a"} | Missing: ${ingestion.missing_fields.join(", ")}`
+        : (ingestion.provider ? `Provider: ${ingestion.provider}` : "");
       const adjustment = Number(result.earningsConvictionAdjustment || 0);
       const baseScore = Number(result.scoutScoreBase ?? result.score ?? 0);
       const adjustedScore = Number(result.adjustedScoutScore ?? result.score ?? 0);
       const cap = Number(earnings.conviction_cap || 8);
       const recency = Number(earnings.recency_multiplier || 1);
+      const earningsScoreText = earnings.earnings_score === null || earnings.earnings_score === undefined
+        ? "Pending"
+        : displayValue(earnings.earnings_score);
+      const reportDate = inputs.earnings_report_date
+        ? `<span class="pill">Report ${escapeHtml(inputs.earnings_report_date)}</span>`
+        : "";
       return `
         <div class="earnings-panel">
           <div class="section-title" style="margin:0;">
             <h3>Earnings Intelligence</h3>
-            <span class="pill">Score ${escapeHtml(displayValue(earnings.earnings_score))}</span>
-            <span class="pill">${escapeHtml(earnings.label || "n/a")}</span>
+            <span class="pill">${escapeHtml(mode)}</span>
+            <span class="pill">EI Score ${escapeHtml(earningsScoreText)}</span>
+            <span class="pill">${escapeHtml(earnings.label || "Awaiting data")}</span>
+            ${reportDate}
           </div>
           <div class="hint" style="margin-top:8px;">
-            Primary earnings interpreter. Event Trigger, Intel Feed, and Volatility Read reference earnings lightly when active.
+            ${escapeHtml(earnings.status_message || "Earnings Intelligence layer attached to this fresh scan result.")}
           </div>
-          <ul class="earnings-components">${componentList}</ul>
+          <div class="earnings-metrics">${metricsHtml}</div>
+          <div class="meta" style="margin-top:12px;">
+            <span class="pill">scoutScoreBase ${escapeHtml(displayValue(baseScore))}</span>
+            <span class="pill">adjustedScoutScore ${escapeHtml(displayValue(adjustedScore))}</span>
+            <span class="pill">earningsConvictionAdjustment ${escapeHtml(signedComponent(adjustment))}</span>
+          </div>
           <div class="hint" style="margin-top:10px;">
-            Recency multiplier: ${escapeHtml(recency.toFixed(2))} |
-            Catalyst weighting: ${escapeHtml(Number(earnings.catalyst_weighting || recency).toFixed(2))} |
-            Scout base ${escapeHtml(displayValue(baseScore))} → adjusted ${escapeHtml(displayValue(adjustedScore))}
-            (${escapeHtml(signedComponent(adjustment))} capped at ±${escapeHtml(cap)})
+            Recency ${escapeHtml(recency.toFixed(2))} |
+            Catalyst weight ${escapeHtml(Number(earnings.catalyst_weighting || recency).toFixed(2))} |
+            Cap ±${escapeHtml(cap)}
+            ${earnings.active ? " | Primary interpreter active" : (mode === "awaiting_provider" ? " | Awaiting provider actuals" : " | Awaiting post-earnings fields")}
           </div>
+          ${ingestionHint ? `<div class="hint" style="margin-top:8px;">${escapeHtml(ingestionHint)}</div>` : ""}
         </div>
       `;
     }
@@ -1381,6 +1606,7 @@
                 <span class="pill">${escapeHtml(pick.sector || "n/a")}</span>
                 <span class="pill">${pick.passedAllGates ? "Passed all gates" : escapeHtml(failedGateText(pick))}</span>
                 ${directionPills(pick)}
+                ${earningsScorePills(pick)}
               </div>
               <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalDirectionButton}</div>
             </div>

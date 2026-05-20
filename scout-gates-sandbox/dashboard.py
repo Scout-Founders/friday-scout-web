@@ -15,24 +15,22 @@ from pathlib import Path
 from typing import Any, Optional
 
 from directionality import build_directional_breakdown
-from earnings_intelligence import attach_adjusted_scout_score, build_earnings_intelligence
+from earnings_intelligence import attach_adjusted_scout_score, build_earnings_intelligence_for_result
 from explainability import build_explanation
 from memory_store import (
+    MAX_HISTORY_PAGE_SIZE,
+    build_memory_history_payload,
+    build_memory_summary_payload,
     create_outcome_test_record,
     create_gate_alpha_test_record,
     export_csv,
+    parse_history_filters,
     get_control_summary,
-    get_direction_accuracy,
     get_gate_attribution_summary,
     get_gate_alpha_summary,
-    get_gate_intelligence_metrics,
-    get_gate_statistics,
     get_horizon_self_audit,
-    get_option_pick_history,
-    get_outcome_analytics,
     get_outcome_audit_log,
     get_recommendation_explanation,
-    get_ticker_history,
     get_top_gate_failures,
     rebuild_regime_intelligence,
     run_horizon_backfill,
@@ -74,7 +72,7 @@ def serialize_result(
     explanation: Optional[dict[str, Any]] = None,
     direction_breakdown: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    earnings_intelligence = build_earnings_intelligence(result.data)
+    earnings_intelligence = build_earnings_intelligence_for_result(result.data)
     payload = {
         "ticker": result.data.get("ticker", result.ticker),
         "score": result.score,
@@ -215,17 +213,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_memory_summary() -> dict[str, Any]:
-    return {
-        "ok": True,
-        "recentScans": get_ticker_history(limit=100),
-        "gateStatistics": get_gate_statistics(),
-        "gateIntelligence": get_gate_intelligence_metrics(),
-        "directionAccuracy": get_direction_accuracy(),
-        "topGateFailures": get_top_gate_failures(),
-        "optionPickHistory": get_option_pick_history(),
-        "outcomeAnalytics": get_outcome_analytics(),
-        "outcomeAuditLog": get_outcome_audit_log(),
-    }
+    return build_memory_summary_payload()
 
 
 def build_control_summary() -> dict[str, Any]:
@@ -313,14 +301,53 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
             return
+        if parsed.path == "/api/memory/history":
+            params = urllib.parse.parse_qs(parsed.query)
+            filters = parse_history_filters(params)
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), MAX_HISTORY_PAGE_SIZE)
+            except ValueError:
+                limit = 100
+            try:
+                offset = max(int((params.get("offset") or ["0"])[0]), 0)
+            except ValueError:
+                offset = 0
+            self.send_json(
+                build_memory_history_payload(limit=limit, offset=offset, filters=filters)
+            )
+            return
+        if parsed.path == "/api/memory/audit":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["50"])[0]), 1), 200)
+            except ValueError:
+                limit = 50
+            self.send_json({"ok": True, "outcomeAuditLog": get_outcome_audit_log(limit=limit)})
+            return
         if parsed.path == "/api/memory/ticker":
             params = urllib.parse.parse_qs(parsed.query)
             ticker = (params.get("ticker") or [""])[0].strip().upper()
-            self.send_json({"ok": True, "history": get_ticker_history(ticker or None)})
+            filters = parse_history_filters({"ticker": [ticker]} if ticker else {}})
+            payload = build_memory_history_payload(
+                limit=MAX_HISTORY_PAGE_SIZE,
+                offset=0,
+                filters=filters,
+            )
+            self.send_json(
+                {
+                    "ok": True,
+                    "history": payload["history"],
+                    "total": payload.get("total"),
+                    "filteredTotal": payload.get("filteredTotal"),
+                    "timings": payload.get("timings"),
+                }
+            )
             return
         if parsed.path == "/api/memory/export.csv":
+            params = urllib.parse.parse_qs(parsed.query)
+            filters = parse_history_filters(params)
             self.send_text(
-                export_csv(),
+                export_csv(filters=filters),
                 "text/csv; charset=utf-8",
                 extra_headers={
                     "Content-Disposition": 'attachment; filename="scout-memory-export.csv"'

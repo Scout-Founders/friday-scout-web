@@ -159,6 +159,30 @@
       letter-spacing: 0.1em;
     }
 
+    .metric-tip {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.4;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
+    .metric-section {
+      grid-column: 1 / -1;
+      margin: 4px 0 2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .metric.metric-compact .metric-value {
+      font-size: 24px;
+    }
+
     input,
     select {
       min-width: 260px;
@@ -476,11 +500,16 @@
         <input id="test-age-days" type="number" min="1" max="365" value="30" title="Synthetic age in days for the copied test record">
         <button class="button" id="create-test-record-button" type="button">Create Outcome Test Record</button>
         <button class="button primary" id="update-outcomes-button" type="button">Update Outcomes</button>
-        <a class="button" href="/api/memory/export.csv">Export CSV</a>
+        <a class="button" id="export-csv-link" href="/api/memory/export.csv">Export CSV</a>
         <button class="button" id="print-button" type="button">Print / Save PDF</button>
         <button class="button primary" id="memory-tab-button" type="button">Research Memory</button>
         <button class="button" id="audit-tab-button" type="button">Audit Log</button>
       </div>
+      <p class="hint">
+        Forward returns use <strong>trading days</strong> (FMP EOD closes), not calendar days.
+        Saved scans do not update automatically — click <strong>Update Outcomes</strong> to refresh 1D–20D results.
+      </p>
+      <p class="hint" id="outcome-refresh-hint"></p>
       <p class="hint">
         Test mode copies the ticker in the search box, or the latest saved recommendation if blank,
         and backdates only the copied row. Real saved recommendations are not modified.
@@ -600,8 +629,12 @@
     const outcomeModalClose = document.getElementById("outcome-modal-close");
     let summary = null;
     let currentHistory = [];
+    let historyTotal = 0;
+    let historyFilteredTotal = 0;
     let activeView = "memory";
     let historyPage = 1;
+    let auditLoaded = false;
+    let filterReloadTimer = null;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -620,8 +653,60 @@
       return value ? new Date(value).toLocaleString() : "n/a";
     }
 
-    function pct(value) {
-      return typeof value === "number" ? `${value.toFixed(2)}%` : "Pending";
+    function parseHorizonDebug(row) {
+      const raw = row.outcome_horizon_debug || row.outcome_horizon_debug_json;
+      if (!raw) return {};
+      if (typeof raw === "object") return raw;
+      try {
+        return JSON.parse(raw) || {};
+      } catch (_error) {
+        return {};
+      }
+    }
+
+    function formatReturnPct(value) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return null;
+      }
+      const sign = value > 0 ? "+" : "";
+      return `${sign}${value.toFixed(1)}%`;
+    }
+
+    function horizonDisplay(row, horizonKey, returnValue) {
+      if (typeof returnValue === "number" && !Number.isNaN(returnValue)) {
+        return formatReturnPct(returnValue);
+      }
+      const debug = parseHorizonDebug(row);
+      const info = debug[horizonKey] || debug[horizonKey.toUpperCase()];
+      if (info && info.status === "pending" && info.reason) {
+        return info.reason.includes("trading session") ? "Pending" : "Pending";
+      }
+      if (!row.outcome_last_updated_at) {
+        return "Not refreshed";
+      }
+      return "Pending";
+    }
+
+    function horizonTitle(row, horizonKey, returnValue) {
+      const debug = parseHorizonDebug(row);
+      const info = debug[horizonKey] || debug[horizonKey.toUpperCase()];
+      if (typeof returnValue === "number") {
+        return `${horizonKey}: ${formatReturnPct(returnValue)}`;
+      }
+      if (info && info.reason) {
+        return `${horizonKey}: ${info.reason}`;
+      }
+      if (!row.outcome_last_updated_at) {
+        return `${horizonKey}: Outcomes have not been refreshed yet. Click Update Outcomes.`;
+      }
+      return `${horizonKey}: Pending`;
+    }
+
+    function pct(value, row, horizonKey) {
+      if (row && horizonKey) {
+        return horizonDisplay(row, horizonKey, value);
+      }
+      return formatReturnPct(value) || "Pending";
     }
 
     function label(value) {
@@ -632,6 +717,14 @@
       return JSON.stringify(value || {}, null, 2);
     }
 
+    function formatTimings(timings) {
+      if (!timings || !Object.keys(timings).length) return "";
+      const parts = ["total_ms", "outcome_analytics_ms", "row_fetch_ms", "init_db_ms"]
+        .filter((key) => timings[key] !== undefined)
+        .map((key) => `${key.replace(/_ms$/, "")} ${timings[key]}ms`);
+      return parts.join(" | ");
+    }
+
     function switchView(view) {
       activeView = view;
       document.getElementById("memory-view").hidden = view !== "memory";
@@ -639,27 +732,53 @@
       document.getElementById("audit-view").hidden = view !== "audit";
       document.getElementById("memory-tab-button").classList.toggle("primary", view === "memory");
       document.getElementById("audit-tab-button").classList.toggle("primary", view === "audit");
+      if (view === "audit") {
+        loadAuditLog().catch((error) => {
+          statusEl.textContent = `Could not load audit log: ${error.message || error}`;
+        });
+      }
     }
 
-    function applyFilters(history) {
+    function historyFilterQuery() {
+      const params = new URLSearchParams();
       const ticker = document.getElementById("ticker-search").value.trim().toUpperCase();
       const outcome = document.getElementById("outcome-filter").value;
       const direction = document.getElementById("direction-filter").value;
-      const failedGate = document.getElementById("failed-gate-filter").value.trim().toLowerCase();
-      const minScore = Number(document.getElementById("min-score-filter").value);
-      const maxScore = Number(document.getElementById("max-score-filter").value);
-      const hasMin = document.getElementById("min-score-filter").value !== "";
-      const hasMax = document.getElementById("max-score-filter").value !== "";
+      const failedGate = document.getElementById("failed-gate-filter").value.trim();
+      const minScore = document.getElementById("min-score-filter").value;
+      const maxScore = document.getElementById("max-score-filter").value;
+      if (ticker) params.set("ticker", ticker);
+      if (outcome) params.set("outcome", outcome);
+      if (direction) params.set("direction", direction);
+      if (failedGate) params.set("failedGate", failedGate);
+      if (minScore !== "") params.set("minScore", minScore);
+      if (maxScore !== "") params.set("maxScore", maxScore);
+      return params.toString();
+    }
 
-      return history.filter((row) => {
-        if (ticker && !String(row.ticker || "").includes(ticker)) return false;
-        if (outcome && label(row.stock_outcome_label) !== outcome) return false;
-        if (direction && row.final_direction !== direction) return false;
-        if (failedGate && !(row.failed_gates || []).some((gate) => String(gate).toLowerCase().includes(failedGate))) return false;
-        if (hasMin && Number(row.scout_score || 0) < minScore) return false;
-        if (hasMax && Number(row.scout_score || 0) > maxScore) return false;
-        return true;
-      });
+    function updateExportLink() {
+      const link = document.getElementById("export-csv-link");
+      const qs = historyFilterQuery();
+      link.href = qs ? `/api/memory/export.csv?${qs}` : "/api/memory/export.csv";
+    }
+
+    function formatAnalyticsPct(value) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return "0%";
+      }
+      const sign = value > 0 ? "+" : "";
+      return `${sign}${value.toFixed(1)}%`;
+    }
+
+    function metricCard(value, label, tip, compact = false) {
+      const compactClass = compact ? " metric-compact" : "";
+      return `
+        <div class="metric${compactClass}" title="${escapeHtml(tip)}">
+          <div class="metric-value">${value}</div>
+          <div class="metric-label">${escapeHtml(label)}</div>
+          <div class="metric-tip">${escapeHtml(tip)}</div>
+        </div>
+      `;
     }
 
     function renderMetrics(history, analytics = {}) {
@@ -667,22 +786,38 @@
       const avgScore = history.length
         ? history.reduce((sum, row) => sum + (row.scout_score || 0), 0) / history.length
         : 0;
+      const directionalTip = "Directional accuracy = whether the forward move matched Scout's direction (Bullish: return > 0, Bearish: return < 0). Uses longest available trading-day horizon (20D → 1D). Pending / not refreshed rows excluded.";
+      const avgReturnTip = "Avg return = mean realized percentage move after the scan for completed rows only. Uses the same longest available horizon as directional accuracy.";
+      const labelWinTip = "Outcome label win rate uses stored WIN / LOSS / FLAT labels (longest filled horizon). Can differ from directional accuracy when shorter horizons disagree.";
       document.getElementById("metrics").innerHTML = `
-        <div class="metric"><div class="metric-value">${history.length}</div><div class="metric-label">Stored scans</div></div>
-        <div class="metric"><div class="metric-value">${tickers.size}</div><div class="metric-label">Tickers</div></div>
-        <div class="metric"><div class="metric-value">${analytics.total_completed || 0}</div><div class="metric-label">Completed outcomes</div></div>
-        <div class="metric"><div class="metric-value">${analytics.win_rate || 0}%</div><div class="metric-label">Win rate</div></div>
-        <div class="metric"><div class="metric-value">${analytics.bullish_win_rate || 0}%</div><div class="metric-label">Bullish win rate</div></div>
-        <div class="metric"><div class="metric-value">${analytics.bearish_win_rate || 0}%</div><div class="metric-label">Bearish win rate</div></div>
-        <div class="metric"><div class="metric-value">${analytics.average_1d_return || 0}%</div><div class="metric-label">Avg 1D return</div></div>
-        <div class="metric"><div class="metric-value">${analytics.average_5d_return || 0}%</div><div class="metric-label">Avg 5D return</div></div>
-        <div class="metric"><div class="metric-value">${analytics.average_10d_return || 0}%</div><div class="metric-label">Avg 10D return</div></div>
-        <div class="metric"><div class="metric-value">${avgScore.toFixed(1)}</div><div class="metric-label">Avg Scout score</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.best_performing_ticker?.ticker || "n/a")}</div><div class="metric-label">Best ticker</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.worst_performing_ticker?.ticker || "n/a")}</div><div class="metric-label">Worst ticker</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.most_predictive_gate?.gate || "n/a")}</div><div class="metric-label">Most predictive gate</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.least_predictive_gate?.gate || "n/a")}</div><div class="metric-label">Least predictive gate</div></div>
-      `;
+        ${metricCard(historyTotal, "Stored scans", "All saved recommendations in local SQLite memory.")}
+        ${metricCard(tickers.size, "Tickers (page)", "Unique tickers on the current history page.")}
+        ${metricCard(analytics.total_completed_returns || 0, "Completed returns", "Rows with at least one realized forward return. Pending / not refreshed excluded.")}
+        <div class="metric-section">Outcome labels (legacy)</div>
+        ${metricCard(`${analytics.win_rate || 0}%`, "Win rate", labelWinTip, true)}
+        ${metricCard(`${analytics.bullish_win_rate || 0}%`, "Bullish win rate", labelWinTip, true)}
+        ${metricCard(`${analytics.bearish_win_rate || 0}%`, "Bearish win rate", labelWinTip, true)}
+        <div class="metric-section">Directional accuracy (return-based)</div>
+        ${metricCard(`${analytics.bullish_directional_accuracy || 0}%`, "Bullish directional accuracy", directionalTip, true)}
+        ${metricCard(`${analytics.bearish_directional_accuracy || 0}%`, "Bearish directional accuracy", directionalTip, true)}
+        ${metricCard(analytics.bullish_completed_outcomes || 0, "Bullish completed outcomes", "Bullish picks with a realized forward return (not Pending / not refreshed).", true)}
+        ${metricCard(analytics.bearish_completed_outcomes || 0, "Bearish completed outcomes", "Bearish picks with a realized forward return (not Pending / not refreshed).", true)}
+        <div class="metric-section">Average realized return</div>
+        ${metricCard(formatAnalyticsPct(analytics.bullish_avg_return), "Bullish avg return", avgReturnTip, true)}
+        ${metricCard(formatAnalyticsPct(analytics.bearish_avg_return), "Bearish avg return", avgReturnTip, true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_5d_return), "Avg 5D return (all)", "Mean 5 trading-day return across all completed-return rows.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_10d_return), "Avg 10D return (all)", "Mean 10 trading-day return across all completed-return rows.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_5d_return_bullish), "Bullish avg 5D", "Mean 5D return for bullish picks with a filled 5D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_10d_return_bullish), "Bullish avg 10D", "Mean 10D return for bullish picks with a filled 10D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_5d_return_bearish), "Bearish avg 5D", "Mean 5D return for bearish picks with a filled 5D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_10d_return_bearish), "Bearish avg 10D", "Mean 10D return for bearish picks with a filled 10D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_1d_return), "Avg 1D return (all)", "Mean 1 trading-day return across completed-return rows.", true)}
+        ${metricCard(avgScore.toFixed(1), "Avg Scout score", "Mean Scout score in the current filtered view.")}
+        ${metricCard(escapeHtml(analytics.best_performing_ticker?.ticker || "n/a"), "Best ticker", "Highest realized forward return in memory.")}
+        ${metricCard(escapeHtml(analytics.worst_performing_ticker?.ticker || "n/a"), "Worst ticker", "Lowest realized forward return in memory.")}
+        ${metricCard(escapeHtml(analytics.most_predictive_gate?.gate || "n/a"), "Most predictive gate", "Gate with the highest label-based win rate among completed outcomes.")}
+        ${metricCard(escapeHtml(analytics.least_predictive_gate?.gate || "n/a"), "Least predictive gate", "Gate with the lowest label-based win rate among completed outcomes.")}
+      `      `;
     }
 
     function historyPageSize() {
@@ -713,14 +848,20 @@
       };
     }
 
-    function updateHistoryPaginationControls(totalRows, pageInfo) {
+    function updateHistoryPaginationControls(totalRows, pageInfo, rowCount) {
       const countEl = document.getElementById("history-count");
       const pageLabelEl = document.getElementById("history-page-label");
       const prevButton = document.getElementById("history-prev");
       const nextButton = document.getElementById("history-next");
-      const showingText = totalRows
-        ? `Showing ${pageInfo.start + 1}-${pageInfo.end} of ${totalRows} rows`
-        : "Showing 0 rows";
+      const displayEnd = totalRows
+        ? Math.min(pageInfo.start + Math.max(rowCount, 0), totalRows)
+        : 0;
+      let showingText = totalRows
+        ? `Showing ${pageInfo.start + 1}-${displayEnd} of ${totalRows} matching rows`
+        : "Showing 0 matching rows";
+      if (pageInfo.pageSize === "all" && totalRows > rowCount) {
+        showingText += ` (loaded ${rowCount}; export for full filtered set)`;
+      }
 
       countEl.textContent = showingText;
       pageLabelEl.textContent = `Page ${pageInfo.page} of ${pageInfo.totalPages}`;
@@ -729,13 +870,13 @@
     }
 
     function renderHistory(history) {
-      const pageInfo = historyPageInfo(history.length);
-      updateHistoryPaginationControls(history.length, pageInfo);
+      const pageInfo = historyPageInfo(historyFilteredTotal);
+      updateHistoryPaginationControls(historyFilteredTotal, pageInfo, history.length);
       if (!history.length) {
-        document.getElementById("history").innerHTML = "<p class=\"hint\">No scan history yet. Run the sandbox scanner to seed memory.</p>";
+        document.getElementById("history").innerHTML = "<p class=\"hint\">No scan history matches the current filters. Run the sandbox scanner to seed memory or clear filters.</p>";
         return;
       }
-      const visibleHistory = history.slice(pageInfo.start, pageInfo.end);
+      const visibleHistory = history;
       document.getElementById("history").innerHTML = `
         <table>
           <thead>
@@ -752,11 +893,11 @@
                 <td><strong>${escapeHtml(row.ticker)}</strong></td>
                 <td>${escapeHtml(row.scout_score)}</td>
                 <td>${escapeHtml(row.final_direction)}</td>
-                <td>${escapeHtml(pct(row.return_1d))}</td>
-                <td>${escapeHtml(pct(row.return_3d))}</td>
-                <td>${escapeHtml(pct(row.return_5d))}</td>
-                <td>${escapeHtml(pct(row.return_10d))}</td>
-                <td>${escapeHtml(pct(row.return_20d))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "1D", row.return_1d))}">${escapeHtml(pct(row.return_1d, row, "1D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "3D", row.return_3d))}">${escapeHtml(pct(row.return_3d, row, "3D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "5D", row.return_5d))}">${escapeHtml(pct(row.return_5d, row, "5D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "10D", row.return_10d))}">${escapeHtml(pct(row.return_10d, row, "10D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "20D", row.return_20d))}">${escapeHtml(pct(row.return_20d, row, "20D"))}</td>
                 <td><span class="pill">${escapeHtml(label(row.stock_outcome_label))}</span></td>
                 <td>${escapeHtml(shortDate(row.outcome_last_updated_at))}</td>
                 <td>${(row.failed_gates || []).map((gate) => `<span class="pill">${escapeHtml(gate)}</span>`).join("") || "None"}</td>
@@ -914,6 +1055,7 @@
     }
 
     function openOutcomeModal(row) {
+      const debug = parseHorizonDebug(row);
       const returns = [
         ["1D", row.price_after_1d, row.return_1d],
         ["3D", row.price_after_3d, row.return_3d],
@@ -931,18 +1073,33 @@
         <div class="detail-grid">
           <div class="detail"><div class="detail-label">Entry price</div><div>${money(row.entry_price)}</div></div>
           <div class="detail"><div class="detail-label">Outcome label</div><div>${escapeHtml(label(row.stock_outcome_label))}</div></div>
-          <div class="detail"><div class="detail-label">Max favorable move</div><div>${escapeHtml(pct(row.max_favorable_move))}</div></div>
-          <div class="detail"><div class="detail-label">Max adverse move</div><div>${escapeHtml(pct(row.max_adverse_move))}</div></div>
+          <div class="detail"><div class="detail-label">Max favorable move</div><div>${escapeHtml(formatReturnPct(row.max_favorable_move) || "Pending")}</div></div>
+          <div class="detail"><div class="detail-label">Max adverse move</div><div>${escapeHtml(formatReturnPct(row.max_adverse_move) || "Pending")}</div></div>
           <div class="detail"><div class="detail-label">Last updated</div><div>${escapeHtml(shortDate(row.outcome_last_updated_at))}</div></div>
           <div class="detail"><div class="detail-label">Notes</div><div>${escapeHtml(row.result_notes || "No notes stored.")}</div></div>
         </div>
-        <h2 style="margin-top:18px;">Forward Returns</h2>
+        <h2 style="margin-top:18px;">Forward Returns (trading-day horizons)</h2>
         <table>
-          <thead><tr><th>Horizon</th><th>Checked Price</th><th>Return</th></tr></thead>
+          <thead><tr><th>Horizon</th><th>Status</th><th>Checked Price</th><th>Return</th><th>Why</th></tr></thead>
           <tbody>
-            ${returns.map(([horizon, price, ret]) => `
-              <tr><td>${horizon}</td><td>${money(price)}</td><td>${escapeHtml(pct(ret))}</td></tr>
-            `).join("")}
+            ${returns.map(([horizon, price, ret]) => {
+              const info = debug[horizon] || {};
+              const status = typeof ret === "number" ? "Resolved" : "Pending";
+              const why = typeof ret === "number"
+                ? (info.reason || "Resolved from FMP EOD close.")
+                : (info.reason || (!row.outcome_last_updated_at
+                  ? "Outcomes have not been refreshed yet. Click Update Outcomes."
+                  : "Waiting for enough trading sessions after entry."));
+              return `
+              <tr>
+                <td>${horizon}</td>
+                <td>${escapeHtml(status)}</td>
+                <td>${money(price)}</td>
+                <td>${escapeHtml(formatReturnPct(ret) || "Pending")}</td>
+                <td>${escapeHtml(why)}</td>
+              </tr>
+            `;
+            }).join("")}
           </tbody>
         </table>
         <h2 style="margin-top:18px;">Gates Present At Recommendation</h2>
@@ -1040,19 +1197,74 @@
       `;
     }
 
-    function renderAll(data) {
+    function renderOutcomeRefreshHint(history) {
+      const hintEl = document.getElementById("outcome-refresh-hint");
+      if (!hintEl) return;
+      const neverRefreshed = history.filter((row) => !row.outcome_last_updated_at).length;
+      if (!neverRefreshed) {
+        hintEl.textContent = "";
+        return;
+      }
+      hintEl.textContent = `${neverRefreshed} visible row(s) have never had outcomes refreshed. Click Update Outcomes to populate 1D–20D returns.`;
+    }
+
+    function renderSummaryPanels(data) {
       summary = data;
-      currentHistory = applyFilters(data.recentScans || []);
       renderMetrics(currentHistory, data.outcomeAnalytics || {});
-      renderHistory(currentHistory);
       renderGateIntelligence(data.gateIntelligence || []);
       renderHeatmap(data.gateStatistics || []);
       renderFailures(data.topGateFailures || []);
       renderDirectionStats(data.directionAccuracy || []);
       renderOptions(data.optionPickHistory || []);
-      renderAuditLog(data.outcomeAuditLog || []);
       switchView(activeView);
-      statusEl.textContent = `Loaded ${currentHistory.length} recent stored scan rows from local SQLite memory.`;
+    }
+
+    function scheduleHistoryReload() {
+      clearTimeout(filterReloadTimer);
+      filterReloadTimer = setTimeout(() => {
+        loadHistory({ resetPage: true }).catch((error) => {
+          statusEl.textContent = `Could not reload history: ${error.message || error}`;
+        });
+      }, 300);
+    }
+
+    async function loadHistory({ resetPage = false } = {}) {
+      if (resetPage) {
+        historyPage = 1;
+      }
+      const pageSize = historyPageSize();
+      const limit = pageSize === "all" ? 500 : pageSize;
+      const offset = pageSize === "all" ? 0 : (historyPage - 1) * pageSize;
+      const filterQs = historyFilterQuery();
+      const url = `/api/memory/history?limit=${limit}&offset=${offset}${filterQs ? `&${filterQs}` : ""}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || "History request failed.");
+      }
+      currentHistory = data.history || [];
+      historyTotal = data.total ?? historyTotal;
+      historyFilteredTotal = data.filteredTotal ?? currentHistory.length;
+      if (pageSize !== "all") {
+        const totalPages = Math.max(1, Math.ceil(historyFilteredTotal / pageSize));
+        historyPage = Math.min(Math.max(1, historyPage), totalPages);
+      }
+      updateExportLink();
+      renderOutcomeRefreshHint(currentHistory);
+      renderHistory(currentHistory);
+      if (summary) {
+        renderMetrics(currentHistory, summary.outcomeAnalytics || {});
+      }
+      return data;
+    }
+
+    async function loadAuditLog() {
+      if (auditLoaded) return;
+      document.getElementById("audit-log").innerHTML = "<p class=\"hint\">Loading audit log...</p>";
+      const response = await fetch("/api/memory/audit?limit=50");
+      const data = await response.json();
+      renderAuditLog(data.outcomeAuditLog || []);
+      auditLoaded = true;
     }
 
     function renderAuditLog(rows) {
@@ -1083,26 +1295,35 @@
     }
 
     async function loadSummary() {
-      const response = await fetch("/api/memory/summary");
-      const data = await response.json();
-      renderAll(data);
+      auditLoaded = false;
+      statusEl.textContent = "Loading summaries (analytics, gate stats)...";
+      const summaryResponse = await fetch("/api/memory/summary");
+      const summaryData = await summaryResponse.json();
+      if (!summaryResponse.ok || summaryData.ok === false) {
+        throw new Error(summaryData.message || "Summary request failed.");
+      }
+      historyTotal = summaryData.historyTotal || 0;
+      renderSummaryPanels(summaryData);
+      statusEl.textContent = `Summaries loaded (${formatTimings(summaryData.timings)}). Loading scan history...`;
+      const historyData = await loadHistory({ resetPage: true });
+      statusEl.textContent = [
+        `Ready: ${historyTotal} stored scan(s), ${historyFilteredTotal} matching filter(s), showing ${currentHistory.length} on this page.`,
+        formatTimings({ ...summaryData.timings, ...historyData.timings }),
+      ].join(" ");
     }
 
     async function searchTicker() {
       const ticker = document.getElementById("ticker-search").value.trim().toUpperCase();
       if (!ticker) {
-        historyPage = 1;
-        loadSummary();
+        await loadSummary();
         return;
       }
-      const response = await fetch(`/api/memory/ticker?ticker=${encodeURIComponent(ticker)}`);
-      const data = await response.json();
-      summary = { ...(summary || {}), recentScans: data.history || [] };
-      currentHistory = applyFilters(data.history || []);
       historyPage = 1;
-      renderMetrics(currentHistory, summary.outcomeAnalytics || {});
-      renderHistory(currentHistory);
-      statusEl.textContent = `Loaded ${currentHistory.length} stored scan rows for ${ticker}.`;
+      const historyData = await loadHistory({ resetPage: true });
+      statusEl.textContent = [
+        `Loaded ${historyFilteredTotal} matching row(s) for ${ticker} (${currentHistory.length} on this page).`,
+        formatTimings(historyData.timings),
+      ].join(" ");
     }
 
     async function updateOutcomes() {
@@ -1118,6 +1339,7 @@
         return;
       }
       await loadSummary();
+      const refreshTiming = result.timings ? ` Refresh ${formatTimings(result.timings)}.` : "";
       const sample = (result.details || [])
         .filter((detail) => detail.ticker)
         .slice(0, 5)
@@ -1135,7 +1357,7 @@
         `${result.still_pending_not_old_enough || 0} still pending because not old enough`,
         `${result.missing_price_data || 0} failed due to missing price data`,
         `Checked ${result.records_checked || 0} rows; updated ${result.records_updated || 0} rows.`,
-      ].join("\n") + sampleText + errors;
+      ].join("\n") + sampleText + errors + refreshTiming;
     }
 
     async function createOutcomeTestRecord() {
@@ -1168,26 +1390,25 @@
       loadSummary();
     });
     ["outcome-filter", "direction-filter", "failed-gate-filter", "min-score-filter", "max-score-filter"].forEach((id) => {
-      document.getElementById(id).addEventListener("input", () => {
-        historyPage = 1;
-        renderAll(summary || { recentScans: [] });
-      });
-      document.getElementById(id).addEventListener("change", () => {
-        historyPage = 1;
-        renderAll(summary || { recentScans: [] });
-      });
+      document.getElementById(id).addEventListener("input", scheduleHistoryReload);
+      document.getElementById(id).addEventListener("change", scheduleHistoryReload);
     });
     document.getElementById("history-page-size").addEventListener("change", () => {
-      historyPage = 1;
-      renderHistory(currentHistory);
+      loadHistory({ resetPage: true }).catch((error) => {
+        statusEl.textContent = `Could not reload history: ${error.message || error}`;
+      });
     });
     document.getElementById("history-prev").addEventListener("click", () => {
       historyPage = Math.max(1, historyPage - 1);
-      renderHistory(currentHistory);
+      loadHistory().catch((error) => {
+        statusEl.textContent = `Could not load page: ${error.message || error}`;
+      });
     });
     document.getElementById("history-next").addEventListener("click", () => {
       historyPage += 1;
-      renderHistory(currentHistory);
+      loadHistory().catch((error) => {
+        statusEl.textContent = `Could not load page: ${error.message || error}`;
+      });
     });
     document.getElementById("ticker-search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
