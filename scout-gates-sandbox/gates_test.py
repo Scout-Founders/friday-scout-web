@@ -442,14 +442,178 @@ class PeerRiskAdjustedEdgePlanTests(unittest.TestCase):
         self.assertEqual(peer_conviction_cap({"active": False}), PEER_CONVICTION_CAP)
         self.assertEqual(peer_conviction_cap(None), PEER_CONVICTION_CAP)
 
-    def test_scoring_not_implemented_yet(self) -> None:
-        from peer_risk_adjusted_edge import (
-            PeerScoringNotImplementedError,
-            build_peer_bundle_for_run,
-        )
 
-        with self.assertRaises(PeerScoringNotImplementedError):
-            build_peer_bundle_for_run([], run_timestamp="2026-05-19T12:00:00+00:00")
+class PeerRiskAdjustedEdgeP0Tests(unittest.TestCase):
+    def _candidate(
+        self,
+        ticker: str,
+        score: float,
+        *,
+        sector: str = "Technology",
+        **extra: float,
+    ) -> "CandidateResult":
+        from run_gates import GATES, CandidateResult
+
+        data: dict = {
+            "ticker": ticker,
+            "scout_score": score,
+            "sector": sector,
+            "gates": {key: True for key, _, _ in GATES},
+            "direction": "Bullish",
+        }
+        data.update(extra)
+        return CandidateResult(ticker=ticker, data=data)
+
+    def test_p0_bundle_scores_three_tickers(self) -> None:
+        from peer_risk_adjusted_edge import MODE_SCORED, build_peer_bundle_for_run
+
+        results = [
+            self._candidate("AAPL", 90, change=1.5, wind=2.0, dcf_gap=5.0),
+            self._candidate("MSFT", 70, change=-0.5, wind=-1.0, dcf_gap=-3.0),
+            self._candidate("NVDA", 80, change=0.5, wind=1.0, dcf_gap=2.0),
+        ]
+        bundle = build_peer_bundle_for_run(results, run_timestamp="2026-05-19T12:00:00+00:00")
+        self.assertEqual(bundle["AAPL"]["mode"], MODE_SCORED)
+        self.assertIsNotNone(bundle["AAPL"]["peerRiskAdjustedEdge"])
+        self.assertEqual(bundle["AAPL"]["percentiles"]["scoutScore"], 100.0)
+        self.assertEqual(bundle["MSFT"]["percentiles"]["scoutScore"], 0.0)
+        self.assertIsNone(bundle["AAPL"]["sharpeRatio"])
+        self.assertIsNone(bundle["AAPL"]["tStat"])
+
+    def test_p0_insufficient_peers_single_ticker(self) -> None:
+        from peer_risk_adjusted_edge import MODE_INSUFFICIENT_PEERS, build_peer_bundle_for_run
+
+        bundle = build_peer_bundle_for_run(
+            [self._candidate("AAPL", 80)],
+            run_timestamp="2026-05-19T12:00:00+00:00",
+        )
+        self.assertEqual(bundle["AAPL"]["mode"], MODE_INSUFFICIENT_PEERS)
+        self.assertIsNone(bundle["AAPL"]["peerRiskAdjustedEdge"])
+
+    def test_attach_peer_scoring_does_not_change_final_scores(self) -> None:
+        from peer_risk_adjusted_edge import attach_peer_scoring, build_scoring_breakdown
+
+        serialized = {
+            "ticker": "AAPL",
+            "score": 78,
+            "scoutScoreBase": 78,
+            "adjustedScoutScore": 81,
+            "earningsConvictionAdjustment": 3,
+            "passedAllGates": True,
+            "gates": [{"key": "sentinel", "passed": True}],
+        }
+        breakdown = build_scoring_breakdown(
+            "AAPL",
+            {},
+            {
+                "AAPL": {
+                    "mode": "scored",
+                    "active": True,
+                    "primaryGroup": "universe",
+                    "primaryGroupKey": "scan_universe",
+                    "peerCount": 3,
+                    "universeSize": 3,
+                    "percentiles": {"scoutScore": 100, "universeScore": 100},
+                    "edgeComponents": {
+                        "rawEdge": 1.0,
+                        "riskAdjustment": 0.0,
+                        "peerAdjustment": 1.0,
+                        "sectorAdjustment": 0.0,
+                        "volatilityPenalty": 0.0,
+                        "liquidityPenalty": 0.0,
+                        "finalEdge": 1.2,
+                    },
+                    "peerRiskAdjustedEdge": 1.2,
+                    "sharpeRatio": None,
+                    "tStat": None,
+                    "returnsMode": "awaiting_returns",
+                    "statusMessage": "ok",
+                }
+            },
+        )
+        updated = attach_peer_scoring(dict(serialized), breakdown)
+        self.assertEqual(updated["score"], 78)
+        self.assertEqual(updated["adjustedScoutScore"], 81)
+        self.assertEqual(updated["earningsConvictionAdjustment"], 3)
+        self.assertEqual(updated["peerConvictionAdjustment"], 0)
+        self.assertIn("scoringBreakdown", updated)
+        self.assertIsNone(updated["scoringBreakdown"]["sharpeRatio"])
+        self.assertIsNone(updated["scoringBreakdown"]["tStat"])
+        self.assertEqual(updated["scoringBreakdown"]["convictionAdjustment"], 0)
+
+    def test_serialize_result_scores_match_ei_only_baseline(self) -> None:
+        from unittest.mock import patch
+
+        from dashboard import serialize_result
+        from peer_risk_adjusted_edge import build_peer_bundle_for_run
+
+        results = [
+            self._candidate("AAPL", 88, rsi=55),
+            self._candidate("MSFT", 72, rsi=48),
+            self._candidate("NVDA", 80, rsi=60),
+        ]
+        inactive_ei = {
+            "active": False,
+            "conviction_adjustment": 0,
+            "mode": "unavailable",
+        }
+        with patch(
+            "dashboard.build_earnings_intelligence_for_result",
+            return_value=inactive_ei,
+        ):
+            baseline = serialize_result(results[0], peer_bundle=None)
+            bundle = build_peer_bundle_for_run(results, run_timestamp="2026-05-19T12:00:00+00:00")
+            with_peer = serialize_result(results[0], peer_bundle=bundle)
+
+        self.assertEqual(with_peer["score"], baseline["score"])
+        self.assertEqual(with_peer["adjustedScoutScore"], baseline["adjustedScoutScore"])
+        self.assertEqual(with_peer["scoutScoreBase"], baseline["scoutScoreBase"])
+        self.assertEqual(with_peer["earningsConvictionAdjustment"], baseline["earningsConvictionAdjustment"])
+        self.assertEqual(with_peer["peerConvictionAdjustment"], 0)
+        self.assertTrue(with_peer["passedAllGates"])
+        self.assertEqual(
+            [gate["passed"] for gate in with_peer["gates"]],
+            [gate["passed"] for gate in baseline["gates"]],
+        )
+        self.assertIsNotNone(with_peer.get("scoringBreakdown"))
+
+    def test_pdf_report_context_reads_p0_breakdown(self) -> None:
+        from reporting.scoring_breakdown import build_report_context
+
+        payload = {
+            "ok": True,
+            "runTimestamp": "2026-05-19T12:00:00+00:00",
+            "candidates": ["AAPL", "MSFT", "NVDA"],
+            "results": [
+                {
+                    "ticker": "AAPL",
+                    "score": 90,
+                    "scoringBreakdown": {
+                        "mode": "scored",
+                        "active": True,
+                        "peerRiskAdjustedEdge": 1.1,
+                        "sharpeRatio": None,
+                        "tStat": None,
+                        "peerRiskAdjustedEdgeBreakdown": {
+                            "rawEdge": 1.0,
+                            "finalEdge": 1.1,
+                        },
+                        "peerContext": {
+                            "primaryGroup": "universe",
+                            "peerCount": 3,
+                            "universePercentile": 100,
+                        },
+                    },
+                },
+                {"ticker": "MSFT", "score": 70},
+                {"ticker": "NVDA", "score": 80},
+            ],
+            "finalPick": {"ticker": "AAPL", "score": 90},
+        }
+        context = build_report_context(payload, ticker="AAPL")
+        self.assertEqual(context["peer"]["peer_risk_adjusted_edge"], "1.100")
+        self.assertEqual(context["peer"]["sharpe_ratio"], "—")
+        self.assertEqual(context["peer"]["t_stat"], "—")
 
 
 class ReportingPipelineTests(unittest.TestCase):

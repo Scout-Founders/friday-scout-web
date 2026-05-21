@@ -40,6 +40,11 @@ from memory_store import (
     save_scan_result_once,
 )
 from option_picker import choose_option_contract, fmp_api_key
+from peer_risk_adjusted_edge import (
+    attach_peer_scoring,
+    build_peer_bundle_for_run,
+    build_scoring_breakdown,
+)
 from performance_tracker import update_outcomes
 from reporting import (
     DEFAULT_ASYNC_EXPORT,
@@ -83,6 +88,7 @@ def serialize_result(
     option_pick: Optional[dict[str, Any]] = None,
     explanation: Optional[dict[str, Any]] = None,
     direction_breakdown: Optional[dict[str, Any]] = None,
+    peer_bundle: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     earnings_intelligence = build_earnings_intelligence_for_result(result.data)
     payload = {
@@ -110,7 +116,16 @@ def serialize_result(
         "earningsIntelligence": earnings_intelligence,
         "raw": result.data,
     }
-    return attach_adjusted_scout_score(payload, earnings_intelligence)
+    payload = attach_adjusted_scout_score(payload, earnings_intelligence)
+    if peer_bundle is not None:
+        breakdown = build_scoring_breakdown(
+            str(result.ticker),
+            result.data,
+            peer_bundle,
+            earnings_intelligence=earnings_intelligence,
+        )
+        payload = attach_peer_scoring(payload, breakdown)
+    return payload
 
 
 def pick_winner(results: list[CandidateResult], pick_mode: str) -> CandidateResult:
@@ -158,6 +173,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     winner = pick_winner(results, pick_mode)
+    peer_bundle = build_peer_bundle_for_run(results, run_timestamp=run_timestamp)
     explanations = {
         result.ticker: build_explanation(
             result.data,
@@ -185,6 +201,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             option_picks.get(result.ticker),
             explanations.get(result.ticker),
             direction_breakdowns.get(result.ticker),
+            peer_bundle=peer_bundle,
         )
         for result in sorted(results, key=lambda item: item.score, reverse=True)
         if result.ticker != winner.ticker
@@ -203,6 +220,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             option_picks.get(winner.ticker),
             explanations.get(winner.ticker),
             direction_breakdowns.get(winner.ticker),
+            peer_bundle=peer_bundle,
         ),
         "rejected": rejected,
         "results": [
@@ -211,6 +229,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
                 option_picks.get(result.ticker),
                 explanations.get(result.ticker),
                 direction_breakdowns.get(result.ticker),
+                peer_bundle=peer_bundle,
             )
             for result in results
         ],
