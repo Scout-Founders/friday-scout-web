@@ -20,6 +20,8 @@
 10. [Priority Order for Hardening Work](#10-priority-order-for-hardening-work)
 11. [Research Memory Load Budget](#11-research-memory-load-budget)
 12. [What Stays Synchronous by Design](#12-what-stays-synchronous-by-design)
+13. [Peer Risk-Adjusted Edge (related plan)](#13-peer-risk-adjusted-edge-related-plan)
+14. [Remote access (related plan)](#14-remote-access-related-plan)
 
 ---
 
@@ -643,6 +645,41 @@ These paths remain synchronous for determinism and audit integrity:
 
 ---
 
+## 13. Peer Risk-Adjusted Edge (related plan)
+
+PRAE is documented separately in **[peer-risk-adjusted-edge.md](./peer-risk-adjusted-edge.md)** (architecture + scoring plan). It does not change infrastructure layers above, but must obey the same constraints:
+
+| Hardening rule | PRAE compliance |
+|----------------|-----------------|
+| No compute on Research Memory GET | Peer stats read from `raw_result_json` / snapshots only |
+| No FMP on page load | v1 peer cohort uses in-run gate API fields only |
+| No gate pass/fail mutation | Breakdown + optional capped adjustment only |
+| Scan path stays synchronous (small N) | O(N) in-memory; queue if N > 100 (P4) |
+
+**Insertion point:** `dashboard.build_run_payload` after all gate fetches, before `serialize_result` — not inside `memory_store` summary builders.
+
+**Caching alignment:** Tier 0 in-run memo (per scan); Tier 1b `analytics_snapshots` on save (P2). See peer doc §8.
+
+**Module:** `scout-gates-sandbox/peer_risk_adjusted_edge.py` (P0 breakdown implemented).
+
+---
+
+## 14. Remote access (related plan)
+
+Private phone/laptop access to the sandbox dashboard (without public deploy) is documented in **[remote-access-plan.md](./remote-access-plan.md)**.
+
+| Topic | Plan location |
+|-------|----------------|
+| Tailscale-first topology | remote-access §2 |
+| Ports (`8765` dashboard vs `3000` Next.js) | remote-access §5 |
+| Auth before remote use | remote-access §7 |
+| `.env` / FMP key handling | remote-access §8 |
+| Cloudflare Tunnel fallback | remote-access §9 |
+
+**Constraint:** Hardening “no FMP on page load” and “no public dashboard” apply equally to remote access — Tailscale does not replace application auth.
+
+---
+
 ## Appendix A — Response shape reference (Research Memory)
 
 Current history API response (stable contract):
@@ -696,6 +733,8 @@ Frontend should read `data.history` (with fallbacks `rows`, `records`, `items` o
 | Date | Change |
 |------|--------|
 | 2026-05-19 | Initial plan — planning only, no implementation |
+| 2026-05-21 | Added §13 cross-reference to Peer Risk-Adjusted Edge plan |
+| 2026-05-21 | Added §14 cross-reference to Remote Access plan |
 
 ---
 
