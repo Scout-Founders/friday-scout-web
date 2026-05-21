@@ -425,6 +425,33 @@ class ReportExportTests(unittest.TestCase):
         self.assertEqual(resolve_scan_session_id(payload), "RUN-42")
 
 
+class PeerRiskAdjustedEdgePlanTests(unittest.TestCase):
+    def test_feature_weights_sum_to_one(self) -> None:
+        from peer_risk_adjusted_edge import FEATURE_WEIGHTS
+
+        self.assertAlmostEqual(sum(FEATURE_WEIGHTS.values()), 1.0, places=6)
+
+    def test_peer_conviction_cap_when_ei_active(self) -> None:
+        from peer_risk_adjusted_edge import (
+            PEER_CONVICTION_CAP,
+            PEER_CONVICTION_CAP_WHEN_EI_ACTIVE,
+            peer_conviction_cap,
+        )
+
+        self.assertEqual(peer_conviction_cap({"active": True}), PEER_CONVICTION_CAP_WHEN_EI_ACTIVE)
+        self.assertEqual(peer_conviction_cap({"active": False}), PEER_CONVICTION_CAP)
+        self.assertEqual(peer_conviction_cap(None), PEER_CONVICTION_CAP)
+
+    def test_scoring_not_implemented_yet(self) -> None:
+        from peer_risk_adjusted_edge import (
+            PeerScoringNotImplementedError,
+            build_peer_bundle_for_run,
+        )
+
+        with self.assertRaises(PeerScoringNotImplementedError):
+            build_peer_bundle_for_run([], run_timestamp="2026-05-19T12:00:00+00:00")
+
+
 class ReportingPipelineTests(unittest.TestCase):
     def test_registry_lists_registered_report(self) -> None:
         import tempfile
