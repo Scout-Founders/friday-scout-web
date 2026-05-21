@@ -22,6 +22,7 @@
 12. [What Stays Synchronous by Design](#12-what-stays-synchronous-by-design)
 13. [Peer Risk-Adjusted Edge (related plan)](#13-peer-risk-adjusted-edge-related-plan)
 14. [Remote access (related plan)](#14-remote-access-related-plan)
+15. [Stable Signal State v1 (related plan)](#15-stable-signal-state-v1-related-plan)
 
 ---
 
@@ -680,6 +681,19 @@ Private phone/laptop access to the sandbox dashboard (without public deploy) is 
 
 ---
 
+## 15. Stable Signal State v1 (related plan)
+
+Horizon-1 signal layering (Momentum, Risk, Liquidity, Volatility, Fundamental Quality, Regime, Breadth) — primary vs shadow inputs, redundancy audit, no gate changes — is documented in **[stable-signal-state-v1.md](./stable-signal-state-v1.md)**.
+
+| Topic | Plan location |
+|-------|----------------|
+| Ranking authority (`scout_score` only) | stable-signal §1 |
+| 14-gate → layer map | stable-signal §4 |
+| Redundancy matrix (`rsi`, `change`, `wind`, …) | stable-signal §6 |
+| Shadow logging contract | stable-signal §8 |
+
+---
+
 ## Appendix A — Response shape reference (Research Memory)
 
 Current history API response (stable contract):
@@ -735,6 +749,7 @@ Frontend should read `data.history` (with fallbacks `rows`, `records`, `items` o
 | 2026-05-19 | Initial plan — planning only, no implementation |
 | 2026-05-21 | Added §13 cross-reference to Peer Risk-Adjusted Edge plan |
 | 2026-05-21 | Added §14 cross-reference to Remote Access plan |
+| 2026-05-21 | Added §15 cross-reference to Stable Signal State v1 |
 
 ---
 

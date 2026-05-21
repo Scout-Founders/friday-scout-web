@@ -616,6 +616,88 @@ class PeerRiskAdjustedEdgeP0Tests(unittest.TestCase):
         self.assertEqual(context["peer"]["t_stat"], "—")
 
 
+class StableSignalLayersS1Tests(unittest.TestCase):
+    def _candidate(self, ticker: str, score: float, **extra: Any) -> "CandidateResult":
+        from run_gates import GATES, CandidateResult
+
+        data: dict = {
+            "ticker": ticker,
+            "scout_score": score,
+            "sector": "Technology",
+            "trend": "UPTREND",
+            "volume": 1_200_000,
+            "wind": 1.5,
+            "iv_elevated": False,
+            "piotroski": 7,
+            "z_score": 2.4,
+            "breadth_score": 62,
+            "rsi": 55,
+            "change": 1.2,
+            "dcf_gap": 8.0,
+            "beta": 1.1,
+            "gates": {key: True for key, _, _ in GATES},
+            "direction": "Bullish",
+        }
+        data.update(extra)
+        return CandidateResult(ticker=ticker, data=data)
+
+    def test_build_stable_signal_exposes_seven_layers(self) -> None:
+        from stable_signal_layers import LAYER_KEYS, build_stable_signal
+
+        signal = build_stable_signal(self._candidate("AAPL", 82))
+        self.assertEqual(signal["version"], "1")
+        self.assertEqual(signal["rankingScoreField"], "scout_score")
+        self.assertEqual(signal["rankingScore"], 82)
+        self.assertEqual(tuple(signal["layers"].keys()), LAYER_KEYS)
+        self.assertEqual(signal["layers"]["momentum"]["primary"]["field"], "trend")
+        self.assertEqual(signal["layers"]["risk"]["primary"]["gate"], "fortress")
+        self.assertEqual(signal["layers"]["liquidity"]["primary"]["field"], "volume")
+        self.assertIn("rsi_multi_use", signal["redundancyFlags"])
+
+    def test_attach_stable_signal_does_not_mutate_scores_or_gates(self) -> None:
+        from stable_signal_layers import attach_stable_signal, build_stable_signal
+
+        serialized = {
+            "ticker": "AAPL",
+            "score": 78,
+            "adjustedScoutScore": 81,
+            "earningsConvictionAdjustment": 3,
+            "passedAllGates": True,
+            "gates": [{"key": "sentinel", "passed": True}],
+        }
+        baseline = dict(serialized)
+        updated = attach_stable_signal(dict(serialized), build_stable_signal(self._candidate("AAPL", 78)))
+        self.assertEqual(updated["score"], baseline["score"])
+        self.assertEqual(updated["adjustedScoutScore"], baseline["adjustedScoutScore"])
+        self.assertEqual(updated["gates"], baseline["gates"])
+        self.assertIn("stableSignal", updated)
+
+    def test_serialize_result_attaches_stable_signal_without_ranking_change(self) -> None:
+        from unittest.mock import patch
+
+        from dashboard import serialize_result
+
+        from run_gates import CandidateResult
+
+        results = [
+            self._candidate("AAPL", 88),
+            self._candidate("MSFT", 72),
+            self._candidate("NVDA", 80),
+        ]
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        with patch(
+            "dashboard.build_earnings_intelligence_for_result",
+            return_value=inactive_ei,
+        ):
+            baseline = serialize_result(results[0], peer_bundle=None)
+            # serialize_result now always attaches stableSignal; compare score fields only
+            self.assertEqual(baseline["score"], 88)
+            self.assertIn("stableSignal", baseline)
+            signal = baseline["stableSignal"]
+            self.assertEqual(signal["rankingScore"], 88)
+            self.assertTrue(signal["layers"]["momentum"]["gates"][0]["passed"])
+
+
 class ReportingPipelineTests(unittest.TestCase):
     def test_registry_lists_registered_report(self) -> None:
         import tempfile

@@ -45,6 +45,7 @@ from peer_risk_adjusted_edge import (
     build_peer_bundle_for_run,
     build_scoring_breakdown,
 )
+from stable_signal_layers import build_and_attach_stable_signal
 from performance_tracker import update_outcomes
 from reporting import (
     DEFAULT_ASYNC_EXPORT,
@@ -125,7 +126,7 @@ def serialize_result(
             earnings_intelligence=earnings_intelligence,
         )
         payload = attach_peer_scoring(payload, breakdown)
-    return payload
+    return build_and_attach_stable_signal(result, payload)
 
 
 def pick_winner(results: list[CandidateResult], pick_mode: str) -> CandidateResult:
