@@ -818,8 +818,15 @@
             </div>
           </div>
 
-          <div class="field">
-            <button id="save-button" class="secondary-action" type="button" disabled>Save Results to Memory</button>
+          <div class="field row">
+            <div>
+              <label>&nbsp;</label>
+              <button id="save-button" class="secondary-action" type="button" disabled>Save Results to Memory</button>
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <button id="export-pdf-button" class="secondary-action" type="button" disabled>Export PDF</button>
+            </div>
           </div>
 
           <div class="hint">
@@ -899,6 +906,7 @@
     const outputEl = document.getElementById("output");
     const runButton = document.getElementById("run-button");
     const saveButton = document.getElementById("save-button");
+    const exportPdfButton = document.getElementById("export-pdf-button");
     const storageModeEl = document.getElementById("storage-mode");
     const optionModal = document.getElementById("option-modal");
     const optionModalBody = document.getElementById("option-modal-body");
@@ -1915,8 +1923,12 @@
       if (!currentPayload || !currentPayload.ok) {
         saveButton.disabled = true;
         saveButton.textContent = "Save Results to Memory";
+        exportPdfButton.disabled = true;
+        exportPdfButton.textContent = "Export PDF";
         return;
       }
+      exportPdfButton.disabled = false;
+      exportPdfButton.textContent = "Export PDF";
       if (currentScanSaved || currentPayload.savedToMemory) {
         saveButton.disabled = true;
         saveButton.textContent = "Already saved.";
@@ -1929,6 +1941,67 @@
       }
       saveButton.disabled = false;
       saveButton.textContent = "Save Results to Memory";
+    }
+
+    async function pollReportJob(jobId, maxAttempts = 80) {
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const response = await fetch(`/api/reports/jobs/${encodeURIComponent(jobId)}`);
+        const job = await response.json();
+        if (!job.ok) {
+          throw new Error(job.message || "Could not load export job.");
+        }
+        if (job.status === "completed") {
+          return job;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.errorMessage || "PDF export failed.");
+        }
+        exportPdfButton.textContent = `Exporting (${job.pipelineStage || job.status})...`;
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+      throw new Error("PDF export timed out while waiting for the background worker.");
+    }
+
+    async function exportScoringPdf() {
+      if (!currentPayload || !currentPayload.ok) {
+        setStatus("Run gates before exporting a report.", true);
+        return;
+      }
+      exportPdfButton.disabled = true;
+      exportPdfButton.textContent = "Exporting...";
+      try {
+        const response = await fetch("/api/reports/export-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scan: currentPayload,
+            ticker: currentPayload.finalPick?.ticker,
+            async: true,
+          }),
+        });
+        let payload = await response.json();
+        if (!payload.ok) {
+          throw new Error(payload.message || "PDF export failed.");
+        }
+        if (payload.async && payload.jobId) {
+          payload = await pollReportJob(payload.jobId);
+        }
+        if (payload.reused) {
+          setStatus(`Reused existing report for ${payload.ticker || "ticker"}.`);
+        }
+        if (payload.downloadUrl) {
+          window.open(payload.downloadUrl, "_blank", "noopener");
+        }
+        setStatus(
+          `PDF saved to ${payload.relativePath || "exports/reports/"}\\n`
+          + `Session ${payload.scanSessionId || "n/a"} · ${payload.ticker || "n/a"}`
+          + (payload.jobId ? `\\nJob ${payload.jobId}` : "")
+        );
+      } catch (error) {
+        setStatus(error.message || String(error), true);
+      } finally {
+        updateSaveButton();
+      }
     }
 
     async function saveResultsToMemory() {
@@ -2020,6 +2093,7 @@
 
     storageModeEl.addEventListener("change", updateSaveButton);
     saveButton.addEventListener("click", saveResultsToMemory);
+    exportPdfButton.addEventListener("click", exportScoringPdf);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);
     directionModalClose.addEventListener("click", closeDirectionModal);

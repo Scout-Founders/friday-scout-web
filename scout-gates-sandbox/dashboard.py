@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.parse
 import webbrowser
@@ -40,6 +41,14 @@ from memory_store import (
 )
 from option_picker import choose_option_contract, fmp_api_key
 from performance_tracker import update_outcomes
+from reporting import (
+    DEFAULT_ASYNC_EXPORT,
+    ReportConfig,
+    default_exports_dir,
+    ensure_report_worker,
+    get_report_service,
+    get_reporting_status,
+)
 from run_gates import (
     DEFAULT_CANDIDATES,
     GATES,
@@ -53,9 +62,12 @@ from run_gates import (
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SANDBOX_DIR.parent
 DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
 RESEARCH_HTML = SANDBOX_DIR / "research.html"
 CONTROL_HTML = SANDBOX_DIR / "control.html"
+REPORTS_DIR = REPO_ROOT / "exports" / "reports"
+SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
 
 def first_failed_gate_payload(result: CandidateResult) -> Optional[dict[str, Any]]:
@@ -362,6 +374,78 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/api/reports/status":
+            self.send_json(get_reporting_status(REPORTS_DIR))
+            return
+        if parsed.path == "/api/reports/list":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 200)
+            except ValueError:
+                limit = 20
+            try:
+                offset = max(int((params.get("offset") or ["0"])[0]), 0)
+            except ValueError:
+                offset = 0
+            ticker = (params.get("ticker") or [""])[0].strip().upper() or None
+            report_type = (params.get("reportType") or [""])[0].strip() or None
+            session_id = (params.get("scanSessionId") or [""])[0].strip() or None
+            store = get_report_service(REPORTS_DIR).store
+            payload = store.list_reports(
+                limit=limit,
+                offset=offset,
+                ticker=ticker,
+                report_type=report_type,
+                scan_session_id=session_id,
+            )
+            self.send_json({"ok": True, **payload})
+            return
+        if parsed.path == "/api/reports/jobs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 200)
+            except ValueError:
+                limit = 20
+            try:
+                offset = max(int((params.get("offset") or ["0"])[0]), 0)
+            except ValueError:
+                offset = 0
+            status = (params.get("status") or [""])[0].strip() or None
+            batch_id = (params.get("batchId") or [""])[0].strip() or None
+            store = get_report_service(REPORTS_DIR).store
+            self.send_json(
+                {
+                    "ok": True,
+                    **store.list_jobs(
+                        limit=limit,
+                        offset=offset,
+                        status=status,
+                        batch_id=batch_id,
+                    ),
+                }
+            )
+            return
+        if parsed.path.startswith("/api/reports/jobs/"):
+            job_id = parsed.path.rsplit("/", 1)[-1].strip()
+            if not job_id or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                self.send_json(
+                    {"ok": False, "message": "Invalid job id."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            self.send_json(get_report_service(REPORTS_DIR).get_job(job_id))
+            return
+        if parsed.path.startswith("/api/reports/download/"):
+            filename = parsed.path.rsplit("/", 1)[-1]
+            if not SAFE_REPORT_NAME.match(filename):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid report filename")
+                return
+            report_path = (REPORTS_DIR / filename).resolve()
+            if report_path.parent != REPORTS_DIR.resolve() or not report_path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "Report not found")
+                return
+            self.send_file(report_path, "application/pdf")
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
@@ -448,6 +532,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             return
 
+        if parsed.path == "/api/reports/export-pdf":
+            try:
+                payload = self.read_json()
+                scan_payload = payload.get("scan") if isinstance(payload.get("scan"), dict) else payload
+                ticker = str(payload.get("ticker") or "").strip().upper() or None
+                async_mode = payload.get("async")
+                if async_mode is None:
+                    async_mode = DEFAULT_ASYNC_EXPORT
+                else:
+                    async_mode = async_mode in (True, "true", "1", 1)
+                service = get_report_service(REPORTS_DIR)
+                batch_tickers = payload.get("tickers")
+                if isinstance(batch_tickers, list) and batch_tickers:
+                    response = service.export_batch(
+                        scan_payload,
+                        tickers=[str(item) for item in batch_tickers],
+                        async_mode=async_mode,
+                    )
+                else:
+                    response = service.export(
+                        scan_payload,
+                        ticker=ticker,
+                        async_mode=async_mode,
+                    )
+                self.send_json(response)
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"PDF export error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
         if parsed.path != "/api/run":
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
@@ -526,6 +647,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     load_env()
     args = build_parser().parse_args()
+    default_exports_dir()
+    ensure_report_worker(ReportConfig(exports_dir=REPORTS_DIR))
     address = (args.host, args.port)
     server = ThreadingHTTPServer(address, DashboardHandler)
     url = f"http://{args.host}:{args.port}"

@@ -310,5 +310,197 @@ class PerformanceTrackerTests(unittest.TestCase):
         self.assertEqual(label, "WIN")
 
 
+class ReportExportTests(unittest.TestCase):
+    def sample_scan_payload(self) -> dict:
+        return {
+            "ok": True,
+            "runTimestamp": "2026-05-19T12:00:00+00:00",
+            "universeMode": "custom",
+            "pickMode": "gate_runner",
+            "candidates": ["AAPL", "MSFT"],
+            "results": [
+                {
+                    "ticker": "AAPL",
+                    "score": 78,
+                    "adjustedScoutScore": 81,
+                    "sector": "Technology",
+                    "passedAllGates": True,
+                    "gates": [
+                        {"index": 1, "key": "sentinel", "code": "SENTINEL", "name": "Market Filter", "passed": True},
+                    ],
+                    "explanation": {
+                        "summary": "AAPL was the final winner and passed every gate.",
+                        "status": "winner",
+                        "gates": [
+                            {
+                                "gate_key": "sentinel",
+                                "gate_name": "Market Filter",
+                                "status": "PASS",
+                                "actual_value": "score: 82; volume healthy",
+                                "explanation": "AAPL passed Market Filter.",
+                            }
+                        ],
+                    },
+                    "directionBreakdown": {
+                        "direction": "Bullish",
+                        "bullConviction": 70,
+                        "bearConviction": 30,
+                        "netDirectionalEdge": 40,
+                    },
+                    "scoringBreakdown": {
+                        "peerRiskAdjustedEdge": 1.24,
+                        "sharpeRatio": 1.08,
+                        "tStat": 2.31,
+                        "peerRiskAdjustedEdgeBreakdown": {
+                            "rawEdge": 1.8,
+                            "riskAdjustment": -0.2,
+                            "peerAdjustment": -0.36,
+                            "finalEdge": 1.24,
+                        },
+                    },
+                },
+                {
+                    "ticker": "MSFT",
+                    "score": 72,
+                    "sector": "Technology",
+                    "passedAllGates": False,
+                    "gates": [],
+                    "explanation": {"summary": "MSFT rejected.", "status": "rejected", "gates": []},
+                },
+            ],
+            "finalPick": {
+                "ticker": "AAPL",
+                "score": 78,
+                "adjustedScoutScore": 81,
+                "sector": "Technology",
+                "passedAllGates": True,
+                "gates": [
+                    {"index": 1, "key": "sentinel", "code": "SENTINEL", "name": "Market Filter", "passed": True},
+                ],
+                "explanation": {
+                    "summary": "AAPL was the final winner and passed every gate.",
+                    "status": "winner",
+                    "gates": [
+                        {
+                            "gate_key": "sentinel",
+                            "gate_name": "Market Filter",
+                            "status": "PASS",
+                            "actual_value": "score: 82; volume healthy",
+                            "explanation": "AAPL passed Market Filter.",
+                        }
+                    ],
+                },
+                "directionBreakdown": {
+                    "direction": "Bullish",
+                    "bullConviction": 70,
+                    "bearConviction": 30,
+                    "netDirectionalEdge": 40,
+                },
+                "scoringBreakdown": {
+                    "peerRiskAdjustedEdge": 1.24,
+                    "sharpeRatio": 1.08,
+                    "tStat": 2.31,
+                },
+            },
+            "rejected": [],
+        }
+
+    def test_build_report_context_extracts_peer_metrics_and_percentiles(self) -> None:
+        from reporting import build_report_context
+
+        context = build_report_context(self.sample_scan_payload())
+        self.assertEqual(context["ticker"], "AAPL")
+        self.assertEqual(context["peer"]["peer_risk_adjusted_edge"], "1.240")
+        self.assertEqual(context["peer"]["sharpe_ratio"], "1.080")
+        self.assertEqual(context["peer"]["t_stat"], "2.310")
+        self.assertEqual(context["percentiles"]["universe_rank"], "1")
+        self.assertEqual(context["percentiles"]["universe_percentile"], "100%")
+        self.assertEqual(context["gate_rows"][0]["score"], "82.0")
+
+    def test_resolve_scan_session_id_uses_memory_run(self) -> None:
+        from reporting import resolve_scan_session_id
+
+        payload = self.sample_scan_payload()
+        payload["memoryRunId"] = 42
+        self.assertEqual(resolve_scan_session_id(payload), "RUN-42")
+
+
+class ReportingPipelineTests(unittest.TestCase):
+    def test_registry_lists_registered_report(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from reporting.config import ReportConfig
+        from reporting.pipeline import ReportPipeline
+        from reporting.registry import list_reports
+
+        from reporting.registry_store import clear_registry_store_cache
+
+        payload = ReportExportTests().sample_scan_payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            clear_registry_store_cache()
+            config = ReportConfig(exports_dir=Path(tmp))
+            result = ReportPipeline(config).run(payload)
+            self.assertIn("register", result["pipelineStages"])
+            rows = list_reports(Path(tmp), limit=5)
+            self.assertEqual(rows[0]["filename"], result["filename"])
+            self.assertEqual(rows[0]["ticker"], "AAPL")
+
+    def test_async_export_completes_via_worker(self) -> None:
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from reporting.config import ReportConfig
+        from reporting.jobs import ReportJobWorker
+        from reporting.service import ReportService
+
+        from reporting.registry_store import clear_registry_store_cache
+
+        payload = ReportExportTests().sample_scan_payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            clear_registry_store_cache()
+            config = ReportConfig(exports_dir=Path(tmp))
+            worker = ReportJobWorker(config)
+            worker.start()
+            try:
+                queued = ReportService(config).export(payload, async_mode=True)
+                self.assertTrue(queued.get("async"))
+                job_id = str(queued["jobId"])
+                completed = None
+                for _ in range(40):
+                    job = ReportService(config).get_job(job_id)
+                    if job.get("status") == "completed":
+                        completed = job
+                        break
+                    if job.get("status") == "failed":
+                        self.fail(job.get("errorMessage") or "job failed")
+                    time.sleep(0.2)
+                self.assertIsNotNone(completed)
+                self.assertTrue(completed.get("downloadUrl"))
+            finally:
+                worker.stop()
+                clear_registry_store_cache()
+
+    def test_idempotent_export_reuses_report(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from reporting.config import ReportConfig
+        from reporting.service import ReportService
+
+        from reporting.registry_store import clear_registry_store_cache
+
+        payload = ReportExportTests().sample_scan_payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            clear_registry_store_cache()
+            config = ReportConfig(exports_dir=Path(tmp))
+            service = ReportService(config)
+            first = service.export(payload, async_mode=False)
+            second = service.export(payload, async_mode=False)
+            self.assertTrue(second.get("reused"))
+            self.assertEqual(second.get("filename"), first.get("filename"))
+
+
 if __name__ == "__main__":
     unittest.main()
