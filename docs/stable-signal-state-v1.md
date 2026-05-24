@@ -344,7 +344,8 @@ Breadth ......... CURRENT (+ breadth_score field)
 |-------|-------------|-----------------|
 | **S0 (this doc)** | Audit + primary/shadow table | No |
 | **S1** | `stable_signal_layers.py` + attach on `serialize_result` | No — **done** |
-| **S2** | Dashboard/PDF labels: “Ranking score” vs overlays; layer badges on gate cards | No |
+| **S2** | `stableSignal.explainability` (see [stable-signal-s2-explainability-plan.md](./stable-signal-s2-explainability-plan.md)) | No |
+| **S3** | Dashboard/PDF labels: “Ranking score” vs overlays; layer badges on gate cards | No |
 | **S3** | Directionality signal metadata (`layer`, `shadow`) | No |
 | **S4** | Regime classifier fix: decouple `netDirectionalEdge` from breadth | No |
 | **S5** | Research Memory filters by `stableSignal.layers.*` | No |
@@ -381,6 +382,7 @@ Fields the sandbox consumes (may be missing per ticker). **Not exhaustive of CF 
 |------|--------|
 | 2026-05-21 | Initial Stable Signal State v1 audit |
 | 2026-05-21 | S1: `stable_signal_layers.py` + `stableSignal` on serialize |
+| 2026-05-21 | S2 explainability plan (doc only) |
 
 ---
 
