@@ -9,8 +9,12 @@ import json
 import math
 import re
 import sqlite3
+import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from engine_version import current_engine_version, current_git_commit_hash
@@ -78,6 +82,7 @@ OUTCOME_COLUMNS = {
     "max_adverse_move": "REAL",
     "result_notes": "TEXT",
     "outcome_last_updated_at": "TEXT",
+    "outcome_horizon_debug_json": "TEXT",
 }
 
 
@@ -113,7 +118,13 @@ def parse_iso_datetime(value: Any) -> Optional[datetime]:
     return parsed
 
 
+_DB_INITIALIZED = False
+
+
 def init_db() -> None:
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
     with connect() as conn:
         conn.executescript(
             """
@@ -284,6 +295,161 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE scan_runs ADD COLUMN {column} {column_type}")
         init_feature_store(conn)
         init_pattern_store(conn)
+        ensure_performance_indexes(conn)
+    _DB_INITIALIZED = True
+
+
+PRIMARY_RETURN_SQL = "COALESCE(return_20d, return_10d, return_5d, return_3d, return_1d)"
+
+MAX_HISTORY_PAGE_SIZE = 500
+MAX_HISTORY_EXPORT_BATCH = 500
+
+
+@dataclass
+class HistoryFilters:
+    ticker: Optional[str] = None
+    outcome: Optional[str] = None
+    direction: Optional[str] = None
+    failed_gate: Optional[str] = None
+    min_score: Optional[float] = None
+    max_score: Optional[float] = None
+
+
+# UI placeholder / autofill noise — never treat as an active filter.
+_FAILED_GATE_PLACEHOLDER_VALUES = frozenset(
+    {
+        "threat scan",
+        "e.g. threat scan",
+        "e.g. specter",
+        "gate name",
+    }
+)
+
+
+def normalize_history_filters(filters: Optional[HistoryFilters]) -> HistoryFilters:
+    """Drop empty or placeholder filter values so defaults show all rows."""
+    filters = filters or HistoryFilters()
+    failed_gate = (filters.failed_gate or "").strip().lower() or None
+    if failed_gate in _FAILED_GATE_PLACEHOLDER_VALUES:
+        failed_gate = None
+    min_score = filters.min_score
+    max_score = filters.max_score
+    # min=0 max=0 (or max=0 alone) is almost always accidental and matches no rows.
+    if max_score == 0:
+        max_score = None
+    if min_score == 0 and max_score in (0, None):
+        min_score = None
+    return HistoryFilters(
+        ticker=(filters.ticker or "").strip().upper() or None,
+        outcome=(filters.outcome or "").strip().upper() or None,
+        direction=(filters.direction or "").strip() or None,
+        failed_gate=failed_gate,
+        min_score=min_score,
+        max_score=max_score,
+    )
+
+
+def parse_history_filters(params: dict[str, list[str]]) -> HistoryFilters:
+    def first(key: str) -> str:
+        values = params.get(key) or []
+        return str(values[0]).strip() if values else ""
+
+    def optional_float(raw: str) -> Optional[float]:
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    ticker = first("ticker").upper() or None
+    outcome = first("outcome").upper() or None
+    direction = first("direction") or None
+    failed_gate = first("failedGate").lower() or None
+    min_score = optional_float(first("minScore"))
+    max_score = optional_float(first("maxScore"))
+    return normalize_history_filters(
+        HistoryFilters(
+            ticker=ticker,
+            outcome=outcome if outcome else None,
+            direction=direction if direction else None,
+            failed_gate=failed_gate if failed_gate else None,
+            min_score=min_score,
+            max_score=max_score,
+        )
+    )
+
+
+def history_where_clause(filters: Optional[HistoryFilters]) -> tuple[str, list[Any]]:
+    filters = normalize_history_filters(filters)
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if filters.ticker:
+        clauses.append("ticker LIKE ?")
+        params.append(f"%{filters.ticker}%")
+    if filters.direction:
+        clauses.append("final_direction = ?")
+        params.append(filters.direction)
+    if filters.min_score is not None:
+        clauses.append("scout_score >= ?")
+        params.append(filters.min_score)
+    if filters.max_score is not None:
+        clauses.append("scout_score <= ?")
+        params.append(filters.max_score)
+    if filters.failed_gate:
+        clauses.append("LOWER(COALESCE(failed_gates_json, '')) LIKE ?")
+        params.append(f"%{filters.failed_gate.lower()}%")
+    if filters.outcome == "PENDING":
+        clauses.append(
+            f"(stock_outcome_label IS NULL OR stock_outcome_label = 'PENDING') "
+            f"AND {PRIMARY_RETURN_SQL} IS NULL"
+        )
+    elif filters.outcome in ("WIN", "LOSS", "FLAT"):
+        clauses.append("stock_outcome_label = ?")
+        params.append(filters.outcome)
+
+    if clauses:
+        return " WHERE " + " AND ".join(clauses), params
+    return "", []
+
+HISTORY_SELECT_SQL = """
+    id, run_id, timestamp, created_at, ticker, scout_score, bull_score, bear_score,
+    net_direction, final_direction, engine_version,
+    gates_json, failed_gates_json, failure_reasons_json, gate_snapshot_json,
+    entry_price, price_after_1d, price_after_3d, price_after_5d, price_after_10d, price_after_20d,
+    return_1d, return_3d, return_5d, return_10d, return_20d,
+    stock_outcome_label, stock_outcome_label_1d, stock_outcome_label_3d, stock_outcome_label_5d,
+    stock_outcome_label_10d, stock_outcome_label_20d,
+    outcome_last_updated_at, result_notes, outcome_horizon_debug_json,
+    option_entry_price, final_option_pick_json, max_favorable_move, max_adverse_move
+"""
+
+
+def ensure_performance_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scan_results_outcome_label "
+        "ON scan_results(stock_outcome_label)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scan_results_final_direction "
+        "ON scan_results(final_direction)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scan_results_ticker_ts "
+        "ON scan_results(ticker, timestamp DESC)"
+    )
+
+
+@contextmanager
+def log_timing(timings: dict[str, float], key: str):
+    start = time.perf_counter()
+    yield
+    timings[key] = round((time.perf_counter() - start) * 1000, 2)
+
+
+def log_memory_load(timings: dict[str, float], label: str) -> None:
+    print(f"[memory-load] {label} {json.dumps(timings, sort_keys=True)}", file=sys.stderr, flush=True)
 
 
 def failed_gate_names(result: dict[str, Any]) -> list[str]:
@@ -1011,6 +1177,60 @@ def save_scan_result(payload: dict[str, Any]) -> int:
         return run_id
 
 
+def saved_scan_run_id(payload: dict[str, Any]) -> Optional[int]:
+    init_db()
+    timestamp = str(payload.get("runTimestamp") or "")
+    if not timestamp:
+        return None
+    candidates_json = json_dump(payload.get("candidates") or [])
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM scan_runs
+            WHERE timestamp = ?
+              AND COALESCE(candidates_json, '') = ?
+              AND COALESCE(api_url, '') = COALESCE(?, '')
+              AND COALESCE(universe_mode, '') = COALESCE(?, '')
+              AND COALESCE(pick_mode, '') = COALESCE(?, '')
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (
+                timestamp,
+                candidates_json,
+                payload.get("apiUrl"),
+                payload.get("universeMode"),
+                payload.get("pickMode"),
+            ),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def save_scan_result_once(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist a preview scan once, using its immutable run timestamp as the batch key."""
+    results = [row for row in payload.get("results", []) if isinstance(row, dict)]
+    if not results:
+        raise ValueError("No completed recommendations were available to save.")
+    existing_id = saved_scan_run_id(payload)
+    if existing_id is not None:
+        return {
+            "ok": True,
+            "alreadySaved": True,
+            "memoryRunId": existing_id,
+            "recommendationsSaved": len(results),
+            "message": "Already saved.",
+        }
+    run_id = save_scan_result(payload)
+    return {
+        "ok": True,
+        "alreadySaved": False,
+        "memoryRunId": run_id,
+        "recommendationsSaved": len(results),
+        "message": f"Saved {len(results)} recommendations to Research Memory.",
+    }
+
+
 def create_outcome_test_record(
     ticker: Optional[str] = None,
     days_old: int = 30,
@@ -1322,6 +1542,37 @@ def create_gate_alpha_test_record() -> dict[str, Any]:
         }
 
 
+def row_to_history_list(row: sqlite3.Row) -> dict[str, Any]:
+    """Lightweight row for Research Memory tables (skips large raw payloads)."""
+    result = {
+        "id": row["id"],
+        "run_id": row["run_id"],
+        "scan_id": row["run_id"],
+        "timestamp": row["timestamp"],
+        "created_at": row["created_at"],
+        "ticker": row["ticker"],
+        "scout_score": row["scout_score"],
+        "bull_score": row["bull_score"],
+        "bear_score": row["bear_score"],
+        "net_direction": row["net_direction"],
+        "final_direction": row["final_direction"],
+        "engine_version": row["engine_version"],
+        "gates": json_load(row["gates_json"]) or {},
+        "failed_gates": json_load(row["failed_gates_json"]) or [],
+        "failure_reasons": json_load(row["failure_reasons_json"]) or [],
+        "gate_snapshot": json_load(row["gate_snapshot_json"]),
+        "final_option_pick": json_load(row["final_option_pick_json"]),
+    }
+    for column in OUTCOME_COLUMNS:
+        if column == "outcome_horizon_debug_json":
+            continue
+        if column in row.keys():
+            result[column] = row[column]
+    if "outcome_horizon_debug_json" in row.keys():
+        result["outcome_horizon_debug"] = json_load(row["outcome_horizon_debug_json"])
+    return result
+
+
 def row_to_result(row: sqlite3.Row) -> dict[str, Any]:
     result = {
         "id": row["id"],
@@ -1345,6 +1596,7 @@ def row_to_result(row: sqlite3.Row) -> dict[str, Any]:
     }
     for column in OUTCOME_COLUMNS:
         result[column] = row[column]
+    result["outcome_horizon_debug"] = json_load(row["outcome_horizon_debug_json"])
     for column in MEMORY_COLUMNS:
         result[column.removesuffix("_json")] = (
             json_load(row[column]) if column.endswith("_json") else row[column]
@@ -2205,6 +2457,9 @@ def refresh_gate_intelligence_metrics(conn: Optional[sqlite3.Connection] = None)
                     item["total_passes"] += 1
                 else:
                     item["total_failures"] += 1
+                # Outcome labels and forward returns apply only when this gate passed.
+                if not gate["passed"]:
+                    continue
                 if outcome == "WIN":
                     item["win_count"] += 1
                     if direction == "Bullish":
@@ -3246,36 +3501,95 @@ def get_horizon_self_audit(
     }
 
 
-def get_ticker_history(ticker: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+def count_scan_results(
+    filters: Optional[HistoryFilters] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
     init_db()
-    with connect() as conn:
-        if ticker:
-            rows = conn.execute(
-                """
-                SELECT * FROM scan_results
-                WHERE ticker = ?
-                ORDER BY timestamp DESC, id DESC
-                LIMIT ?
-                """,
-                (ticker.upper(), limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT * FROM scan_results
-                ORDER BY timestamp DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-    return [row_to_result(row) for row in rows]
+    where_sql, params = history_where_clause(filters)
+    if conn is not None:
+        row = conn.execute(f"SELECT COUNT(*) AS total FROM scan_results{where_sql}", params).fetchone()
+        return int(row["total"] or 0)
+    with connect() as c:
+        row = c.execute(f"SELECT COUNT(*) AS total FROM scan_results{where_sql}", params).fetchone()
+    return int(row["total"] or 0)
 
 
-def get_gate_statistics() -> list[dict[str, Any]]:
-    history = get_ticker_history(limit=10000)
+def query_scan_results(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    filters: Optional[HistoryFilters] = None,
+    lightweight: bool = True,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    init_db()
+    safe_limit = min(max(int(limit), 1), MAX_HISTORY_PAGE_SIZE)
+    safe_offset = max(int(offset), 0)
+    where_sql, params = history_where_clause(filters)
+    row_factory = row_to_history_list if lightweight else row_to_result
+    query = f"""
+        SELECT {HISTORY_SELECT_SQL}
+        FROM scan_results
+        {where_sql}
+        ORDER BY timestamp DESC, id DESC
+        LIMIT ? OFFSET ?
+    """
+    query_params = [*params, safe_limit, safe_offset]
+
+    if conn is not None:
+        rows = conn.execute(query, query_params).fetchall()
+    else:
+        with connect() as c:
+            rows = c.execute(query, query_params).fetchall()
+    return [row_factory(row) for row in rows]
+
+
+def get_ticker_history(
+    ticker: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    *,
+    lightweight: bool = True,
+    filters: Optional[HistoryFilters] = None,
+) -> list[dict[str, Any]]:
+    merged = filters or HistoryFilters()
+    if ticker:
+        merged = HistoryFilters(
+            ticker=ticker.upper(),
+            outcome=merged.outcome,
+            direction=merged.direction,
+            failed_gate=merged.failed_gate,
+            min_score=merged.min_score,
+            max_score=merged.max_score,
+        )
+    return query_scan_results(
+        limit=limit,
+        offset=offset,
+        filters=merged,
+        lightweight=lightweight,
+    )
+
+
+def get_gate_statistics(sample_limit: int = 400) -> list[dict[str, Any]]:
+    init_db()
     stats: dict[str, dict[str, Any]] = {}
-    for result in history:
-        for gate, passed in (result.get("gates") or {}).items():
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT gates_json
+            FROM scan_results
+            WHERE gates_json IS NOT NULL AND gates_json != ''
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+    for row in rows:
+        gates = json_load(row["gates_json"]) or {}
+        if not isinstance(gates, dict):
+            continue
+        for gate, passed in gates.items():
             item = stats.setdefault(gate, {"gate": gate, "pass": 0, "fail": 0, "total": 0})
             item["total"] += 1
             item["pass" if passed else "fail"] += 1
@@ -3285,6 +3599,71 @@ def get_gate_statistics() -> list[dict[str, Any]]:
         total = item["total"] or 1
         output.append({**item, "pass_rate": round(item["pass"] / total * 100, 1)})
     return sorted(output, key=lambda row: row["gate"])
+
+
+RETURN_HORIZON_FIELDS = (
+    "return_20d",
+    "return_10d",
+    "return_5d",
+    "return_3d",
+    "return_1d",
+)
+
+
+def primary_forward_return(row: dict[str, Any]) -> Optional[float]:
+    """Longest available forward return for a row (20D preferred)."""
+    for field in RETURN_HORIZON_FIELDS:
+        value = row.get(field)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def is_pending_outcome_row(row: dict[str, Any]) -> bool:
+    label = str(row.get("stock_outcome_label") or "").upper()
+    if label in ("WIN", "LOSS", "FLAT"):
+        return False
+    return primary_forward_return(row) is None
+
+
+def completed_return_rows(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in history if not is_pending_outcome_row(row)]
+
+
+def directional_match(direction: str, forward_return: float) -> bool:
+    if direction == "Bullish":
+        return forward_return > 0
+    if direction == "Bearish":
+        return forward_return < 0
+    return forward_return > 0
+
+
+def directional_accuracy_stats(
+    rows: list[dict[str, Any]],
+    direction: str,
+) -> dict[str, Any]:
+    subset = [
+        row
+        for row in rows
+        if row.get("final_direction") == direction
+    ]
+    returns = [
+        value
+        for row in subset
+        if (value := primary_forward_return(row)) is not None
+    ]
+    wins = sum(1 for value in returns if directional_match(direction, value))
+    losses = len(returns) - wins
+    decided = len(returns)
+    accuracy = round(wins / decided * 100, 1) if decided else 0.0
+    avg_return = round(sum(returns) / len(returns), 2) if returns else 0.0
+    return {
+        "completed": decided,
+        "wins": wins,
+        "losses": losses,
+        "directional_accuracy": accuracy,
+        "avg_return": avg_return,
+    }
 
 
 def get_direction_accuracy() -> list[dict[str, Any]]:
@@ -3321,87 +3700,211 @@ def get_direction_accuracy() -> list[dict[str, Any]]:
     ]
 
 
-def get_outcome_analytics() -> dict[str, Any]:
-    init_db()
-    history = get_ticker_history(limit=100000)
-    completed = [row for row in history if row.get("stock_outcome_label") in ("WIN", "LOSS", "FLAT")]
-    wins = [row for row in completed if row.get("stock_outcome_label") == "WIN"]
-    bullish = [row for row in completed if row.get("final_direction") == "Bullish"]
-    bearish = [row for row in completed if row.get("final_direction") == "Bearish"]
+def _sql_win_rate_percent(wins: Any, losses: Any) -> float:
+    wins_i = int(wins or 0)
+    losses_i = int(losses or 0)
+    decided = wins_i + losses_i
+    return round(wins_i / decided * 100, 1) if decided else 0.0
 
-    def win_rate(rows: list[dict[str, Any]]) -> float:
-        decided = [row for row in rows if row.get("stock_outcome_label") in ("WIN", "LOSS")]
-        if not decided:
-            return 0.0
-        return round(
-            sum(1 for row in decided if row.get("stock_outcome_label") == "WIN") / len(decided) * 100,
-            1,
-        )
 
-    def avg(field: str) -> float:
-        values = [row.get(field) for row in completed if isinstance(row.get(field), (int, float))]
-        return round(sum(values) / len(values), 2) if values else 0.0
-
-    with connect() as conn:
-        best = conn.execute(
-            """
-            SELECT ticker, return_20d, return_10d, return_5d, return_1d
-            FROM scan_results
-            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
-            ORDER BY COALESCE(return_20d, return_10d, return_5d, return_1d) DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        worst = conn.execute(
-            """
-            SELECT ticker, return_20d, return_10d, return_5d, return_1d
-            FROM scan_results
-            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
-            ORDER BY COALESCE(return_20d, return_10d, return_5d, return_1d) ASC
-            LIMIT 1
-            """
-        ).fetchone()
-
-    gate_stats: dict[str, dict[str, Any]] = {}
-    for row in completed:
-        gates = row.get("gates") or {}
-        for gate, passed in gates.items():
-            item = gate_stats.setdefault(gate, {"gate": gate, "wins": 0, "losses": 0, "total": 0})
-            item["total"] += 1
-            if row.get("stock_outcome_label") == "WIN":
-                item["wins"] += 1
-            elif row.get("stock_outcome_label") == "LOSS":
-                item["losses"] += 1
-
-    predictive = [
-        {**item, "win_rate": round(item["wins"] / max(item["wins"] + item["losses"], 1) * 100, 1)}
-        for item in gate_stats.values()
-        if item["wins"] + item["losses"] > 0
-    ]
-    predictive.sort(key=lambda item: item["win_rate"], reverse=True)
-
+def _directional_bucket(conn: sqlite3.Connection, direction: str) -> dict[str, Any]:
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS completed,
+            SUM(CASE WHEN {PRIMARY_RETURN_SQL} > 0 THEN 1 ELSE 0 END) AS bullish_style_wins,
+            SUM(CASE WHEN {PRIMARY_RETURN_SQL} < 0 THEN 1 ELSE 0 END) AS bearish_style_wins,
+            AVG({PRIMARY_RETURN_SQL}) AS avg_return
+        FROM scan_results
+        WHERE final_direction = ?
+          AND {PRIMARY_RETURN_SQL} IS NOT NULL
+        """,
+        (direction,),
+    ).fetchone()
+    completed = int(row["completed"] or 0)
+    if direction == "Bullish":
+        wins = int(row["bullish_style_wins"] or 0)
+        losses = completed - wins
+    else:
+        wins = int(row["bearish_style_wins"] or 0)
+        losses = completed - wins
     return {
-        "total_completed": len(completed),
-        "win_rate": win_rate(completed),
-        "bullish_win_rate": win_rate(bullish),
-        "bearish_win_rate": win_rate(bearish),
-        "average_1d_return": avg("return_1d"),
-        "average_5d_return": avg("return_5d"),
-        "average_10d_return": avg("return_10d"),
-        "best_performing_ticker": dict(best) if best else None,
-        "worst_performing_ticker": dict(worst) if worst else None,
-        "most_predictive_gate": predictive[0] if predictive else None,
-        "least_predictive_gate": predictive[-1] if predictive else None,
-        "pending": sum(1 for row in history if row.get("stock_outcome_label") in (None, "PENDING")),
+        "completed": completed,
+        "wins": wins,
+        "losses": losses,
+        "directional_accuracy": round(wins / completed * 100, 1) if completed else 0.0,
+        "avg_return": round(float(row["avg_return"] or 0), 2),
     }
 
 
-def get_top_gate_failures(limit: int = 10) -> list[dict[str, Any]]:
-    history = get_ticker_history(limit=10000)
+def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str, Any]:
+    """Aggregate outcome metrics in SQL (no full-table Python scan)."""
+    init_db()
+    owns_connection = conn is None
+    active_conn = conn or connect()
+    try:
+        label_row = active_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN stock_outcome_label IN ('WIN', 'LOSS', 'FLAT') THEN 1 ELSE 0 END) AS total_completed,
+                SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+                SUM(
+                    CASE
+                        WHEN (stock_outcome_label IS NULL OR stock_outcome_label = 'PENDING')
+                         AND {primary} IS NULL
+                        THEN 1 ELSE 0
+                    END
+                ) AS pending
+            FROM scan_results
+            """.format(primary=PRIMARY_RETURN_SQL)
+        ).fetchone()
+
+        bullish_label = active_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses
+            FROM scan_results
+            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+              AND final_direction = 'Bullish'
+            """
+        ).fetchone()
+        bearish_label = active_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses
+            FROM scan_results
+            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+              AND final_direction = 'Bearish'
+            """
+        ).fetchone()
+
+        completed_returns = int(
+            active_conn.execute(
+                f"SELECT COUNT(*) FROM scan_results WHERE {PRIMARY_RETURN_SQL} IS NOT NULL"
+            ).fetchone()[0]
+            or 0
+        )
+
+        bullish_directional = _directional_bucket(active_conn, "Bullish")
+        bearish_directional = _directional_bucket(active_conn, "Bearish")
+
+        avg_row = active_conn.execute(
+            f"""
+            SELECT
+                AVG(return_1d) AS avg_1d,
+                AVG(return_5d) AS avg_5d,
+                AVG(return_10d) AS avg_10d,
+                AVG(CASE WHEN final_direction = 'Bullish' THEN return_5d END) AS avg_5d_bullish,
+                AVG(CASE WHEN final_direction = 'Bearish' THEN return_5d END) AS avg_5d_bearish,
+                AVG(CASE WHEN final_direction = 'Bullish' THEN return_10d END) AS avg_10d_bullish,
+                AVG(CASE WHEN final_direction = 'Bearish' THEN return_10d END) AS avg_10d_bearish
+            FROM scan_results
+            WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+            """
+        ).fetchone()
+
+        best = active_conn.execute(
+            f"""
+            SELECT ticker, return_20d, return_10d, return_5d, return_1d
+            FROM scan_results
+            WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+            ORDER BY {PRIMARY_RETURN_SQL} DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        worst = active_conn.execute(
+            f"""
+            SELECT ticker, return_20d, return_10d, return_5d, return_1d
+            FROM scan_results
+            WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+            ORDER BY {PRIMARY_RETURN_SQL} ASC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        predictive_rows = active_conn.execute(
+            """
+            SELECT gate_name, win_rate, predictive_score, win_count, loss_count
+            FROM gate_intelligence_metrics
+            WHERE win_count + loss_count > 0
+            ORDER BY predictive_score DESC, win_rate DESC, total_passes DESC
+            """
+        ).fetchall()
+
+        most_predictive = None
+        least_predictive = None
+        if predictive_rows:
+            top = predictive_rows[0]
+            bottom = predictive_rows[-1]
+            most_predictive = {
+                "gate": top["gate_name"],
+                "win_rate": round(float(top["win_rate"] or 0), 1),
+                "predictive_score": round(float(top["predictive_score"] or 0), 2),
+            }
+            least_predictive = {
+                "gate": bottom["gate_name"],
+                "win_rate": round(float(bottom["win_rate"] or 0), 1),
+                "predictive_score": round(float(bottom["predictive_score"] or 0), 2),
+            }
+
+        return {
+            "total_completed": int(label_row["total_completed"] or 0),
+            "total_completed_returns": completed_returns,
+            "win_rate": _sql_win_rate_percent(label_row["wins"], label_row["losses"]),
+            "bullish_win_rate": _sql_win_rate_percent(bullish_label["wins"], bullish_label["losses"]),
+            "bearish_win_rate": _sql_win_rate_percent(bearish_label["wins"], bearish_label["losses"]),
+            "bullish_directional_accuracy": bullish_directional["directional_accuracy"],
+            "bearish_directional_accuracy": bearish_directional["directional_accuracy"],
+            "bullish_avg_return": bullish_directional["avg_return"],
+            "bearish_avg_return": bearish_directional["avg_return"],
+            "bullish_completed_outcomes": bullish_directional["completed"],
+            "bearish_completed_outcomes": bearish_directional["completed"],
+            "bullish_directional_wins": bullish_directional["wins"],
+            "bullish_directional_losses": bullish_directional["losses"],
+            "bearish_directional_wins": bearish_directional["wins"],
+            "bearish_directional_losses": bearish_directional["losses"],
+            "average_1d_return": round(float(avg_row["avg_1d"] or 0), 2),
+            "average_5d_return": round(float(avg_row["avg_5d"] or 0), 2),
+            "average_10d_return": round(float(avg_row["avg_10d"] or 0), 2),
+            "average_5d_return_bullish": round(float(avg_row["avg_5d_bullish"] or 0), 2),
+            "average_5d_return_bearish": round(float(avg_row["avg_5d_bearish"] or 0), 2),
+            "average_10d_return_bullish": round(float(avg_row["avg_10d_bullish"] or 0), 2),
+            "average_10d_return_bearish": round(float(avg_row["avg_10d_bearish"] or 0), 2),
+            "best_performing_ticker": dict(best) if best else None,
+            "worst_performing_ticker": dict(worst) if worst else None,
+            "most_predictive_gate": most_predictive,
+            "least_predictive_gate": least_predictive,
+            "pending": int(label_row["pending"] or 0),
+        }
+    finally:
+        if owns_connection:
+            active_conn.close()
+
+
+def get_top_gate_failures(limit: int = 10, sample_limit: int = 500) -> list[dict[str, Any]]:
+    init_db()
     counts: dict[str, dict[str, Any]] = {}
-    for result in history:
-        reasons = result.get("failure_reasons") or []
-        for index, gate in enumerate(result.get("failed_gates") or []):
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT failed_gates_json, failure_reasons_json
+            FROM scan_results
+            WHERE failed_gates_json IS NOT NULL
+              AND failed_gates_json NOT IN ('', '[]', 'null')
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+    for row in rows:
+        failed_gates = json_load(row["failed_gates_json"]) or []
+        reasons = json_load(row["failure_reasons_json"]) or []
+        if not isinstance(failed_gates, list):
+            continue
+        for index, gate in enumerate(failed_gates):
             item = counts.setdefault(gate, {"gate": gate, "count": 0, "examples": []})
             item["count"] += 1
             if len(item["examples"]) < 3 and index < len(reasons):
@@ -3409,84 +3912,260 @@ def get_top_gate_failures(limit: int = 10) -> list[dict[str, Any]]:
     return sorted(counts.values(), key=lambda row: row["count"], reverse=True)[:limit]
 
 
-def get_option_pick_history(limit: int = 100) -> list[dict[str, Any]]:
-    history = get_ticker_history(limit=limit)
-    output = []
-    for result in history:
-        option = result.get("final_option_pick")
+def get_option_pick_history(limit: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    output: list[dict[str, Any]] = []
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT timestamp, ticker, final_direction, final_option_pick_json
+            FROM scan_results
+            WHERE final_option_pick_json IS NOT NULL
+              AND final_option_pick_json NOT IN ('', 'null')
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    for row in rows:
+        option = json_load(row["final_option_pick_json"])
         if isinstance(option, dict) and any(
             option.get(key) not in (None, "") for key in ("contractSymbol", "strike", "expiration")
         ):
             output.append(
                 {
-                    "timestamp": result["timestamp"],
-                    "ticker": result["ticker"],
-                    "direction": result["final_direction"],
+                    "timestamp": row["timestamp"],
+                    "ticker": row["ticker"],
+                    "direction": row["final_direction"],
                     "option": option,
                 }
             )
     return output
 
 
-def export_csv() -> str:
-    history = get_ticker_history(limit=100000)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "timestamp",
-            "ticker",
-            "scout_score",
-            "bull_score",
-            "bear_score",
-            "net_direction",
-            "final_direction",
-            "failed_gates",
-            "failure_reasons",
-            "final_option_pick",
-            "entry_price",
-            "price_after_1d",
-            "price_after_3d",
-            "price_after_5d",
-            "price_after_10d",
-            "price_after_20d",
-            "return_1d",
-            "return_3d",
-            "return_5d",
-            "return_10d",
-            "return_20d",
-            "option_entry_price",
-            "option_price_after_1d",
-            "option_price_after_3d",
-            "option_price_after_5d",
-            "option_price_after_10d",
-            "option_return_1d",
-            "option_return_3d",
-            "option_return_5d",
-            "option_return_10d",
-            "stock_outcome_label",
-            "option_outcome_label",
-            "max_favorable_move",
-            "max_adverse_move",
-            "result_notes",
-            "outcome_last_updated_at",
-        ],
+def build_memory_summary_payload() -> dict[str, Any]:
+    """Fast summary payload: metrics first, history loaded separately."""
+    timings: dict[str, float] = {}
+    started = time.perf_counter()
+    with log_timing(timings, "init_db_ms"):
+        init_db()
+
+    payload: dict[str, Any] = {"ok": True, "recentScans": []}
+    with connect() as conn:
+        with log_timing(timings, "outcome_analytics_ms"):
+            payload["outcomeAnalytics"] = get_outcome_analytics(conn)
+        with log_timing(timings, "gate_statistics_ms"):
+            payload["gateStatistics"] = get_gate_statistics()
+        with log_timing(timings, "gate_intelligence_ms"):
+            payload["gateIntelligence"] = get_gate_intelligence_metrics()
+        with log_timing(timings, "direction_accuracy_ms"):
+            payload["directionAccuracy"] = get_direction_accuracy()
+        with log_timing(timings, "top_gate_failures_ms"):
+            payload["topGateFailures"] = get_top_gate_failures()
+        with log_timing(timings, "option_pick_history_ms"):
+            payload["optionPickHistory"] = get_option_pick_history()
+        with log_timing(timings, "count_ms"):
+            payload["historyTotal"] = count_scan_results(conn=conn)
+    payload["outcomeAuditLog"] = []
+
+    timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    payload["timings"] = timings
+    log_memory_load(timings, "summary")
+    return payload
+
+
+def _history_filters_debug(filters: Optional[HistoryFilters]) -> dict[str, Any]:
+    normalized = normalize_history_filters(filters)
+    return {
+        "ticker": normalized.ticker,
+        "outcome": normalized.outcome,
+        "direction": normalized.direction,
+        "failedGate": normalized.failed_gate,
+        "minScore": normalized.min_score,
+        "maxScore": normalized.max_score,
+    }
+
+
+def build_memory_history_payload(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    filters: Optional[HistoryFilters] = None,
+) -> dict[str, Any]:
+    timings: dict[str, float] = {}
+    started = time.perf_counter()
+    init_db()
+    normalized_filters = normalize_history_filters(filters)
+    safe_limit = min(max(int(limit), 1), MAX_HISTORY_PAGE_SIZE)
+    safe_offset = max(int(offset), 0)
+    with connect() as conn:
+        with log_timing(timings, "row_fetch_ms"):
+            history = query_scan_results(
+                limit=safe_limit,
+                offset=safe_offset,
+                filters=normalized_filters,
+                lightweight=True,
+                conn=conn,
+            )
+        with log_timing(timings, "count_ms"):
+            total = count_scan_results(conn=conn)
+            filtered_total = count_scan_results(filters=normalized_filters, conn=conn)
+    timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    filter_label = normalized_filters.ticker or "ALL"
+    print(
+        "[memory-history] "
+        f"db={DB_PATH} total={total} filtered={filtered_total} "
+        f"returned={len(history)} limit={safe_limit} offset={safe_offset} "
+        f"filters={json.dumps(_history_filters_debug(normalized_filters), sort_keys=True)}",
+        file=sys.stderr,
+        flush=True,
     )
+    log_memory_load(
+        timings,
+        f"history limit={safe_limit} offset={safe_offset} ticker={filter_label}",
+    )
+    return {
+        "ok": True,
+        "history": history,
+        "total": total,
+        "filteredTotal": filtered_total,
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "timings": timings,
+        "debug": {
+            "dbPath": str(DB_PATH),
+            "total": total,
+            "filteredTotal": filtered_total,
+            "returned": len(history),
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "filters": _history_filters_debug(normalized_filters),
+        },
+    }
+
+
+EXPORT_CSV_COLUMNS = [
+    "timestamp",
+    "ticker",
+    "scout_score",
+    "bull_score",
+    "bear_score",
+    "net_direction",
+    "final_direction",
+    "failed_gates",
+    "failure_reasons",
+    "final_option_pick",
+    "entry_price",
+    "price_after_1d",
+    "price_after_3d",
+    "price_after_5d",
+    "price_after_10d",
+    "price_after_20d",
+    "return_1d",
+    "return_3d",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "option_entry_price",
+    "option_price_after_1d",
+    "option_price_after_3d",
+    "option_price_after_5d",
+    "option_price_after_10d",
+    "option_return_1d",
+    "option_return_3d",
+    "option_return_5d",
+    "option_return_10d",
+    "stock_outcome_label",
+    "option_outcome_label",
+    "max_favorable_move",
+    "max_adverse_move",
+    "result_notes",
+    "outcome_last_updated_at",
+]
+
+EXPORT_SELECT_SQL = """
+    timestamp, ticker, scout_score, bull_score, bear_score, net_direction, final_direction,
+    failed_gates_json, failure_reasons_json, final_option_pick_json,
+    entry_price, price_after_1d, price_after_3d, price_after_5d, price_after_10d, price_after_20d,
+    return_1d, return_3d, return_5d, return_10d, return_20d,
+    option_entry_price, option_price_after_1d, option_price_after_3d, option_price_after_5d,
+    option_price_after_10d, option_return_1d, option_return_3d, option_return_5d, option_return_10d,
+    stock_outcome_label, option_outcome_label, max_favorable_move, max_adverse_move,
+    result_notes, outcome_last_updated_at
+"""
+
+
+def export_csv_row(row: sqlite3.Row) -> dict[str, Any]:
+    failed_gates = json_load(row["failed_gates_json"]) or []
+    failure_reasons = json_load(row["failure_reasons_json"]) or []
+    if not isinstance(failed_gates, list):
+        failed_gates = []
+    if not isinstance(failure_reasons, list):
+        failure_reasons = []
+    return {
+        "timestamp": row["timestamp"],
+        "ticker": row["ticker"],
+        "scout_score": row["scout_score"],
+        "bull_score": row["bull_score"],
+        "bear_score": row["bear_score"],
+        "net_direction": row["net_direction"],
+        "final_direction": row["final_direction"],
+        "failed_gates": "; ".join(str(item) for item in failed_gates),
+        "failure_reasons": " | ".join(str(item) for item in failure_reasons),
+        "final_option_pick": row["final_option_pick_json"] or "",
+        "entry_price": row["entry_price"],
+        "price_after_1d": row["price_after_1d"],
+        "price_after_3d": row["price_after_3d"],
+        "price_after_5d": row["price_after_5d"],
+        "price_after_10d": row["price_after_10d"],
+        "price_after_20d": row["price_after_20d"],
+        "return_1d": row["return_1d"],
+        "return_3d": row["return_3d"],
+        "return_5d": row["return_5d"],
+        "return_10d": row["return_10d"],
+        "return_20d": row["return_20d"],
+        "option_entry_price": row["option_entry_price"],
+        "option_price_after_1d": row["option_price_after_1d"],
+        "option_price_after_3d": row["option_price_after_3d"],
+        "option_price_after_5d": row["option_price_after_5d"],
+        "option_price_after_10d": row["option_price_after_10d"],
+        "option_return_1d": row["option_return_1d"],
+        "option_return_3d": row["option_return_3d"],
+        "option_return_5d": row["option_return_5d"],
+        "option_return_10d": row["option_return_10d"],
+        "stock_outcome_label": row["stock_outcome_label"],
+        "option_outcome_label": row["option_outcome_label"],
+        "max_favorable_move": row["max_favorable_move"],
+        "max_adverse_move": row["max_adverse_move"],
+        "result_notes": row["result_notes"],
+        "outcome_last_updated_at": row["outcome_last_updated_at"],
+    }
+
+
+def export_csv(filters: Optional[HistoryFilters] = None) -> str:
+    init_db()
+    where_sql, params = history_where_clause(filters)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=EXPORT_CSV_COLUMNS)
     writer.writeheader()
-    for result in history:
-        writer.writerow(
-            {
-                "timestamp": result["timestamp"],
-                "ticker": result["ticker"],
-                "scout_score": result["scout_score"],
-                "bull_score": result["bull_score"],
-                "bear_score": result["bear_score"],
-                "net_direction": result["net_direction"],
-                "final_direction": result["final_direction"],
-                "failed_gates": "; ".join(result.get("failed_gates") or []),
-                "failure_reasons": " | ".join(result.get("failure_reasons") or []),
-                "final_option_pick": json_dump(result.get("final_option_pick")),
-                **{column: result.get(column) for column in OUTCOME_COLUMNS},
-            }
-        )
+    offset = 0
+    with connect() as conn:
+        while True:
+            rows = conn.execute(
+                f"""
+                SELECT {EXPORT_SELECT_SQL}
+                FROM scan_results
+                {where_sql}
+                ORDER BY timestamp DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, MAX_HISTORY_EXPORT_BATCH, offset],
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                writer.writerow(export_csv_row(row))
+            offset += len(rows)
+            if len(rows) < MAX_HISTORY_EXPORT_BATCH:
+                break
     return buffer.getvalue()

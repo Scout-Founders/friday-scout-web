@@ -219,6 +219,226 @@
       line-height: 1.5;
     }
 
+    .universe-preset-meta {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      padding: 12px 13px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #070b14;
+    }
+
+    .universe-preset-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .universe-stat {
+      display: grid;
+      gap: 3px;
+    }
+
+    .universe-stat-label {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .universe-stat-value {
+      color: var(--text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .universe-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .universe-tag {
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .universe-tag.tag-research {
+      border-color: #00e5a044;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .universe-tag.tag-regime {
+      border-color: #a855f744;
+      background: #a855f718;
+      color: #c4b5fd;
+    }
+
+    .universe-tag.tag-etf {
+      border-color: #38bdf844;
+      background: #38bdf818;
+      color: #7dd3fc;
+    }
+
+    .universe-tag.tag-failure {
+      border-color: #ff3b5c44;
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .universe-tag.tag-high-vol {
+      border-color: #ffb83644;
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .universe-preset-note {
+      margin: 0;
+      color: var(--dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .universe-preset-note.preview-recommended {
+      color: var(--warning);
+    }
+
+    .scan-telemetry {
+      margin-bottom: 16px;
+      padding: 14px 15px;
+      border: 1px solid #1f2d4d;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #0a101c 0%, #070b14 100%);
+    }
+
+    .scan-telemetry.hidden {
+      display: none;
+    }
+
+    .scan-telemetry-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .scan-telemetry-head h3 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+    }
+
+    .scan-telemetry-phase {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .telemetry-stat {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .telemetry-stat-label {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-stat-value {
+      color: var(--text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .telemetry-stat-value.muted-value {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .telemetry-flags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .telemetry-flag {
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #070b14;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-flag.info {
+      border-color: #00e5a044;
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .telemetry-flag.warning {
+      border-color: #ffb83644;
+      color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .telemetry-flag.error {
+      border-color: #ff3b5c44;
+      color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .telemetry-footnote {
+      margin: 10px 0 0;
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 920px) {
+      .telemetry-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
     .results {
       min-height: 520px;
       padding: 22px;
@@ -321,6 +541,79 @@
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 11px;
       font-weight: 700;
+    }
+
+    .pill-button {
+      cursor: pointer;
+    }
+
+    .pill-button:hover,
+    .pill-button:focus {
+      border-color: #00e5a066;
+      color: var(--text);
+      outline: none;
+    }
+
+    .earnings-panel {
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #070b14;
+    }
+
+    .earnings-components {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .earnings-components li strong {
+      color: var(--text);
+    }
+
+    .earnings-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .earnings-metric-block {
+      padding: 12px 14px;
+      border: 1px solid #1a2233;
+      border-radius: 12px;
+      background: #0a101a;
+    }
+
+    .earnings-metric-block h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    .earnings-metric-lines {
+      display: grid;
+      gap: 4px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .earnings-metric-lines span {
+      color: var(--text);
+    }
+
+    .earnings-score-row {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #1a2233;
+      font-size: 12px;
+      color: var(--muted);
     }
 
     .direction-pills {
@@ -705,6 +998,41 @@
       <aside class="card controls">
         <form id="run-form">
           <div class="field">
+            <label for="universe-preset">Universe Preset</label>
+            <select id="universe-preset">
+              <option value="custom" selected>Custom</option>
+              <option value="semiconductors">Semiconductors</option>
+              <option value="mega_cap_tech">Mega Cap Tech</option>
+              <option value="retail">Retail</option>
+              <option value="healthcare">Healthcare</option>
+              <option value="etfs">ETFs</option>
+              <option value="energy">Energy</option>
+              <option value="financials">Financials</option>
+              <option value="high_beta">High Beta</option>
+              <option value="failure_learning">Failure Learning</option>
+              <option value="watchlist">Watchlist</option>
+            </select>
+            <div id="universe-preset-meta" class="universe-preset-meta" aria-live="polite">
+              <div class="universe-preset-stats">
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Tickers</span>
+                  <span id="universe-estimated-count" class="universe-stat-value">5</span>
+                </div>
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Scan purpose</span>
+                  <span id="universe-scan-purpose" class="universe-stat-value">manual_research</span>
+                </div>
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Runtime est.</span>
+                  <span id="universe-runtime-estimate" class="universe-stat-value">~1 min</span>
+                </div>
+              </div>
+              <div id="universe-tags" class="universe-tags"></div>
+              <p id="universe-preset-note" class="universe-preset-note">Custom universe uses the tickers you enter below.</p>
+            </div>
+          </div>
+
+          <div class="field">
             <label for="tickers">Ticker Universe</label>
             <textarea id="tickers" spellcheck="false">AAPL, MSFT, NVDA, AMZN, GOOGL</textarea>
           </div>
@@ -725,6 +1053,15 @@
             </select>
           </div>
 
+          <div class="field">
+            <label for="storage-mode">Scan Storage Mode</label>
+            <select id="storage-mode">
+              <option value="preview" selected>Preview Only</option>
+              <option value="save_eligible">Save Eligible</option>
+            </select>
+            <div class="hint">Preview scans do not enter Research Memory or Horizon training data.</div>
+          </div>
+
           <div class="field row">
             <div>
               <label for="timeout">Timeout</label>
@@ -736,8 +1073,11 @@
             </div>
           </div>
 
-          <div class="field">
-            <button id="print-button" class="secondary-action" type="button" disabled>Save / Print Results</button>
+          <div class="field row">
+            <div>
+              <label>&nbsp;</label>
+              <button id="save-button" class="secondary-action" type="button" disabled>Save Results to Memory</button>
+            </div>
           </div>
 
           <div class="hint">
@@ -749,6 +1089,7 @@
 
       <section class="card results">
         <div id="status" class="status">Ready. Configure a universe and run the gates.</div>
+        <div id="scan-telemetry" class="scan-telemetry hidden" aria-live="polite"></div>
         <div id="output" class="empty">
           <div>
             <strong>No run yet.</strong><br>
@@ -776,7 +1117,7 @@
     <section class="modal">
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Gate Explainability</div>
+          <div class="eyebrow">Score &amp; Direction Explainability</div>
           <h2 id="why-modal-title">Why?</h2>
         </div>
         <button id="why-modal-close" class="modal-close" type="button" aria-label="Close explanation">X</button>
@@ -785,16 +1126,16 @@
     </section>
   </div>
 
-  <div id="direction-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="direction-modal-title">
+  <div id="net-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="net-modal-title">
     <section class="modal">
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Directional Transparency</div>
-          <h2 id="direction-modal-title">Why Direction?</h2>
+          <div class="eyebrow">Net Attribution</div>
+          <h2 id="net-modal-title">Net Direction Breakdown</h2>
         </div>
-        <button id="direction-modal-close" class="modal-close" type="button" aria-label="Close direction explanation">X</button>
+        <button id="net-modal-close" class="modal-close" type="button" aria-label="Close net direction breakdown">X</button>
       </div>
-      <div id="direction-modal-body" class="modal-body"></div>
+      <div id="net-modal-body" class="modal-body"></div>
     </section>
   </div>
 
@@ -803,18 +1144,122 @@
     const statusEl = document.getElementById("status");
     const outputEl = document.getElementById("output");
     const runButton = document.getElementById("run-button");
-    const printButton = document.getElementById("print-button");
+    const saveButton = document.getElementById("save-button");
+    const storageModeEl = document.getElementById("storage-mode");
+    const universePresetEl = document.getElementById("universe-preset");
+    const tickersEl = document.getElementById("tickers");
+    const timeoutEl = document.getElementById("timeout");
+    const universeEstimatedCountEl = document.getElementById("universe-estimated-count");
+    const universeScanPurposeEl = document.getElementById("universe-scan-purpose");
+    const universeRuntimeEstimateEl = document.getElementById("universe-runtime-estimate");
+    const universeTagsEl = document.getElementById("universe-tags");
+    const universePresetNoteEl = document.getElementById("universe-preset-note");
+    const scanTelemetryEl = document.getElementById("scan-telemetry");
+    const LARGE_UNIVERSE_TICKER_THRESHOLD = 8;
+    const NOT_INSTRUMENTED = "Not Instrumented Yet";
+
+    // UI-only preset catalog (planning). Does not change scan payload or auto-fill tickers.
+    const UNIVERSE_PRESETS = {
+      custom: {
+        label: "Custom",
+        tags: ["RESEARCH"],
+        scanPurpose: "manual_research",
+        plannedTickers: null,
+        note: "Custom universe uses the tickers you enter below.",
+      },
+      semiconductors: {
+        label: "Semiconductors",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["NVDA", "AMD", "AVGO", "INTC", "QCOM", "TXN", "MU", "LRCX", "AMAT", "ASML"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      mega_cap_tech: {
+        label: "Mega Cap Tech",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "NFLX", "CRM"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      retail: {
+        label: "Retail",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["WMT", "COST", "TGT", "HD", "LOW", "AMZN", "BKNG", "ROST", "DG", "ULTA"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      healthcare: {
+        label: "Healthcare",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["UNH", "JNJ", "LLY", "MRK", "ABBV", "TMO", "ABT", "PFE", "AMGN", "ISRG"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      etfs: {
+        label: "ETFs",
+        tags: ["ETF", "REGIME"],
+        scanPurpose: "regime_probe",
+        plannedTickers: ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "HYG", "TLT"],
+        note: "Regime probe preset (UI tag only). Paste ETF tickers manually for now.",
+      },
+      energy: {
+        label: "Energy",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      financials: {
+        label: "Financials",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "USB"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      high_beta: {
+        label: "High Beta",
+        tags: ["HIGH VOL", "RESEARCH"],
+        scanPurpose: "stress_sample",
+        plannedTickers: ["TSLA", "COIN", "MSTR", "SMCI", "PLTR", "SNOW", "CRWD", "DDOG", "MRNA", "RIVN"],
+        note: "Stress-sample preset (UI tag only). Paste tickers manually for now.",
+      },
+      failure_learning: {
+        label: "Failure Learning",
+        tags: ["FAILURE LEARNING"],
+        scanPurpose: "gate_intelligence",
+        plannedTickers: ["GME", "AMC", "RIVN", "LCID", "SNAP", "LYFT", "INTC", "PYPL", "DIS", "BA"],
+        note: "Gate-intelligence preset (quarantined in future memory). Preview recommended.",
+      },
+      watchlist: {
+        label: "Watchlist",
+        tags: ["RESEARCH"],
+        scanPurpose: "manual_research",
+        plannedTickers: ["AAPL", "MSFT", "NVDA", "AMD", "META", "GOOGL"],
+        note: "Short watchlist preset for quick manual runs.",
+      },
+    };
+
+    const UNIVERSE_TAG_CLASS = {
+      RESEARCH: "tag-research",
+      REGIME: "tag-regime",
+      ETF: "tag-etf",
+      "FAILURE LEARNING": "tag-failure",
+      "HIGH VOL": "tag-high-vol",
+    };
     const optionModal = document.getElementById("option-modal");
     const optionModalBody = document.getElementById("option-modal-body");
     const optionModalClose = document.getElementById("option-modal-close");
     const whyModal = document.getElementById("why-modal");
     const whyModalBody = document.getElementById("why-modal-body");
     const whyModalClose = document.getElementById("why-modal-close");
-    const directionModal = document.getElementById("direction-modal");
-    const directionModalBody = document.getElementById("direction-modal-body");
-    const directionModalClose = document.getElementById("direction-modal-close");
+    const netModal = document.getElementById("net-modal");
+    const netModalBody = document.getElementById("net-modal-body");
+    const netModalClose = document.getElementById("net-modal-close");
     let currentPayload = null;
     let currentRequest = null;
+    let currentScanSaved = false;
+    let currentSaveInFlight = false;
+    let currentScanTelemetry = null;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -848,7 +1293,7 @@
           <span class="pill">Direction ${escapeHtml(direction.direction || result.direction || "n/a")}</span>
           <span class="pill">Bull ${escapeHtml(displayValue(direction.bullConviction))}</span>
           <span class="pill">Bear ${escapeHtml(displayValue(direction.bearConviction))}</span>
-          <span class="pill ${edgeClass(direction.netDirectionalEdge)}">Net ${escapeHtml(signedNumber(direction.netDirectionalEdge))}</span>
+          <button class="pill pill-button ${edgeClass(direction.netDirectionalEdge)}" type="button" data-net-ticker="${escapeHtml(result.ticker)}">Net ${escapeHtml(signedNumber(direction.netDirectionalEdge))}</button>
         </div>
       `;
     }
@@ -856,6 +1301,312 @@
     function labelForSelect(selectId, value) {
       const option = [...document.getElementById(selectId).options].find((item) => item.value === value);
       return option ? option.textContent : value;
+    }
+
+    function parseTickerList(raw) {
+      return String(raw || "")
+        .split(/[\s,;]+/)
+        .map((ticker) => ticker.trim().toUpperCase())
+        .filter(Boolean);
+    }
+
+    function selectedUniversePreset() {
+      return UNIVERSE_PRESETS[universePresetEl.value] || UNIVERSE_PRESETS.custom;
+    }
+
+    function estimatedTickerCountForPreset(preset) {
+      if (preset.plannedTickers) {
+        return preset.plannedTickers.length;
+      }
+      return parseTickerList(tickersEl.value).length;
+    }
+
+    function formatRuntimeEstimate(tickerCount, timeoutSec) {
+      const safeCount = Math.max(1, tickerCount || 1);
+      const safeTimeout = Math.max(5, timeoutSec || 25);
+      const estimatedMs = safeCount * (safeTimeout * 1000 * 0.6) + 5000;
+      if (estimatedMs < 90_000) {
+        return "~1 min";
+      }
+      if (estimatedMs < 240_000) {
+        return `~${Math.max(2, Math.round(estimatedMs / 60_000))} min`;
+      }
+      return `~${Math.round(estimatedMs / 60_000)} min`;
+    }
+
+    function renderUniverseTags(tags) {
+      return (tags || []).map((tag) => {
+        const tagClass = UNIVERSE_TAG_CLASS[tag] || "tag-research";
+        return `<span class="universe-tag ${tagClass}">${escapeHtml(tag)}</span>`;
+      }).join("");
+    }
+
+    function updateUniversePresetPanel() {
+      const preset = selectedUniversePreset();
+      const tickerCount = estimatedTickerCountForPreset(preset);
+      const timeoutSec = Number(timeoutEl.value || 25);
+      const isLargeUniverse = tickerCount > LARGE_UNIVERSE_TICKER_THRESHOLD;
+      const storageMode = storageModeEl.value;
+
+      universeEstimatedCountEl.textContent = String(tickerCount);
+      universeScanPurposeEl.textContent = preset.scanPurpose;
+      universeRuntimeEstimateEl.textContent = formatRuntimeEstimate(tickerCount, timeoutSec);
+      universeTagsEl.innerHTML = renderUniverseTags(preset.tags);
+
+      let note = preset.note || "Planning preset — ticker list is not auto-loaded yet.";
+      if (isLargeUniverse) {
+        note += " Preview Recommended: large universes increase scan time and are best run in Preview Only until reviewed.";
+      }
+      if (storageMode === "save_eligible" && isLargeUniverse) {
+        note += " Consider switching Scan Storage Mode to Preview Only for this run.";
+      }
+      universePresetNoteEl.textContent = note;
+      universePresetNoteEl.classList.toggle("preview-recommended", isLargeUniverse);
+    }
+
+    function buildScanRequestContext(request) {
+      const preset = selectedUniversePreset();
+      return {
+        ...request,
+        universePresetId: universePresetEl.value,
+        universePresetLabel: preset.label,
+        scanPurpose: preset.scanPurpose,
+      };
+    }
+
+    function formatDurationMs(ms) {
+      if (!Number.isFinite(ms) || ms < 0) {
+        return NOT_INSTRUMENTED;
+      }
+      if (ms < 1000) {
+        return `${Math.round(ms)}ms`;
+      }
+      const totalSeconds = Math.round(ms / 1000);
+      if (totalSeconds < 60) {
+        return `${totalSeconds}s`;
+      }
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    }
+
+    function formatPassRate(passed, total) {
+      if (!total) {
+        return NOT_INSTRUMENTED;
+      }
+      return `${Math.round((passed / total) * 1000) / 10}%`;
+    }
+
+    function formatStorageModeLabel(value) {
+      return labelForSelect("storage-mode", value);
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return NOT_INSTRUMENTED;
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        return NOT_INSTRUMENTED;
+      }
+      return parsed.toLocaleString();
+    }
+
+    function buildScanWarnings(telemetry) {
+      const warnings = [];
+      const {
+        tickersSucceeded,
+        tickersRequested,
+        tickersFailedApi,
+        passedCount,
+        pickMode,
+        storageMode,
+        clientRuntimeMs,
+        timeoutSec,
+      } = telemetry;
+
+      if (tickersFailedApi > 0 && tickersSucceeded > 0) {
+        warnings.push({ level: "warning", text: `Partial API failures (${tickersFailedApi})` });
+      }
+      if (tickersSucceeded === 0 && tickersRequested > 0) {
+        warnings.push({ level: "error", text: "All API calls failed" });
+      }
+      if (pickMode === "gate_runner" && tickersSucceeded > 0 && passedCount === 0) {
+        warnings.push({ level: "info", text: "No gate passers (gate_runner)" });
+      }
+      if (tickersRequested > LARGE_UNIVERSE_TICKER_THRESHOLD) {
+        warnings.push({ level: "info", text: "Large universe" });
+      }
+      if (tickersRequested > LARGE_UNIVERSE_TICKER_THRESHOLD && storageMode === "save_eligible") {
+        warnings.push({ level: "warning", text: "Preview recommended for large universe" });
+      }
+      if (telemetry.universePresetId === "failure_learning") {
+        warnings.push({ level: "info", text: "Failure Learning preset (quarantine planned)" });
+      }
+      if (telemetry.universePresetId === "etfs") {
+        warnings.push({ level: "info", text: "ETF regime probe preset" });
+      }
+      if (Number.isFinite(clientRuntimeMs) && clientRuntimeMs > 300_000) {
+        warnings.push({ level: "warning", text: "Slow scan (>5 min client wall time)" });
+      }
+      if (
+        Number.isFinite(clientRuntimeMs)
+        && tickersSucceeded > 0
+        && Number.isFinite(timeoutSec)
+        && clientRuntimeMs / tickersSucceeded > timeoutSec * 1000 * 0.9
+      ) {
+        warnings.push({ level: "warning", text: "Timeout pressure (client estimate)" });
+      }
+      if (typeof telemetry.memoryWrites === "number" && telemetry.memoryWrites > 0) {
+        warnings.push({ level: "info", text: `Memory saved (${telemetry.memoryWrites} rows)` });
+      }
+      return warnings;
+    }
+
+    function buildScanTelemetry(payload, requestContext, clientRuntimeMs, options = {}) {
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+      const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+      const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+      const tickersRequested = candidates.length;
+      const tickersSucceeded = results.length;
+      const tickersFailedApi = errors.length || Math.max(0, tickersRequested - tickersSucceeded);
+      const passedCount = results.filter((row) => row.passedAllGates).length;
+      const rejectedCount = Math.max(0, tickersSucceeded - passedCount);
+      const serverTelemetry = payload?.scanTelemetry;
+      const serverRuntimeMs = serverTelemetry?.totalRuntimeMs;
+      const estimateTickerCount = tickersRequested || estimatedTickerCountForPreset(selectedUniversePreset());
+      const runtimeEstimate = formatRuntimeEstimate(estimateTickerCount, requestContext.timeout);
+
+      return {
+        ok: payload?.ok !== false,
+        timestamp: payload?.runTimestamp || new Date().toISOString(),
+        universePresetLabel: requestContext.universePresetLabel || selectedUniversePreset().label,
+        universePresetId: requestContext.universePresetId || universePresetEl.value,
+        scanPurpose: requestContext.scanPurpose || selectedUniversePreset().scanPurpose,
+        storageMode: requestContext.storageMode || storageModeEl.value,
+        storageModeLabel: formatStorageModeLabel(requestContext.storageMode || storageModeEl.value),
+        pickMode: requestContext.pickMode || payload?.pickMode || "gate_runner",
+        timeoutSec: requestContext.timeout || payload?.timeout || Number(timeoutEl.value || 25),
+        tickersProcessedLabel: tickersRequested
+          ? `${tickersSucceeded} / ${tickersRequested}`
+          : NOT_INSTRUMENTED,
+        tickersRequested,
+        tickersSucceeded,
+        tickersFailedApi,
+        passedCount,
+        rejectedCount,
+        passRate: formatPassRate(passedCount, tickersSucceeded),
+        runtimeEstimate,
+        runtimeActual: Number.isFinite(serverRuntimeMs)
+          ? formatDurationMs(serverRuntimeMs)
+          : formatDurationMs(clientRuntimeMs),
+        runtimeSource: Number.isFinite(serverRuntimeMs) ? "server" : "client",
+        avgTickerRuntime: serverTelemetry?.timingStats?.avgTickerRuntimeMs
+          ? formatDurationMs(serverTelemetry.timingStats.avgTickerRuntimeMs)
+          : NOT_INSTRUMENTED,
+        apiCallsLabel: tickersRequested
+          ? `${tickersSucceeded} ok · ${tickersFailedApi} fail`
+          : NOT_INSTRUMENTED,
+        memoryWrites: options.memoryWrites ?? (payload?.savedToMemory ? NOT_INSTRUMENTED : 0),
+        memorySaved: Boolean(payload?.savedToMemory),
+        clientRuntimeMs,
+        warnings: [],
+      };
+    }
+
+    function telemetryStat(label, value, muted = false) {
+      return `
+        <div class="telemetry-stat">
+          <span class="telemetry-stat-label">${escapeHtml(label)}</span>
+          <span class="telemetry-stat-value${muted ? " muted-value" : ""}">${escapeHtml(String(value ?? NOT_INSTRUMENTED))}</span>
+        </div>
+      `;
+    }
+
+    function renderScanTelemetryFlags(warnings) {
+      if (!warnings.length) {
+        return `<div class="telemetry-footnote">No warning flags for this run.</div>`;
+      }
+      return `
+        <div class="telemetry-flags">
+          ${warnings.map((flag) => `
+            <span class="telemetry-flag ${escapeHtml(flag.level)}">${escapeHtml(flag.text)}</span>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderScanTelemetryCard(telemetry, state = "complete") {
+      if (!scanTelemetryEl) {
+        return;
+      }
+      if (!telemetry) {
+        scanTelemetryEl.classList.add("hidden");
+        scanTelemetryEl.innerHTML = "";
+        return;
+      }
+
+      telemetry.warnings = buildScanWarnings(telemetry);
+      scanTelemetryEl.classList.remove("hidden");
+
+      if (state === "running") {
+        scanTelemetryEl.innerHTML = `
+          <div class="scan-telemetry-head">
+            <h3>Scan Telemetry</h3>
+            <span class="scan-telemetry-phase">Phase 0 · Running</span>
+          </div>
+          <div class="telemetry-grid">
+            ${telemetryStat("Status", "Scan in progress")}
+            ${telemetryStat("Preset", telemetry.universePresetLabel)}
+            ${telemetryStat("Purpose", telemetry.scanPurpose)}
+            ${telemetryStat("Storage", telemetry.storageModeLabel)}
+            ${telemetryStat("Runtime est.", telemetry.runtimeEstimate)}
+            ${telemetryStat("Runtime actual", "Measuring…")}
+            ${telemetryStat("Tickers", telemetry.tickersProcessedLabel || NOT_INSTRUMENTED)}
+            ${telemetryStat("Timestamp", formatTimestamp(telemetry.timestamp))}
+          </div>
+          <p class="telemetry-footnote">Client-derived telemetry only. Observational — does not affect scoring or picks.</p>
+        `;
+        return;
+      }
+
+      const runtimeCompare = `${telemetry.runtimeEstimate} est · ${telemetry.runtimeActual} actual (${telemetry.runtimeSource})`;
+      const memoryLabel = telemetry.memorySaved && telemetry.memoryWrites === NOT_INSTRUMENTED
+        ? "Saved (count pending)"
+        : telemetry.memoryWrites;
+
+      scanTelemetryEl.innerHTML = `
+        <div class="scan-telemetry-head">
+          <h3>Scan Telemetry</h3>
+          <span class="scan-telemetry-phase">Phase 0 · Observational</span>
+        </div>
+        <div class="telemetry-grid">
+          ${telemetryStat("Total runtime", runtimeCompare)}
+          ${telemetryStat("Tickers processed", telemetry.tickersProcessedLabel)}
+          ${telemetryStat("Passed", telemetry.passedCount)}
+          ${telemetryStat("Rejected", telemetry.rejectedCount)}
+          ${telemetryStat("Pass rate", telemetry.passRate)}
+          ${telemetryStat("Universe preset", telemetry.universePresetLabel)}
+          ${telemetryStat("Scan purpose", telemetry.scanPurpose)}
+          ${telemetryStat("Storage mode", telemetry.storageModeLabel)}
+          ${telemetryStat("API calls", telemetry.apiCallsLabel)}
+          ${telemetryStat("Avg ticker runtime", telemetry.avgTickerRuntime, telemetry.avgTickerRuntime === NOT_INSTRUMENTED)}
+          ${telemetryStat("Memory writes", memoryLabel)}
+          ${telemetryStat("Failed API calls", telemetry.tickersFailedApi)}
+          ${telemetryStat("Timestamp", formatTimestamp(telemetry.timestamp))}
+        </div>
+        ${renderScanTelemetryFlags(telemetry.warnings)}
+        <p class="telemetry-footnote">Phase 0 client-derived telemetry. Warnings are display-only and do not change scan behavior.</p>
+      `;
+    }
+
+    function hideScanTelemetry() {
+      currentScanTelemetry = null;
+      renderScanTelemetryCard(null);
+    }
+
+    function refreshScanTelemetryDisplay(state = "complete") {
+      renderScanTelemetryCard(currentScanTelemetry, state);
     }
 
     function failedGateText(result) {
@@ -881,6 +1632,21 @@
       }).join("");
     }
 
+    function reportButton(ticker) {
+      return `<button class="inline-action" type="button" data-pdf-ticker="${escapeHtml(ticker)}">Open Report</button>`;
+    }
+
+    function findScanResult(payload, ticker) {
+      if (!payload || !ticker) {
+        return null;
+      }
+      return (
+        payload.results.find((item) => item.ticker === ticker)
+        || (payload.rejected || []).find((item) => item.ticker === ticker)
+        || (payload.finalPick?.ticker === ticker ? payload.finalPick : null)
+      );
+    }
+
     function renderRejected(rejected) {
       if (!rejected.length) {
         return "<p class=\"hint\">No rejected candidates.</p>";
@@ -894,7 +1660,7 @@
               <th>First Failed Gate</th>
               <th>Directional Breakdown</th>
               <th>Why?</th>
-              <th>Why Direction?</th>
+              <th>Report</th>
             </tr>
           </thead>
           <tbody>
@@ -904,7 +1670,7 @@
                 <td>${escapeHtml(failedGateText(item))}</td>
                 <td class="direction-cell">${directionPills(item)}</td>
                 <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
-                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+                <td>${reportButton(item.ticker)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -926,7 +1692,6 @@
               <th>Directional Breakdown</th>
               <th>Option Pick</th>
               <th>Why?</th>
-              <th>Why Direction?</th>
             </tr>
           </thead>
           <tbody>
@@ -936,7 +1701,6 @@
                 <td class="direction-cell">${directionPills(item)}</td>
                 <td><button class="inline-action" type="button" data-option-ticker="${escapeHtml(item.ticker)}">View Option Pick</button></td>
                 <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
-                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
               </tr>
             `).join("")}
           </tbody>
@@ -955,7 +1719,7 @@
               <th>Status</th>
               <th>Directional Breakdown</th>
               <th>Why?</th>
-              <th>Why Direction?</th>
+              <th>Report</th>
             </tr>
           </thead>
           <tbody>
@@ -966,7 +1730,7 @@
                 <td>${escapeHtml(item.explanation?.status || (item.passedAllGates ? "passed" : "rejected"))}</td>
                 <td class="direction-cell">${directionPills(item)}</td>
                 <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
-                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+                <td>${reportButton(item.ticker)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -1086,9 +1850,18 @@
       `;
     }
 
+    function renderCombinedWhyDetails(result) {
+      return `
+        <div class="section-title" style="margin-top: 0;"><h3>Gate &amp; Score Explanation</h3></div>
+        ${renderWhyDetails(result)}
+        <div class="section-title" style="margin-top: 20px;"><h3>Directional Explanation</h3></div>
+        ${renderDirectionDetails(result)}
+      `;
+    }
+
     function openWhyModal(result) {
-      document.getElementById("why-modal-title").textContent = `${result.ticker} Gate Explanation`;
-      whyModalBody.innerHTML = renderWhyDetails(result);
+      document.getElementById("why-modal-title").textContent = `${result.ticker} — Why?`;
+      whyModalBody.innerHTML = renderCombinedWhyDetails(result);
       whyModal.classList.remove("hidden");
     }
 
@@ -1157,14 +1930,319 @@
       `;
     }
 
-    function openDirectionModal(result) {
-      document.getElementById("direction-modal-title").textContent = `${result.ticker} Direction Explanation`;
-      directionModalBody.innerHTML = renderDirectionDetails(result);
-      directionModal.classList.remove("hidden");
+    function netContributorRows(contributors, sign) {
+      return (contributors || [])
+        .map((contributor) => {
+          const points = Number(contributor?.points);
+          if (!Number.isFinite(points) || points <= 0 || !contributor?.gate) {
+            return null;
+          }
+          const signedPoints = sign > 0 ? `+${points}` : `-${points}`;
+          const reason = contributor.reason || contributor.description || "No reason returned.";
+          return `<li><strong>${escapeHtml(contributor.gate)}:</strong> ${escapeHtml(signedPoints)} points — ${escapeHtml(reason)}</li>`;
+        })
+        .filter(Boolean);
     }
 
-    function closeDirectionModal() {
-      directionModal.classList.add("hidden");
+    function validateNetAttribution(attribution, direction) {
+      if (!attribution) {
+        return;
+      }
+      const bullTotal = Number(attribution.bullTotal ?? direction.bullConviction);
+      const bearTotal = Number(attribution.bearTotal ?? direction.bearConviction);
+      const bullSum = (attribution.bullContributors || []).reduce((sum, item) => sum + Number(item.points || 0), 0);
+      const bearSum = (attribution.bearContributors || []).reduce((sum, item) => sum + Number(item.points || 0), 0);
+      const net = Number(attribution.net ?? (bullTotal - bearTotal));
+      const checks = [
+        ["Bull contributor sum", bullSum, bullTotal],
+        ["Bear contributor sum", bearSum, bearTotal],
+        ["Net equals Bull - Bear", net, bullTotal - bearTotal],
+      ];
+      checks.forEach(([label, actual, expected]) => {
+        if (actual !== expected) {
+          console.warn(`[Net Attribution] ${label} mismatch: got ${actual}, expected ${expected}`);
+        }
+      });
+    }
+
+    function renderNetDetails(result) {
+      const direction = result.directionBreakdown || {};
+      const attribution = direction.netAttribution || result.netAttribution || null;
+      const bull = attribution?.bullTotal ?? direction.bullConviction;
+      const bear = attribution?.bearTotal ?? direction.bearConviction;
+      const net = attribution?.net ?? direction.netDirectionalEdge;
+      const bullRows = netContributorRows(attribution?.bullContributors, 1);
+      const bearRows = netContributorRows(attribution?.bearContributors, -1);
+      const hasDetailedAttribution = Boolean(attribution && (bullRows.length || bearRows.length));
+      validateNetAttribution(attribution, direction);
+      return `
+        <div class="explain-summary">
+          <div class="meta">
+            <span class="pill">${escapeHtml(result.ticker)}</span>
+            <span class="pill">Direction ${escapeHtml(direction.direction || result.direction || "n/a")}</span>
+            <span class="pill">Bull ${escapeHtml(displayValue(bull))}</span>
+            <span class="pill">Bear ${escapeHtml(displayValue(bear))}</span>
+            <span class="pill ${edgeClass(net)}">Net ${escapeHtml(signedNumber(net))}</span>
+          </div>
+          <div class="hint">Formula: Net = Bull - Bear</div>
+          <div style="margin-top: 10px;">
+            Bull ${escapeHtml(displayValue(bull))} - Bear ${escapeHtml(displayValue(bear))} = Net ${escapeHtml(signedNumber(net))}
+          </div>
+        </div>
+        ${hasDetailedAttribution ? `
+          <div class="section-title"><h3>Bull Contributors</h3></div>
+          ${bullRows.length ? `<ul class="explain-text">${bullRows.join("")}</ul>` : "<div class=\"modal-note\">No explicit bull contributor points were returned.</div>"}
+          <div class="section-title"><h3>Bear Contributors</h3></div>
+          ${bearRows.length ? `<ul class="explain-text">${bearRows.join("")}</ul>` : "<div class=\"modal-note\">No explicit bear contributor points were returned.</div>"}
+        ` : `
+          <div class="modal-note">
+            Detailed gate-level net attribution is not available yet. Current Net is calculated from Bull score minus Bear score.
+          </div>
+        `}
+      `;
+    }
+
+    function openNetModal(result) {
+      document.getElementById("net-modal-title").textContent = "Net Direction Breakdown";
+      netModalBody.innerHTML = renderNetDetails(result);
+      netModal.classList.remove("hidden");
+    }
+
+    function closeNetModal() {
+      netModal.classList.add("hidden");
+    }
+
+    function earningsScorePills(result) {
+      const baseScore = Number(result.scoutScoreBase ?? result.score ?? 0);
+      const adjustedScore = Number(result.adjustedScoutScore ?? result.score ?? 0);
+      const adjustment = Number(result.earningsConvictionAdjustment || 0);
+      return `
+        <span class="pill">Scout Base ${escapeHtml(displayValue(baseScore))}</span>
+        <span class="pill">Adjusted ${escapeHtml(displayValue(adjustedScore))}</span>
+        <span class="pill">EI Adj ${escapeHtml(signedComponent(adjustment))}</span>
+      `;
+    }
+
+    function signedComponent(value) {
+      const points = Number(value || 0);
+      if (!points) {
+        return "0";
+      }
+      return points > 0 ? `+${points}` : `${points}`;
+    }
+
+    function format_eps(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      return `$${num.toFixed(2)}`;
+    }
+
+    function format_currency_compact(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      const abs = Math.abs(num);
+      const sign = num < 0 ? "-" : "";
+      if (abs >= 1e12) {
+        return `${sign}$${(abs / 1e12).toFixed(2)}T`;
+      }
+      if (abs >= 1e9) {
+        return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+      }
+      if (abs >= 1e6) {
+        return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+      }
+      if (abs >= 1e3) {
+        return `${sign}$${(abs / 1e3).toFixed(2)}K`;
+      }
+      return `${sign}$${abs.toFixed(2)}`;
+    }
+
+    function format_percent(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      const sign = num > 0 ? "+" : "";
+      return `${sign}${num.toFixed(1)}%`;
+    }
+
+    function format_missing(kind) {
+      const labels = {
+        estimate: "Pending",
+        actual: "Not yet reported",
+        surprise: "Pending",
+        guidance: "Unknown",
+        reaction: "Pending",
+        generic: "Pending",
+      };
+      return labels[kind] || labels.generic;
+    }
+
+    function format_guidance(value) {
+      if (value === null || value === undefined || value === "") {
+        return format_missing("guidance");
+      }
+      const text = String(value).trim().toLowerCase();
+      if (!text || text === "unknown" || text === "n/a" || text === "na") {
+        return format_missing("guidance");
+      }
+      return text
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
+    function format_eps_field(value, fieldKind) {
+      const formatted = format_eps(value);
+      return formatted || format_missing(fieldKind);
+    }
+
+    function format_revenue_field(value, fieldKind) {
+      const formatted = format_currency_compact(value);
+      return formatted || format_missing(fieldKind);
+    }
+
+    function format_surprise_field(value) {
+      const formatted = format_percent(value);
+      return formatted || format_missing("surprise");
+    }
+
+    function format_reaction_field(value) {
+      const formatted = format_percent(value);
+      return formatted || format_missing("reaction");
+    }
+
+    function renderEarningsMetricBlock(title, lines, scorePoints) {
+      const scoreRow = scorePoints === null || scorePoints === undefined
+        ? ""
+        : `<div class="earnings-score-row">Tier score: <span>${escapeHtml(signedComponent(scorePoints))}</span></div>`;
+      const lineHtml = lines
+        .map(([label, value]) => `<div>${escapeHtml(label)}: <span>${escapeHtml(value)}</span></div>`)
+        .join("");
+      return `
+        <div class="earnings-metric-block">
+          <h4>${escapeHtml(title)}</h4>
+          <div class="earnings-metric-lines">${lineHtml}</div>
+          ${scoreRow}
+        </div>
+      `;
+    }
+
+    function format_actual_display(value, mode, formatter) {
+      const formatted = formatter(value);
+      if (formatted) {
+        return formatted;
+      }
+      if (mode === "awaiting_provider") {
+        return format_missing("actual");
+      }
+      return format_missing("estimate");
+    }
+
+    function renderEarningsIntelligence(result) {
+      const earnings = result.earningsIntelligence;
+      if (!earnings) {
+        return `
+          <div class="earnings-panel">
+            <div class="section-title" style="margin:0;"><h3>Earnings Intelligence</h3></div>
+            <div class="modal-note">Earnings Intelligence was not attached to this result payload.</div>
+          </div>
+        `;
+      }
+      const components = earnings.components || {};
+      const inputs = earnings.inputs || {};
+      const mode = earnings.mode || result.earningsIntelligenceMode || "unavailable";
+      const metricsHtml = [
+        renderEarningsMetricBlock(
+          "EPS",
+          [
+            ["Estimate", format_eps_field(inputs.eps_estimate, "estimate")],
+            ["Actual", format_actual_display(inputs.eps_actual, mode, format_eps)],
+            ["Surprise", format_surprise_field(inputs.eps_surprise_pct)],
+          ],
+          components.eps_surprise,
+        ),
+        renderEarningsMetricBlock(
+          "Revenue",
+          [
+            ["Estimate", format_revenue_field(inputs.revenue_estimate, "estimate")],
+            ["Actual", format_actual_display(inputs.revenue_actual, mode, format_currency_compact)],
+            ["Surprise", format_surprise_field(inputs.revenue_surprise_pct)],
+          ],
+          components.revenue_surprise,
+        ),
+        renderEarningsMetricBlock(
+          "Guidance",
+          [["Signal", format_guidance(inputs.guidance)]],
+          components.guidance,
+        ),
+        renderEarningsMetricBlock(
+          "Market Reaction",
+          [["Move", format_reaction_field(inputs.market_reaction_pct)]],
+          components.market_reaction,
+        ),
+        renderEarningsMetricBlock(
+          "Quality Modifier",
+          [["Adjustment", components.quality_modifier === null || components.quality_modifier === undefined
+            ? format_missing("generic")
+            : signedComponent(components.quality_modifier)]],
+          null,
+        ),
+      ].join("");
+      const ingestion = earnings.ingestion || {};
+      const ingestionHint = ingestion.missing_fields && ingestion.missing_fields.length
+        ? `Provider: ${ingestion.provider || "n/a"} | Missing: ${ingestion.missing_fields.join(", ")}`
+        : (ingestion.provider ? `Provider: ${ingestion.provider}` : "");
+      const adjustment = Number(result.earningsConvictionAdjustment || 0);
+      const baseScore = Number(result.scoutScoreBase ?? result.score ?? 0);
+      const adjustedScore = Number(result.adjustedScoutScore ?? result.score ?? 0);
+      const cap = Number(earnings.conviction_cap || 8);
+      const recency = Number(earnings.recency_multiplier || 1);
+      const earningsScoreText = earnings.earnings_score === null || earnings.earnings_score === undefined
+        ? "Pending"
+        : displayValue(earnings.earnings_score);
+      const reportDate = inputs.earnings_report_date
+        ? `<span class="pill">Report ${escapeHtml(inputs.earnings_report_date)}</span>`
+        : "";
+      return `
+        <div class="earnings-panel">
+          <div class="section-title" style="margin:0;">
+            <h3>Earnings Intelligence</h3>
+            <span class="pill">${escapeHtml(mode)}</span>
+            <span class="pill">EI Score ${escapeHtml(earningsScoreText)}</span>
+            <span class="pill">${escapeHtml(earnings.label || "Awaiting data")}</span>
+            ${reportDate}
+          </div>
+          <div class="hint" style="margin-top:8px;">
+            ${escapeHtml(earnings.status_message || "Earnings Intelligence layer attached to this fresh scan result.")}
+          </div>
+          <div class="earnings-metrics">${metricsHtml}</div>
+          <div class="meta" style="margin-top:12px;">
+            <span class="pill">scoutScoreBase ${escapeHtml(displayValue(baseScore))}</span>
+            <span class="pill">adjustedScoutScore ${escapeHtml(displayValue(adjustedScore))}</span>
+            <span class="pill">earningsConvictionAdjustment ${escapeHtml(signedComponent(adjustment))}</span>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            Recency ${escapeHtml(recency.toFixed(2))} |
+            Catalyst weight ${escapeHtml(Number(earnings.catalyst_weighting || recency).toFixed(2))} |
+            Cap ±${escapeHtml(cap)}
+            ${earnings.active ? " | Primary interpreter active" : (mode === "awaiting_provider" ? " | Awaiting provider actuals" : " | Awaiting post-earnings fields")}
+          </div>
+          ${ingestionHint ? `<div class="hint" style="margin-top:8px;">${escapeHtml(ingestionHint)}</div>` : ""}
+        </div>
+      `;
     }
 
     function renderResults(payload) {
@@ -1174,7 +2252,7 @@
         ? "<button id=\"option-pick-button\" class=\"inline-action\" type=\"button\">View Option Pick</button>"
         : "";
       const showFinalWhyButton = "<button id=\"final-why-button\" class=\"inline-action\" type=\"button\">Why?</button>";
-      const showFinalDirectionButton = "<button id=\"final-direction-button\" class=\"inline-action\" type=\"button\">Why Direction?</button>";
+      const showFinalReportButton = reportButton(pick.ticker);
 
       outputEl.className = "";
       outputEl.innerHTML = `
@@ -1190,10 +2268,12 @@
                 <span class="pill">${escapeHtml(pick.sector || "n/a")}</span>
                 <span class="pill">${pick.passedAllGates ? "Passed all gates" : escapeHtml(failedGateText(pick))}</span>
                 ${directionPills(pick)}
+                ${earningsScorePills(pick)}
               </div>
-              <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalDirectionButton}</div>
+              <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalReportButton}</div>
             </div>
           </section>
+          ${renderEarningsIntelligence(pick)}
 
           <div class="section-title">
             <h3>Full Gate Breakdown</h3>
@@ -1246,7 +2326,6 @@
         finalOptionButton.addEventListener("click", () => openOptionModal(pick));
       }
       document.getElementById("final-why-button").addEventListener("click", () => openWhyModal(pick));
-      document.getElementById("final-direction-button").addEventListener("click", () => openDirectionModal(pick));
       document.querySelectorAll("[data-option-ticker]").forEach((button) => {
         button.addEventListener("click", () => {
           const ticker = button.getAttribute("data-option-ticker");
@@ -1259,18 +2338,24 @@
       document.querySelectorAll("[data-why-ticker]").forEach((button) => {
         button.addEventListener("click", () => {
           const ticker = button.getAttribute("data-why-ticker");
-          const result = payload.results.find((item) => item.ticker === ticker);
+          const result = findScanResult(payload, ticker);
           if (result) {
             openWhyModal(result);
           }
         });
       });
-      document.querySelectorAll("[data-direction-ticker]").forEach((button) => {
+      document.querySelectorAll("[data-pdf-ticker]").forEach((button) => {
         button.addEventListener("click", () => {
-          const ticker = button.getAttribute("data-direction-ticker");
+          const ticker = button.getAttribute("data-pdf-ticker");
+          exportScoringPdf(ticker, button);
+        });
+      });
+      document.querySelectorAll("[data-net-ticker]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const ticker = button.getAttribute("data-net-ticker");
           const result = payload.results.find((item) => item.ticker === ticker);
           if (result) {
-            openDirectionModal(result);
+            openNetModal(result);
           }
         });
       });
@@ -1484,20 +2569,145 @@
         </html>`;
     }
 
-    function savePrintResults() {
+    function updateSaveButton() {
+      if (!currentPayload || !currentPayload.ok) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Save Results to Memory";
+        return;
+      }
+      if (currentScanSaved || currentPayload.savedToMemory) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Already saved.";
+        return;
+      }
+      if (currentSaveInFlight) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Saving...";
+        return;
+      }
+      saveButton.disabled = false;
+      saveButton.textContent = "Save Results to Memory";
+    }
+
+    async function pollReportJob(jobId, triggerButton, maxAttempts = 80) {
+      const defaultLabel = triggerButton?.dataset.defaultLabel || "Open Report";
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const response = await fetch(`/api/reports/jobs/${encodeURIComponent(jobId)}`);
+        const job = await response.json();
+        if (!job.ok) {
+          throw new Error(job.message || "Could not load export job.");
+        }
+        if (job.status === "completed") {
+          return job;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.errorMessage || "PDF export failed.");
+        }
+        if (triggerButton) {
+          triggerButton.textContent = `Exporting (${job.pipelineStage || job.status})...`;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+      if (triggerButton) {
+        triggerButton.textContent = defaultLabel;
+      }
+      throw new Error("PDF export timed out while waiting for the background worker.");
+    }
+
+    async function exportScoringPdf(ticker, triggerButton = null) {
+      if (!currentPayload || !currentPayload.ok) {
+        setStatus("Run gates before exporting a report.", true);
+        return;
+      }
+      const exportTicker = String(ticker || "").trim().toUpperCase();
+      if (!exportTicker) {
+        setStatus("Select a ticker row to export a report.", true);
+        return;
+      }
+      if (!findScanResult(currentPayload, exportTicker)) {
+        setStatus(`No scan result found for ${exportTicker}.`, true);
+        return;
+      }
+      const defaultLabel = triggerButton?.textContent || "Open Report";
+      if (triggerButton) {
+        triggerButton.dataset.defaultLabel = defaultLabel;
+        triggerButton.disabled = true;
+        triggerButton.textContent = "Exporting...";
+      }
+      try {
+        const response = await fetch("/api/reports/export-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scan: currentPayload,
+            ticker: exportTicker,
+            async: true,
+          }),
+        });
+        let payload = await response.json();
+        if (!payload.ok) {
+          throw new Error(payload.message || "PDF export failed.");
+        }
+        if (payload.async && payload.jobId) {
+          payload = await pollReportJob(payload.jobId, triggerButton);
+        }
+        if (payload.reused) {
+          setStatus(`Reused existing report for ${payload.ticker || exportTicker}.`);
+        }
+        if (payload.downloadUrl) {
+          window.open(payload.downloadUrl, "_blank", "noopener");
+        }
+        setStatus(
+          `PDF saved to ${payload.relativePath || "exports/reports/"}\\n`
+          + `Session ${payload.scanSessionId || "n/a"} · ${payload.ticker || exportTicker}`
+          + (payload.jobId ? `\\nJob ${payload.jobId}` : "")
+        );
+      } catch (error) {
+        setStatus(error.message || String(error), true);
+      } finally {
+        if (triggerButton) {
+          triggerButton.disabled = false;
+          triggerButton.textContent = triggerButton.dataset.defaultLabel || defaultLabel;
+        }
+      }
+    }
+
+    async function saveResultsToMemory() {
       if (!currentPayload || !currentRequest) {
         return;
       }
-      const report = buildPrintableReport(currentPayload, currentRequest);
-      const reportUrl = URL.createObjectURL(new Blob([report], { type: "text/html" }));
-      const anchor = document.createElement("a");
-      anchor.href = reportUrl;
-      anchor.download = `scout-gate-report-${new Date().toISOString().slice(0, 10)}.html`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setStatus("Report downloaded as HTML. Open it in a browser to print or save as PDF.");
-      setTimeout(() => URL.revokeObjectURL(reportUrl), 5000);
+      if (currentScanSaved || currentPayload.savedToMemory || currentSaveInFlight) {
+        setStatus("Already saved.");
+        updateSaveButton();
+        return;
+      }
+      currentSaveInFlight = true;
+      updateSaveButton();
+      try {
+        const response = await fetch("/api/run/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scan: currentPayload }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message || "Save failed.");
+        }
+        currentPayload.memoryRunId = payload.memoryRunId;
+        currentPayload.savedToMemory = true;
+        currentScanSaved = true;
+        if (currentScanTelemetry) {
+          currentScanTelemetry.memoryWrites = payload.recommendationsSaved ?? NOT_INSTRUMENTED;
+          currentScanTelemetry.memorySaved = true;
+          renderScanTelemetryCard(currentScanTelemetry);
+        }
+        setStatus(payload.alreadySaved ? "Already saved." : payload.message);
+      } catch (error) {
+        setStatus(error.message || String(error), true);
+      } finally {
+        currentSaveInFlight = false;
+        updateSaveButton();
+      }
     }
 
     function setStatus(message, isError = false) {
@@ -1508,14 +2718,40 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       runButton.disabled = true;
+      currentPayload = null;
+      currentRequest = null;
+      currentScanSaved = false;
+      currentSaveInFlight = false;
+      updateSaveButton();
       setStatus("Running gates. This can take a moment for larger universes...");
 
       const request = {
         tickers: document.getElementById("tickers").value,
         universeMode: document.getElementById("universe-mode").value,
         pickMode: document.getElementById("pick-mode").value,
+        storageMode: storageModeEl.value,
         timeout: Number(document.getElementById("timeout").value || 25),
       };
+      const requestContext = buildScanRequestContext(request);
+      const scanStartedMs = performance.now();
+      const preset = selectedUniversePreset();
+      const requestedTickers = parseTickerList(request.tickers).length;
+      currentScanTelemetry = {
+        timestamp: new Date().toISOString(),
+        universePresetLabel: preset.label,
+        universePresetId: universePresetEl.value,
+        scanPurpose: preset.scanPurpose,
+        storageMode: request.storageMode,
+        storageModeLabel: formatStorageModeLabel(request.storageMode),
+        pickMode: request.pickMode,
+        timeoutSec: request.timeout,
+        tickersProcessedLabel: requestedTickers ? `0 / ${requestedTickers}` : NOT_INSTRUMENTED,
+        runtimeEstimate: formatRuntimeEstimate(
+          requestedTickers || estimatedTickerCountForPreset(preset),
+          request.timeout,
+        ),
+      };
+      renderScanTelemetryCard(currentScanTelemetry, "running");
 
       try {
         const response = await fetch("/api/run", {
@@ -1524,19 +2760,31 @@
           body: JSON.stringify(request),
         });
         const payload = await response.json();
+        const clientRuntimeMs = performance.now() - scanStartedMs;
         if (!payload.ok) {
+          if (payload.candidates || payload.errors) {
+            currentScanTelemetry = buildScanTelemetry(payload, requestContext, clientRuntimeMs);
+            renderScanTelemetryCard(currentScanTelemetry);
+          } else {
+            hideScanTelemetry();
+          }
           throw new Error(payload.message || (payload.errors || []).join("\\n") || "Run failed.");
         }
         currentPayload = payload;
-        currentRequest = request;
-        printButton.disabled = false;
+        currentRequest = requestContext;
+        currentScanSaved = false;
+        currentScanTelemetry = buildScanTelemetry(payload, requestContext, clientRuntimeMs);
+        updateSaveButton();
+        renderScanTelemetryCard(currentScanTelemetry);
         renderResults(payload);
         const errorText = payload.errors.length ? `\\nScan errors: ${payload.errors.join("; ")}` : "";
-        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.${errorText}`);
+        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.\\nStorage mode: ${labelForSelect("storage-mode", request.storageMode)}. No memory write occurred.${errorText}`);
       } catch (error) {
         currentPayload = null;
         currentRequest = null;
-        printButton.disabled = true;
+        currentScanSaved = false;
+        currentSaveInFlight = false;
+        updateSaveButton();
         outputEl.className = "empty";
         outputEl.innerHTML = "<div><strong>Run failed.</strong><br>Check the status message for details.</div>";
         setStatus(error.message || String(error), true);
@@ -1545,10 +2793,18 @@
       }
     });
 
-    printButton.addEventListener("click", savePrintResults);
+    storageModeEl.addEventListener("change", () => {
+      updateSaveButton();
+      updateUniversePresetPanel();
+    });
+    universePresetEl.addEventListener("change", updateUniversePresetPanel);
+    tickersEl.addEventListener("input", updateUniversePresetPanel);
+    timeoutEl.addEventListener("input", updateUniversePresetPanel);
+    updateUniversePresetPanel();
+    saveButton.addEventListener("click", saveResultsToMemory);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);
-    directionModalClose.addEventListener("click", closeDirectionModal);
+    netModalClose.addEventListener("click", closeNetModal);
     optionModal.addEventListener("click", (event) => {
       if (event.target === optionModal) {
         closeOptionModal();
@@ -1559,16 +2815,16 @@
         closeWhyModal();
       }
     });
-    directionModal.addEventListener("click", (event) => {
-      if (event.target === directionModal) {
-        closeDirectionModal();
+    netModal.addEventListener("click", (event) => {
+      if (event.target === netModal) {
+        closeNetModal();
       }
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeOptionModal();
         closeWhyModal();
-        closeDirectionModal();
+        closeNetModal();
       }
     });
   </script>

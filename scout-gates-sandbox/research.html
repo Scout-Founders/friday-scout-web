@@ -159,6 +159,30 @@
       letter-spacing: 0.1em;
     }
 
+    .metric-tip {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.4;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
+    .metric-section {
+      grid-column: 1 / -1;
+      margin: 4px 0 2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .metric.metric-compact .metric-value {
+      font-size: 24px;
+    }
+
     input,
     select {
       min-width: 260px;
@@ -204,6 +228,50 @@
 
     .table-wrap {
       overflow-x: auto;
+    }
+
+    .table-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 4px 0 14px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .table-control-group {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .table-controls label {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .table-controls select {
+      min-width: 140px;
+      height: 36px;
+      border-radius: 999px;
+    }
+
+    .table-controls .button {
+      height: 36px;
+      padding: 0 13px;
+    }
+
+    .button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
     }
 
     table {
@@ -432,11 +500,16 @@
         <input id="test-age-days" type="number" min="1" max="365" value="30" title="Synthetic age in days for the copied test record">
         <button class="button" id="create-test-record-button" type="button">Create Outcome Test Record</button>
         <button class="button primary" id="update-outcomes-button" type="button">Update Outcomes</button>
-        <a class="button" href="/api/memory/export.csv">Export CSV</a>
+        <a class="button" id="export-csv-link" href="/api/memory/export.csv">Export CSV</a>
         <button class="button" id="print-button" type="button">Print / Save PDF</button>
         <button class="button primary" id="memory-tab-button" type="button">Research Memory</button>
         <button class="button" id="audit-tab-button" type="button">Audit Log</button>
       </div>
+      <p class="hint">
+        Forward returns use <strong>trading days</strong> (FMP EOD closes), not calendar days.
+        Saved scans do not update automatically — click <strong>Update Outcomes</strong> to refresh 1D–20D results.
+      </p>
+      <p class="hint" id="outcome-refresh-hint"></p>
       <p class="hint">
         Test mode copies the ticker in the search box, or the latest saved recommendation if blank,
         and backdates only the copied row. Real saved recommendations are not modified.
@@ -462,15 +535,15 @@
         </div>
         <div>
           <label for="failed-gate-filter">Failed Gate</label>
-          <input id="failed-gate-filter" placeholder="Threat Scan">
+          <input id="failed-gate-filter" type="search" placeholder="e.g. Threat Scan" autocomplete="off" spellcheck="false">
         </div>
         <div>
           <label for="min-score-filter">Min Score</label>
-          <input id="min-score-filter" type="number" min="0" max="100" placeholder="0">
+          <input id="min-score-filter" type="number" min="0" max="100" autocomplete="off">
         </div>
         <div>
           <label for="max-score-filter">Max Score</label>
-          <input id="max-score-filter" type="number" min="0" max="100" placeholder="100">
+          <input id="max-score-filter" type="number" min="0" max="100" autocomplete="off">
         </div>
       </div>
     </section>
@@ -480,6 +553,24 @@
     <section class="grid" id="memory-view">
       <article class="card wide">
         <h2>Historical Scans</h2>
+        <div class="table-controls" aria-label="Historical scans pagination controls">
+          <div class="table-control-group">
+            <label for="history-page-size">Rows</label>
+            <select id="history-page-size">
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="all">Show All</option>
+            </select>
+            <span id="history-count" class="hint">Showing 0 rows</span>
+          </div>
+          <div class="table-control-group">
+            <button class="button" id="history-prev" type="button">Previous</button>
+            <span id="history-page-label">Page 1 of 1</span>
+            <button class="button" id="history-next" type="button">Next</button>
+          </div>
+        </div>
         <div class="table-wrap" id="history"></div>
       </article>
 
@@ -538,7 +629,15 @@
     const outcomeModalClose = document.getElementById("outcome-modal-close");
     let summary = null;
     let currentHistory = [];
+    let historyTotal = 0;
+    let historyFilteredTotal = 0;
     let activeView = "memory";
+    let historyPage = 1;
+    let auditLoaded = false;
+    let filterReloadTimer = null;
+    let historyFiltersEnabled = false;
+    let historyFetchController = null;
+    const FAILED_GATE_PLACEHOLDERS = new Set(["threat scan", "e.g. threat scan", "gate name"]);
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -557,8 +656,60 @@
       return value ? new Date(value).toLocaleString() : "n/a";
     }
 
-    function pct(value) {
-      return typeof value === "number" ? `${value.toFixed(2)}%` : "Pending";
+    function parseHorizonDebug(row) {
+      const raw = row.outcome_horizon_debug || row.outcome_horizon_debug_json;
+      if (!raw) return {};
+      if (typeof raw === "object") return raw;
+      try {
+        return JSON.parse(raw) || {};
+      } catch (_error) {
+        return {};
+      }
+    }
+
+    function formatReturnPct(value) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return null;
+      }
+      const sign = value > 0 ? "+" : "";
+      return `${sign}${value.toFixed(1)}%`;
+    }
+
+    function horizonDisplay(row, horizonKey, returnValue) {
+      if (typeof returnValue === "number" && !Number.isNaN(returnValue)) {
+        return formatReturnPct(returnValue);
+      }
+      const debug = parseHorizonDebug(row);
+      const info = debug[horizonKey] || debug[horizonKey.toUpperCase()];
+      if (info && info.status === "pending" && info.reason) {
+        return info.reason.includes("trading session") ? "Pending" : "Pending";
+      }
+      if (!row.outcome_last_updated_at) {
+        return "Not refreshed";
+      }
+      return "Pending";
+    }
+
+    function horizonTitle(row, horizonKey, returnValue) {
+      const debug = parseHorizonDebug(row);
+      const info = debug[horizonKey] || debug[horizonKey.toUpperCase()];
+      if (typeof returnValue === "number") {
+        return `${horizonKey}: ${formatReturnPct(returnValue)}`;
+      }
+      if (info && info.reason) {
+        return `${horizonKey}: ${info.reason}`;
+      }
+      if (!row.outcome_last_updated_at) {
+        return `${horizonKey}: Outcomes have not been refreshed yet. Click Update Outcomes.`;
+      }
+      return `${horizonKey}: Pending`;
+    }
+
+    function pct(value, row, horizonKey) {
+      if (row && horizonKey) {
+        return horizonDisplay(row, horizonKey, value);
+      }
+      return formatReturnPct(value) || "Pending";
     }
 
     function label(value) {
@@ -569,6 +720,14 @@
       return JSON.stringify(value || {}, null, 2);
     }
 
+    function formatTimings(timings) {
+      if (!timings || !Object.keys(timings).length) return "";
+      const parts = ["total_ms", "outcome_analytics_ms", "row_fetch_ms", "init_db_ms"]
+        .filter((key) => timings[key] !== undefined)
+        .map((key) => `${key.replace(/_ms$/, "")} ${timings[key]}ms`);
+      return parts.join(" | ");
+    }
+
     function switchView(view) {
       activeView = view;
       document.getElementById("memory-view").hidden = view !== "memory";
@@ -576,27 +735,63 @@
       document.getElementById("audit-view").hidden = view !== "audit";
       document.getElementById("memory-tab-button").classList.toggle("primary", view === "memory");
       document.getElementById("audit-tab-button").classList.toggle("primary", view === "audit");
+      if (view === "audit") {
+        loadAuditLog().catch((error) => {
+          statusEl.textContent = `Could not load audit log: ${error.message || error}`;
+        });
+      }
     }
 
-    function applyFilters(history) {
+    function historyFilterQuery({ includeFilters = true } = {}) {
+      if (!includeFilters) {
+        return "";
+      }
+      const params = new URLSearchParams();
       const ticker = document.getElementById("ticker-search").value.trim().toUpperCase();
       const outcome = document.getElementById("outcome-filter").value;
       const direction = document.getElementById("direction-filter").value;
-      const failedGate = document.getElementById("failed-gate-filter").value.trim().toLowerCase();
-      const minScore = Number(document.getElementById("min-score-filter").value);
-      const maxScore = Number(document.getElementById("max-score-filter").value);
-      const hasMin = document.getElementById("min-score-filter").value !== "";
-      const hasMax = document.getElementById("max-score-filter").value !== "";
+      const failedGate = document.getElementById("failed-gate-filter").value.trim();
+      const minScore = document.getElementById("min-score-filter").value;
+      const maxScore = document.getElementById("max-score-filter").value;
+      const failedGateKey = failedGate.toLowerCase();
+      if (ticker) params.set("ticker", ticker);
+      if (outcome) params.set("outcome", outcome);
+      if (direction) params.set("direction", direction);
+      if (failedGate && !FAILED_GATE_PLACEHOLDERS.has(failedGateKey)) {
+        params.set("failedGate", failedGate);
+      }
+      if (minScore !== "" && !(minScore === "0" && maxScore === "0")) {
+        params.set("minScore", minScore);
+      }
+      if (maxScore !== "" && maxScore !== "0" && !(minScore === "0" && maxScore === "0")) {
+        params.set("maxScore", maxScore);
+      }
+      return params.toString();
+    }
 
-      return history.filter((row) => {
-        if (ticker && !String(row.ticker || "").includes(ticker)) return false;
-        if (outcome && label(row.stock_outcome_label) !== outcome) return false;
-        if (direction && row.final_direction !== direction) return false;
-        if (failedGate && !(row.failed_gates || []).some((gate) => String(gate).toLowerCase().includes(failedGate))) return false;
-        if (hasMin && Number(row.scout_score || 0) < minScore) return false;
-        if (hasMax && Number(row.scout_score || 0) > maxScore) return false;
-        return true;
-      });
+    function updateExportLink() {
+      const link = document.getElementById("export-csv-link");
+      const qs = historyFilterQuery();
+      link.href = qs ? `/api/memory/export.csv?${qs}` : "/api/memory/export.csv";
+    }
+
+    function formatAnalyticsPct(value) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return "0%";
+      }
+      const sign = value > 0 ? "+" : "";
+      return `${sign}${value.toFixed(1)}%`;
+    }
+
+    function metricCard(value, label, tip, compact = false) {
+      const compactClass = compact ? " metric-compact" : "";
+      return `
+        <div class="metric${compactClass}" title="${escapeHtml(tip)}">
+          <div class="metric-value">${value}</div>
+          <div class="metric-label">${escapeHtml(label)}</div>
+          <div class="metric-tip">${escapeHtml(tip)}</div>
+        </div>
+      `;
     }
 
     function renderMetrics(history, analytics = {}) {
@@ -604,29 +799,97 @@
       const avgScore = history.length
         ? history.reduce((sum, row) => sum + (row.scout_score || 0), 0) / history.length
         : 0;
+      const directionalTip = "Directional accuracy = whether the forward move matched Scout's direction (Bullish: return > 0, Bearish: return < 0). Uses longest available trading-day horizon (20D → 1D). Pending / not refreshed rows excluded.";
+      const avgReturnTip = "Avg return = mean realized percentage move after the scan for completed rows only. Uses the same longest available horizon as directional accuracy.";
+      const labelWinTip = "Outcome label win rate uses stored WIN / LOSS / FLAT labels (longest filled horizon). Can differ from directional accuracy when shorter horizons disagree.";
       document.getElementById("metrics").innerHTML = `
-        <div class="metric"><div class="metric-value">${history.length}</div><div class="metric-label">Stored scans</div></div>
-        <div class="metric"><div class="metric-value">${tickers.size}</div><div class="metric-label">Tickers</div></div>
-        <div class="metric"><div class="metric-value">${analytics.total_completed || 0}</div><div class="metric-label">Completed outcomes</div></div>
-        <div class="metric"><div class="metric-value">${analytics.win_rate || 0}%</div><div class="metric-label">Win rate</div></div>
-        <div class="metric"><div class="metric-value">${analytics.bullish_win_rate || 0}%</div><div class="metric-label">Bullish win rate</div></div>
-        <div class="metric"><div class="metric-value">${analytics.bearish_win_rate || 0}%</div><div class="metric-label">Bearish win rate</div></div>
-        <div class="metric"><div class="metric-value">${analytics.average_1d_return || 0}%</div><div class="metric-label">Avg 1D return</div></div>
-        <div class="metric"><div class="metric-value">${analytics.average_5d_return || 0}%</div><div class="metric-label">Avg 5D return</div></div>
-        <div class="metric"><div class="metric-value">${analytics.average_10d_return || 0}%</div><div class="metric-label">Avg 10D return</div></div>
-        <div class="metric"><div class="metric-value">${avgScore.toFixed(1)}</div><div class="metric-label">Avg Scout score</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.best_performing_ticker?.ticker || "n/a")}</div><div class="metric-label">Best ticker</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.worst_performing_ticker?.ticker || "n/a")}</div><div class="metric-label">Worst ticker</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.most_predictive_gate?.gate || "n/a")}</div><div class="metric-label">Most predictive gate</div></div>
-        <div class="metric"><div class="metric-value">${escapeHtml(analytics.least_predictive_gate?.gate || "n/a")}</div><div class="metric-label">Least predictive gate</div></div>
+        ${metricCard(historyTotal, "Stored scans", "All saved recommendations in local SQLite memory.")}
+        ${metricCard(tickers.size, "Tickers (page)", "Unique tickers on the current history page.")}
+        ${metricCard(analytics.total_completed_returns || 0, "Completed returns", "Rows with at least one realized forward return. Pending / not refreshed excluded.")}
+        <div class="metric-section">Outcome labels (legacy)</div>
+        ${metricCard(`${analytics.win_rate || 0}%`, "Win rate", labelWinTip, true)}
+        ${metricCard(`${analytics.bullish_win_rate || 0}%`, "Bullish win rate", labelWinTip, true)}
+        ${metricCard(`${analytics.bearish_win_rate || 0}%`, "Bearish win rate", labelWinTip, true)}
+        <div class="metric-section">Directional accuracy (return-based)</div>
+        ${metricCard(`${analytics.bullish_directional_accuracy || 0}%`, "Bullish directional accuracy", directionalTip, true)}
+        ${metricCard(`${analytics.bearish_directional_accuracy || 0}%`, "Bearish directional accuracy", directionalTip, true)}
+        ${metricCard(analytics.bullish_completed_outcomes || 0, "Bullish completed outcomes", "Bullish picks with a realized forward return (not Pending / not refreshed).", true)}
+        ${metricCard(analytics.bearish_completed_outcomes || 0, "Bearish completed outcomes", "Bearish picks with a realized forward return (not Pending / not refreshed).", true)}
+        <div class="metric-section">Average realized return</div>
+        ${metricCard(formatAnalyticsPct(analytics.bullish_avg_return), "Bullish avg return", avgReturnTip, true)}
+        ${metricCard(formatAnalyticsPct(analytics.bearish_avg_return), "Bearish avg return", avgReturnTip, true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_5d_return), "Avg 5D return (all)", "Mean 5 trading-day return across all completed-return rows.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_10d_return), "Avg 10D return (all)", "Mean 10 trading-day return across all completed-return rows.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_5d_return_bullish), "Bullish avg 5D", "Mean 5D return for bullish picks with a filled 5D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_10d_return_bullish), "Bullish avg 10D", "Mean 10D return for bullish picks with a filled 10D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_5d_return_bearish), "Bearish avg 5D", "Mean 5D return for bearish picks with a filled 5D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_10d_return_bearish), "Bearish avg 10D", "Mean 10D return for bearish picks with a filled 10D return.", true)}
+        ${metricCard(formatAnalyticsPct(analytics.average_1d_return), "Avg 1D return (all)", "Mean 1 trading-day return across completed-return rows.", true)}
+        ${metricCard(avgScore.toFixed(1), "Avg Scout score", "Mean Scout score in the current filtered view.")}
+        ${metricCard(escapeHtml(analytics.best_performing_ticker?.ticker || "n/a"), "Best ticker", "Highest realized forward return in memory.")}
+        ${metricCard(escapeHtml(analytics.worst_performing_ticker?.ticker || "n/a"), "Worst ticker", "Lowest realized forward return in memory.")}
+        ${metricCard(escapeHtml(analytics.most_predictive_gate?.gate || "n/a"), "Most predictive gate", "Gate with the highest pass-conditioned predictive score (wins/returns counted only when the gate passed).")}
+        ${metricCard(escapeHtml(analytics.least_predictive_gate?.gate || "n/a"), "Least predictive gate", "Gate with the lowest pass-conditioned predictive score (wins/returns counted only when the gate passed).")}
       `;
     }
 
+    function historyPageSize() {
+      const value = document.getElementById("history-page-size").value;
+      return value === "all" ? "all" : Number(value || 25);
+    }
+
+    function historyPageInfo(totalRows) {
+      const pageSize = historyPageSize();
+      if (pageSize === "all") {
+        return {
+          pageSize,
+          totalPages: 1,
+          page: 1,
+          start: 0,
+          end: totalRows,
+        };
+      }
+      const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+      historyPage = Math.min(Math.max(1, historyPage), totalPages);
+      const start = (historyPage - 1) * pageSize;
+      return {
+        pageSize,
+        totalPages,
+        page: historyPage,
+        start,
+        end: Math.min(start + pageSize, totalRows),
+      };
+    }
+
+    function updateHistoryPaginationControls(totalRows, pageInfo, rowCount) {
+      const countEl = document.getElementById("history-count");
+      const pageLabelEl = document.getElementById("history-page-label");
+      const prevButton = document.getElementById("history-prev");
+      const nextButton = document.getElementById("history-next");
+      const displayEnd = totalRows
+        ? Math.min(pageInfo.start + Math.max(rowCount, 0), totalRows)
+        : 0;
+      let showingText = totalRows
+        ? `Showing ${pageInfo.start + 1}-${displayEnd} of ${totalRows} matching rows`
+        : "Showing 0 matching rows";
+      if (pageInfo.pageSize === "all" && totalRows > rowCount) {
+        showingText += ` (loaded ${rowCount}; export for full filtered set)`;
+      }
+
+      countEl.textContent = showingText;
+      pageLabelEl.textContent = `Page ${pageInfo.page} of ${pageInfo.totalPages}`;
+      prevButton.disabled = pageInfo.page <= 1 || pageInfo.pageSize === "all";
+      nextButton.disabled = pageInfo.page >= pageInfo.totalPages || pageInfo.pageSize === "all";
+    }
+
     function renderHistory(history) {
+      const pageInfo = historyPageInfo(historyFilteredTotal);
+      updateHistoryPaginationControls(historyFilteredTotal, pageInfo, history.length);
       if (!history.length) {
-        document.getElementById("history").innerHTML = "<p class=\"hint\">No scan history yet. Run the sandbox scanner to seed memory.</p>";
+        document.getElementById("history").innerHTML = "<p class=\"hint\">No scan history matches the current filters. Run the sandbox scanner to seed memory or clear filters.</p>";
         return;
       }
+      const visibleHistory = history;
       document.getElementById("history").innerHTML = `
         <table>
           <thead>
@@ -635,7 +898,7 @@
             </tr>
           </thead>
           <tbody>
-            ${history.map((row) => `
+            ${visibleHistory.map((row) => `
               <tr>
                 <td>${escapeHtml(shortDate(row.timestamp))}</td>
                 <td>${escapeHtml(shortDate(row.created_at))}</td>
@@ -643,11 +906,11 @@
                 <td><strong>${escapeHtml(row.ticker)}</strong></td>
                 <td>${escapeHtml(row.scout_score)}</td>
                 <td>${escapeHtml(row.final_direction)}</td>
-                <td>${escapeHtml(pct(row.return_1d))}</td>
-                <td>${escapeHtml(pct(row.return_3d))}</td>
-                <td>${escapeHtml(pct(row.return_5d))}</td>
-                <td>${escapeHtml(pct(row.return_10d))}</td>
-                <td>${escapeHtml(pct(row.return_20d))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "1D", row.return_1d))}">${escapeHtml(pct(row.return_1d, row, "1D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "3D", row.return_3d))}">${escapeHtml(pct(row.return_3d, row, "3D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "5D", row.return_5d))}">${escapeHtml(pct(row.return_5d, row, "5D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "10D", row.return_10d))}">${escapeHtml(pct(row.return_10d, row, "10D"))}</td>
+                <td title="${escapeHtml(horizonTitle(row, "20D", row.return_20d))}">${escapeHtml(pct(row.return_20d, row, "20D"))}</td>
                 <td><span class="pill">${escapeHtml(label(row.stock_outcome_label))}</span></td>
                 <td>${escapeHtml(shortDate(row.outcome_last_updated_at))}</td>
                 <td>${(row.failed_gates || []).map((gate) => `<span class="pill">${escapeHtml(gate)}</span>`).join("") || "None"}</td>
@@ -704,13 +967,32 @@
       `;
     }
 
+    function gateIntelligenceSlices(rows) {
+      const most = [...rows].sort((a, b) => (b.predictive_score || 0) - (a.predictive_score || 0)).slice(0, 7);
+      const least = [...rows].sort((a, b) => (a.predictive_score || 0) - (b.predictive_score || 0)).slice(0, 7);
+      return { most, least };
+    }
+
+    function gateIntelligenceScoresTied(rows) {
+      const scores = rows.map((row) => Number(row.predictive_score ?? 0));
+      if (!scores.length) {
+        return false;
+      }
+      const rounded = scores.map((score) => score.toFixed(2));
+      return new Set(rounded).size <= 1;
+    }
+
     function renderGateIntelligence(rows) {
       if (!rows.length) {
         document.getElementById("gate-intelligence").innerHTML = "<p class=\"hint\">No gate intelligence yet. Update outcomes after completed recommendations are available.</p>";
         return;
       }
-      const most = [...rows].sort((a, b) => (b.predictive_score || 0) - (a.predictive_score || 0)).slice(0, 7);
-      const least = [...rows].sort((a, b) => (a.predictive_score || 0) - (b.predictive_score || 0)).slice(0, 7);
+      const { most, least } = gateIntelligenceSlices(rows);
+      const scoresTied = gateIntelligenceScoresTied(rows);
+      const overlap = most.filter((row) => least.some((other) => other.gate_key === row.gate_key && other.gate_name === row.gate_name));
+      const tieWarning = scoresTied
+        ? `<p class="hint" style="margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border, #333); border-radius: 8px;">Predictive scores are tied across gates (${overlap.length ? "most and least tables may show the same gates" : "ranking has no spread yet"}). Win rate and returns below are measured only on scans where the gate passed; refresh outcomes after more pass/fail variation accumulates.</p>`
+        : `<p class="hint" style="margin: 0 0 12px;">Win rate and forward returns are measured only on scans where the gate passed (not scan-wide outcomes shared by every gate).</p>`;
       const rowHtml = (row) => `
         <tr>
           <td>${escapeHtml(row.gate_name)}</td>
@@ -730,6 +1012,7 @@
         </tr>
       `;
       document.getElementById("gate-intelligence").innerHTML = `
+        ${tieWarning}
         <h2>Most Predictive Gates</h2>
         <table>
           <thead><tr><th>Gate</th><th>Samples</th><th>Pass / Fail</th><th>Wins / Losses</th><th>Win Rate</th><th>Avg 1D</th><th>Avg 3D</th><th>Avg 5D</th><th>Avg 10D</th><th>Avg 20D</th><th>Bull Win</th><th>Bear Win</th><th>Predictive</th><th>Confidence</th></tr></thead>
@@ -805,6 +1088,7 @@
     }
 
     function openOutcomeModal(row) {
+      const debug = parseHorizonDebug(row);
       const returns = [
         ["1D", row.price_after_1d, row.return_1d],
         ["3D", row.price_after_3d, row.return_3d],
@@ -822,18 +1106,33 @@
         <div class="detail-grid">
           <div class="detail"><div class="detail-label">Entry price</div><div>${money(row.entry_price)}</div></div>
           <div class="detail"><div class="detail-label">Outcome label</div><div>${escapeHtml(label(row.stock_outcome_label))}</div></div>
-          <div class="detail"><div class="detail-label">Max favorable move</div><div>${escapeHtml(pct(row.max_favorable_move))}</div></div>
-          <div class="detail"><div class="detail-label">Max adverse move</div><div>${escapeHtml(pct(row.max_adverse_move))}</div></div>
+          <div class="detail"><div class="detail-label">Max favorable move</div><div>${escapeHtml(formatReturnPct(row.max_favorable_move) || "Pending")}</div></div>
+          <div class="detail"><div class="detail-label">Max adverse move</div><div>${escapeHtml(formatReturnPct(row.max_adverse_move) || "Pending")}</div></div>
           <div class="detail"><div class="detail-label">Last updated</div><div>${escapeHtml(shortDate(row.outcome_last_updated_at))}</div></div>
           <div class="detail"><div class="detail-label">Notes</div><div>${escapeHtml(row.result_notes || "No notes stored.")}</div></div>
         </div>
-        <h2 style="margin-top:18px;">Forward Returns</h2>
+        <h2 style="margin-top:18px;">Forward Returns (trading-day horizons)</h2>
         <table>
-          <thead><tr><th>Horizon</th><th>Checked Price</th><th>Return</th></tr></thead>
+          <thead><tr><th>Horizon</th><th>Status</th><th>Checked Price</th><th>Return</th><th>Why</th></tr></thead>
           <tbody>
-            ${returns.map(([horizon, price, ret]) => `
-              <tr><td>${horizon}</td><td>${money(price)}</td><td>${escapeHtml(pct(ret))}</td></tr>
-            `).join("")}
+            ${returns.map(([horizon, price, ret]) => {
+              const info = debug[horizon] || {};
+              const status = typeof ret === "number" ? "Resolved" : "Pending";
+              const why = typeof ret === "number"
+                ? (info.reason || "Resolved from FMP EOD close.")
+                : (info.reason || (!row.outcome_last_updated_at
+                  ? "Outcomes have not been refreshed yet. Click Update Outcomes."
+                  : "Waiting for enough trading sessions after entry."));
+              return `
+              <tr>
+                <td>${horizon}</td>
+                <td>${escapeHtml(status)}</td>
+                <td>${money(price)}</td>
+                <td>${escapeHtml(formatReturnPct(ret) || "Pending")}</td>
+                <td>${escapeHtml(why)}</td>
+              </tr>
+            `;
+            }).join("")}
           </tbody>
         </table>
         <h2 style="margin-top:18px;">Gates Present At Recommendation</h2>
@@ -931,19 +1230,98 @@
       `;
     }
 
-    function renderAll(data) {
+    function renderOutcomeRefreshHint(history) {
+      const hintEl = document.getElementById("outcome-refresh-hint");
+      if (!hintEl) return;
+      const neverRefreshed = history.filter((row) => !row.outcome_last_updated_at).length;
+      if (!neverRefreshed) {
+        hintEl.textContent = "";
+        return;
+      }
+      hintEl.textContent = `${neverRefreshed} visible row(s) have never had outcomes refreshed. Click Update Outcomes to populate 1D–20D returns.`;
+    }
+
+    function renderSummaryPanels(data) {
       summary = data;
-      currentHistory = applyFilters(data.recentScans || []);
       renderMetrics(currentHistory, data.outcomeAnalytics || {});
-      renderHistory(currentHistory);
       renderGateIntelligence(data.gateIntelligence || []);
       renderHeatmap(data.gateStatistics || []);
       renderFailures(data.topGateFailures || []);
       renderDirectionStats(data.directionAccuracy || []);
       renderOptions(data.optionPickHistory || []);
-      renderAuditLog(data.outcomeAuditLog || []);
       switchView(activeView);
-      statusEl.textContent = `Loaded ${currentHistory.length} recent stored scan rows from local SQLite memory.`;
+    }
+
+    function scheduleHistoryReload() {
+      if (!historyFiltersEnabled) {
+        return;
+      }
+      clearTimeout(filterReloadTimer);
+      filterReloadTimer = setTimeout(() => {
+        loadHistory({ resetPage: true }).catch((error) => {
+          statusEl.textContent = `Could not reload history: ${error.message || error}`;
+        });
+      }, 300);
+    }
+
+    function historyRowsFromPayload(data) {
+      const rows = data.history ?? data.rows ?? data.records ?? data.items ?? [];
+      return Array.isArray(rows) ? rows : [];
+    }
+
+    async function loadHistory({ resetPage = false, skipFilters = false } = {}) {
+      if (resetPage) {
+        historyPage = 1;
+      }
+      if (historyFetchController) {
+        historyFetchController.abort();
+      }
+      historyFetchController = new AbortController();
+      const activeController = historyFetchController;
+      const pageSize = historyPageSize();
+      const limit = pageSize === "all" ? 500 : pageSize;
+      const offset = pageSize === "all" ? 0 : (historyPage - 1) * pageSize;
+      const filterQs = historyFilterQuery({ includeFilters: !skipFilters });
+      const url = `/api/memory/history?limit=${limit}&offset=${offset}${filterQs ? `&${filterQs}` : ""}`;
+      const response = await fetch(url, { signal: activeController.signal });
+      const data = await response.json();
+      if (activeController !== historyFetchController) {
+        return data;
+      }
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || "History request failed.");
+      }
+      const rows = historyRowsFromPayload(data);
+      currentHistory = rows;
+      historyTotal = data.total ?? historyTotal;
+      historyFilteredTotal = data.filteredTotal ?? data.filtered_total ?? rows.length;
+      console.info("[research-memory] history loaded", {
+        url,
+        rows: rows.length,
+        total: historyTotal,
+        filteredTotal: historyFilteredTotal,
+        debug: data.debug,
+      });
+      if (pageSize !== "all") {
+        const totalPages = Math.max(1, Math.ceil(historyFilteredTotal / pageSize));
+        historyPage = Math.min(Math.max(1, historyPage), totalPages);
+      }
+      updateExportLink();
+      renderOutcomeRefreshHint(currentHistory);
+      renderHistory(currentHistory);
+      if (summary) {
+        renderMetrics(currentHistory, summary.outcomeAnalytics || {});
+      }
+      return data;
+    }
+
+    async function loadAuditLog() {
+      if (auditLoaded) return;
+      document.getElementById("audit-log").innerHTML = "<p class=\"hint\">Loading audit log...</p>";
+      const response = await fetch("/api/memory/audit?limit=50");
+      const data = await response.json();
+      renderAuditLog(data.outcomeAuditLog || []);
+      auditLoaded = true;
     }
 
     function renderAuditLog(rows) {
@@ -974,24 +1352,39 @@
     }
 
     async function loadSummary() {
-      const response = await fetch("/api/memory/summary");
-      const data = await response.json();
-      renderAll(data);
+      auditLoaded = false;
+      statusEl.textContent = "Loading summaries (analytics, gate stats)...";
+      const summaryResponse = await fetch("/api/memory/summary");
+      const summaryData = await summaryResponse.json();
+      if (!summaryResponse.ok || summaryData.ok === false) {
+        throw new Error(summaryData.message || "Summary request failed.");
+      }
+      historyTotal = summaryData.historyTotal || 0;
+      renderSummaryPanels(summaryData);
+      statusEl.textContent = `Summaries loaded (${formatTimings(summaryData.timings)}). Loading scan history...`;
+      const historyData = await loadHistory({ resetPage: true, skipFilters: true });
+      historyFiltersEnabled = true;
+      const debug = historyData.debug || {};
+      statusEl.textContent = [
+        `Ready: ${historyTotal} stored scan(s), ${historyFilteredTotal} matching filter(s), showing ${currentHistory.length} on this page.`,
+        debug.dbPath ? `DB: ${debug.dbPath}` : "",
+        debug.filters ? `Filters: ${JSON.stringify(debug.filters)}` : "",
+        formatTimings({ ...summaryData.timings, ...historyData.timings }),
+      ].filter(Boolean).join(" ");
     }
 
     async function searchTicker() {
       const ticker = document.getElementById("ticker-search").value.trim().toUpperCase();
       if (!ticker) {
-        loadSummary();
+        await loadSummary();
         return;
       }
-      const response = await fetch(`/api/memory/ticker?ticker=${encodeURIComponent(ticker)}`);
-      const data = await response.json();
-      summary = { ...(summary || {}), recentScans: data.history || [] };
-      currentHistory = applyFilters(data.history || []);
-      renderMetrics(currentHistory, summary.outcomeAnalytics || {});
-      renderHistory(currentHistory);
-      statusEl.textContent = `Loaded ${currentHistory.length} stored scan rows for ${ticker}.`;
+      historyPage = 1;
+      const historyData = await loadHistory({ resetPage: true });
+      statusEl.textContent = [
+        `Loaded ${historyFilteredTotal} matching row(s) for ${ticker} (${currentHistory.length} on this page).`,
+        formatTimings(historyData.timings),
+      ].join(" ");
     }
 
     async function updateOutcomes() {
@@ -1002,13 +1395,30 @@
         body: JSON.stringify({ limit: 500, timeout: 25 }),
       });
       const result = await response.json();
+      if (!response.ok || result.ok === false) {
+        statusEl.textContent = result.message || "Outcome update failed.";
+        return;
+      }
       await loadSummary();
+      const refreshTiming = result.timings ? ` Refresh ${formatTimings(result.timings)}.` : "";
       const sample = (result.details || [])
         .filter((detail) => detail.ticker)
-        .slice(0, 3)
-        .map((detail) => `${detail.ticker}: ${Object.keys(detail.prices_found || {}).join(", ") || detail.still_pending_reason || "checked"}`)
+        .slice(0, 5)
+        .map((detail) => {
+          const found = Object.keys(detail.prices_found || {}).join(", ");
+          return `${detail.ticker}: ${found || detail.still_pending_reason || "checked"}`;
+        })
         .join(" | ");
-      statusEl.textContent = `Outcome update checked ${result.records_checked || 0}, updated ${result.records_updated || 0}, pending ${result.records_pending || 0}. ${sample} ${(result.errors || []).join("; ")}`;
+      const errors = (result.errors || []).length
+        ? `\nErrors: ${(result.errors || []).join("; ")}`
+        : "";
+      const sampleText = sample ? `\nDetails: ${sample}` : "";
+      statusEl.textContent = [
+        `Updated ${result.outcomes_updated || 0} outcomes`,
+        `${result.still_pending_not_old_enough || 0} still pending because not old enough`,
+        `${result.missing_price_data || 0} failed due to missing price data`,
+        `Checked ${result.records_checked || 0} rows; updated ${result.records_updated || 0} rows.`,
+      ].join("\n") + sampleText + errors + refreshTiming;
     }
 
     async function createOutcomeTestRecord() {
@@ -1037,11 +1447,29 @@
       document.getElementById("failed-gate-filter").value = "";
       document.getElementById("min-score-filter").value = "";
       document.getElementById("max-score-filter").value = "";
+      historyPage = 1;
       loadSummary();
     });
     ["outcome-filter", "direction-filter", "failed-gate-filter", "min-score-filter", "max-score-filter"].forEach((id) => {
-      document.getElementById(id).addEventListener("input", () => renderAll(summary || { recentScans: [] }));
-      document.getElementById(id).addEventListener("change", () => renderAll(summary || { recentScans: [] }));
+      document.getElementById(id).addEventListener("input", scheduleHistoryReload);
+      document.getElementById(id).addEventListener("change", scheduleHistoryReload);
+    });
+    document.getElementById("history-page-size").addEventListener("change", () => {
+      loadHistory({ resetPage: true }).catch((error) => {
+        statusEl.textContent = `Could not reload history: ${error.message || error}`;
+      });
+    });
+    document.getElementById("history-prev").addEventListener("click", () => {
+      historyPage = Math.max(1, historyPage - 1);
+      loadHistory().catch((error) => {
+        statusEl.textContent = `Could not load page: ${error.message || error}`;
+      });
+    });
+    document.getElementById("history-next").addEventListener("click", () => {
+      historyPage += 1;
+      loadHistory().catch((error) => {
+        statusEl.textContent = `Could not load page: ${error.message || error}`;
+      });
     });
     document.getElementById("ticker-search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {

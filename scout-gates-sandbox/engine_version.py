@@ -16,6 +16,7 @@ GATE_LOGIC_FILES = (
     "scout-gates-sandbox/run_gates.py",
     "scout-gates-sandbox/explainability.py",
     "scout-gates-sandbox/directionality.py",
+    "scout-gates-sandbox/earnings_intelligence.py",
     "scout-gates-sandbox/option_picker.py",
 )
 
