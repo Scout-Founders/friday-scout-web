@@ -45,6 +45,10 @@ from peer_risk_adjusted_edge import (
     build_peer_bundle_for_run,
     build_scoring_breakdown,
 )
+from stable_signal_explainability import (
+    apply_explainability_to_run_payload,
+    build_scan_explain_context,
+)
 from stable_signal_layers import build_and_attach_stable_signal
 from performance_tracker import update_outcomes
 from reporting import (
@@ -241,7 +245,14 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     }
     payload["memoryRunId"] = None
     payload["savedToMemory"] = False
-    return payload
+
+    explain_context = build_scan_explain_context(
+        results,
+        pick_mode=pick_mode,
+        final_pick_ticker=winner.ticker,
+        run_timestamp=run_timestamp,
+    )
+    return apply_explainability_to_run_payload(payload, explain_context)
 
 
 def build_memory_summary() -> dict[str, Any]:

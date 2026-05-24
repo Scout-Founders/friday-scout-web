@@ -1,6 +1,6 @@
 # Stable Signal S2 — Explainability Layer (Plan Only)
 
-**Status:** S2a implemented (`stable_signal_explainability.py` + tests); S2b attachment not wired  
+**Status:** S2a + S2b implemented (`apply_explainability_to_run_payload` behind feature flag)  
 **Prerequisite:** S1 implemented (`stable_signal_layers.py`, `stableSignal` on `serialize_result`)  
 **Goal:** Make Horizon-1 outputs more understandable via **additive metadata** under `stableSignal.explainability`  
 **Parent:** [stable-signal-state-v1.md](./stable-signal-state-v1.md)
@@ -435,23 +435,13 @@ Lightweight availability flags — **no duplication** of full `directionBreakdow
 
 ---
 
-### S2b — Wire into S1 attach path
+### S2b — Wire into `build_run_payload` — **done**
 
-- In `stable_signal_layers.py` (or `build_and_attach_stable_signal`):
-  - After `layers` built, call `build_explainability` if `context` provided.
-  - Default `context=None` → minimal explainability (`rankingExplanation` with `pickRole: "unknown"`, empty drivers).
-- In `build_run_payload`:
-  - After all results known, build `ExplainabilityContext` once.
-  - Pass context into each `serialize_result` (new optional param) **or** post-process serialized rows in loop.
+- After payload assembly, `build_scan_explain_context` + `apply_explainability_to_run_payload`.
+- Gated by `SCOUT_STABLE_SIGNAL_EXPLAINABILITY` (default off).
+- `serialize_result` unchanged; explainability only on full run payload when flag=1.
 
-Prefer **post-process in `build_run_payload`** to avoid changing `serialize_result` signature twice:
-
-```text
-for row in all_serialized:
-    row["stableSignal"]["explainability"] = build_explainability(row, row["stableSignal"], context)
-```
-
-**Exit:** `/api/run` includes `explainability`; scores/gates identical to S1-only run (diff test).
+**Exit:** `/api/run` includes `explainability` when flag on; scores/gates identical (diff test).
 
 ---
 

@@ -814,3 +814,85 @@ def attach_explainability_if_enabled(
     if not explainability_enabled():
         return stable_signal
     return attach_explainability_to_stable_signal(stable_signal, serialized, context)
+
+
+def build_scan_explain_context(
+    results: list[Any],
+    *,
+    pick_mode: str,
+    final_pick_ticker: str,
+    run_timestamp: str,
+) -> ScanExplainContext:
+    """Build scan-wide context from CandidateResult rows (read-only)."""
+    universe = [
+        (str(result.ticker).upper(), float(result.score), bool(result.passed_all_gates))
+        for result in results
+    ]
+    final_upper = str(final_pick_ticker).upper()
+    rejected = {
+        str(result.ticker).upper()
+        for result in results
+        if str(result.ticker).upper() != final_upper
+    }
+    return ScanExplainContext.from_universe(
+        pick_mode=pick_mode,
+        final_pick_ticker=final_upper,
+        run_timestamp=run_timestamp,
+        universe=universe,
+        rejected_tickers=rejected,
+    )
+
+
+def apply_explainability_to_serialized_row(
+    serialized: dict[str, Any],
+    context: ScanExplainContext,
+) -> dict[str, Any]:
+    """Attach explainability to one serialized ticker when feature flag is on."""
+    if not explainability_enabled():
+        return serialized
+    stable_signal = serialized.get("stableSignal")
+    if not isinstance(stable_signal, dict):
+        return serialized
+    updated = dict(serialized)
+    updated["stableSignal"] = attach_explainability_to_stable_signal(
+        stable_signal,
+        serialized,
+        context,
+    )
+    return updated
+
+
+def apply_explainability_to_run_payload(
+    payload: dict[str, Any],
+    context: ScanExplainContext,
+) -> dict[str, Any]:
+    """Post-process /api/run payload rows (S2b). No ranking or score changes."""
+    if not explainability_enabled():
+        return payload
+    if not payload.get("ok"):
+        return payload
+
+    updated = dict(payload)
+    final_pick = payload.get("finalPick")
+    if isinstance(final_pick, dict):
+        updated["finalPick"] = apply_explainability_to_serialized_row(final_pick, context)
+
+    rejected = payload.get("rejected")
+    if isinstance(rejected, list):
+        updated["rejected"] = [
+            apply_explainability_to_serialized_row(row, context)
+            if isinstance(row, dict)
+            else row
+            for row in rejected
+        ]
+
+    results = payload.get("results")
+    if isinstance(results, list):
+        updated["results"] = [
+            apply_explainability_to_serialized_row(row, context)
+            if isinstance(row, dict)
+            else row
+            for row in results
+        ]
+
+    return updated

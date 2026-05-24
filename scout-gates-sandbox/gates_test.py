@@ -878,6 +878,147 @@ class StableSignalExplainabilityS2aTests(unittest.TestCase):
         self.assertNotIn("explainability", payload["stableSignal"])
 
 
+class StableSignalExplainabilityS2bTests(unittest.TestCase):
+    @staticmethod
+    def _mock_results() -> list:
+        from run_gates import GATES, CandidateResult
+
+        def row(ticker: str, score: float, fail: str | None = None) -> CandidateResult:
+            gates = {key: True for key, _, _ in GATES}
+            if fail:
+                gates[fail] = False
+            return CandidateResult(
+                ticker=ticker,
+                data={
+                    "ticker": ticker,
+                    "scout_score": score,
+                    "sector": "Technology",
+                    "trend": "UPTREND",
+                    "volume": 1_000_000,
+                    "wind": 1.0,
+                    "iv_elevated": False,
+                    "piotroski": 7,
+                    "z_score": 2.0,
+                    "breadth_score": 60,
+                    "gates": gates,
+                    "direction": "Bullish",
+                },
+            )
+
+        return [
+            row("NVDA", 100, "specter"),
+            row("MSFT", 89),
+            row("AAPL", 75),
+        ]
+
+    @staticmethod
+    def _strip_explainability(payload: dict) -> dict:
+        import copy
+
+        stripped = copy.deepcopy(payload)
+
+        def clean(row: dict) -> None:
+            stable = row.get("stableSignal")
+            if isinstance(stable, dict):
+                stable.pop("explainability", None)
+
+        if isinstance(stripped.get("finalPick"), dict):
+            clean(stripped["finalPick"])
+        for key in ("rejected", "results"):
+            for row in stripped.get(key) or []:
+                if isinstance(row, dict):
+                    clean(row)
+        return stripped
+
+    @staticmethod
+    def _ranking_snapshot(payload: dict) -> dict:
+        def snap(row: dict) -> dict:
+            return {
+                "ticker": row.get("ticker"),
+                "score": row.get("score"),
+                "passedAllGates": row.get("passedAllGates"),
+                "adjustedScoutScore": row.get("adjustedScoutScore"),
+                "peerConvictionAdjustment": row.get("peerConvictionAdjustment"),
+                "gates": [g.get("passed") for g in row.get("gates") or []],
+            }
+
+        return {
+            "finalPick": snap(payload["finalPick"]),
+            "results": [snap(row) for row in payload.get("results") or []],
+        }
+
+    def _build_payload_with_flag(self, flag: str) -> dict:
+        import os
+        from unittest.mock import patch
+
+        from dashboard import build_run_payload
+
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        results = self._mock_results()
+
+        def fake_fetch(_api: str, ticker: str, _timeout: float):
+            for item in results:
+                if item.ticker == ticker:
+                    return item
+            raise RuntimeError(f"missing mock {ticker}")
+
+        with patch.dict(os.environ, {"SCOUT_STABLE_SIGNAL_EXPLAINABILITY": flag}):
+            with patch("dashboard.fetch_gate_result", side_effect=fake_fetch):
+                with patch(
+                    "dashboard.build_earnings_intelligence_for_result",
+                    return_value=inactive_ei,
+                ):
+                    with patch("dashboard.choose_option_contract", return_value=None):
+                        return build_run_payload(
+                            {
+                                "universeMode": "custom",
+                                "tickers": "NVDA,MSFT,AAPL",
+                                "pickMode": "gate_runner",
+                                "timeout": 25,
+                            }
+                        )
+
+    def test_flag_off_explainability_absent(self) -> None:
+        payload = self._build_payload_with_flag("0")
+        self.assertTrue(payload["ok"])
+        for row in payload["results"]:
+            self.assertNotIn("explainability", row.get("stableSignal") or {})
+
+    def test_flag_on_explainability_attached(self) -> None:
+        payload = self._build_payload_with_flag("1")
+        self.assertTrue(payload["ok"])
+        for row in payload["results"]:
+            stable = row.get("stableSignal") or {}
+            self.assertIn("explainability", stable)
+            self.assertEqual(stable["explainability"]["version"], "1")
+        self.assertEqual(payload["finalPick"]["stableSignal"]["explainability"]["rankingExplanation"]["pickRole"], "final_pick")
+
+    def test_rankings_unchanged_flag_on_vs_off(self) -> None:
+        off = self._build_payload_with_flag("0")
+        on = self._build_payload_with_flag("1")
+        self.assertEqual(self._ranking_snapshot(off), self._ranking_snapshot(on))
+        self.assertEqual(off["finalPick"]["ticker"], on["finalPick"]["ticker"])
+        self.assertEqual(off["finalPick"]["score"], on["finalPick"]["score"])
+
+    def test_choose_final_pick_matches_payload_winner_both_flags(self) -> None:
+        from run_gates import choose_final_pick
+
+        results = self._mock_results()
+        expected = choose_final_pick(results)
+        for flag in ("0", "1"):
+            payload = self._build_payload_with_flag(flag)
+            self.assertEqual(payload["finalPick"]["ticker"], expected.ticker)
+            self.assertEqual(payload["finalPick"]["score"], expected.score)
+
+    def test_flag_on_preserves_s1_layers(self) -> None:
+        off = self._strip_explainability(self._build_payload_with_flag("0"))
+        on = self._strip_explainability(self._build_payload_with_flag("1"))
+        self.assertEqual(
+            off["finalPick"]["stableSignal"]["layers"],
+            on["finalPick"]["stableSignal"]["layers"],
+        )
+
+
 class ReportingPipelineTests(unittest.TestCase):
     def test_registry_lists_registered_report(self) -> None:
         import tempfile
