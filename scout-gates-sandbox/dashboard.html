@@ -315,6 +315,130 @@
       color: var(--warning);
     }
 
+    .scan-telemetry {
+      margin-bottom: 16px;
+      padding: 14px 15px;
+      border: 1px solid #1f2d4d;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #0a101c 0%, #070b14 100%);
+    }
+
+    .scan-telemetry.hidden {
+      display: none;
+    }
+
+    .scan-telemetry-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .scan-telemetry-head h3 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+    }
+
+    .scan-telemetry-phase {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .telemetry-stat {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .telemetry-stat-label {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-stat-value {
+      color: var(--text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .telemetry-stat-value.muted-value {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .telemetry-flags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .telemetry-flag {
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #070b14;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-flag.info {
+      border-color: #00e5a044;
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .telemetry-flag.warning {
+      border-color: #ffb83644;
+      color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .telemetry-flag.error {
+      border-color: #ff3b5c44;
+      color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .telemetry-footnote {
+      margin: 10px 0 0;
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 920px) {
+      .telemetry-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
     .results {
       min-height: 520px;
       padding: 22px;
@@ -965,6 +1089,7 @@
 
       <section class="card results">
         <div id="status" class="status">Ready. Configure a universe and run the gates.</div>
+        <div id="scan-telemetry" class="scan-telemetry hidden" aria-live="polite"></div>
         <div id="output" class="empty">
           <div>
             <strong>No run yet.</strong><br>
@@ -1029,7 +1154,9 @@
     const universeRuntimeEstimateEl = document.getElementById("universe-runtime-estimate");
     const universeTagsEl = document.getElementById("universe-tags");
     const universePresetNoteEl = document.getElementById("universe-preset-note");
+    const scanTelemetryEl = document.getElementById("scan-telemetry");
     const LARGE_UNIVERSE_TICKER_THRESHOLD = 8;
+    const NOT_INSTRUMENTED = "Not Instrumented Yet";
 
     // UI-only preset catalog (planning). Does not change scan payload or auto-fill tickers.
     const UNIVERSE_PRESETS = {
@@ -1132,6 +1259,7 @@
     let currentRequest = null;
     let currentScanSaved = false;
     let currentSaveInFlight = false;
+    let currentScanTelemetry = null;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1234,6 +1362,251 @@
       }
       universePresetNoteEl.textContent = note;
       universePresetNoteEl.classList.toggle("preview-recommended", isLargeUniverse);
+    }
+
+    function buildScanRequestContext(request) {
+      const preset = selectedUniversePreset();
+      return {
+        ...request,
+        universePresetId: universePresetEl.value,
+        universePresetLabel: preset.label,
+        scanPurpose: preset.scanPurpose,
+      };
+    }
+
+    function formatDurationMs(ms) {
+      if (!Number.isFinite(ms) || ms < 0) {
+        return NOT_INSTRUMENTED;
+      }
+      if (ms < 1000) {
+        return `${Math.round(ms)}ms`;
+      }
+      const totalSeconds = Math.round(ms / 1000);
+      if (totalSeconds < 60) {
+        return `${totalSeconds}s`;
+      }
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    }
+
+    function formatPassRate(passed, total) {
+      if (!total) {
+        return NOT_INSTRUMENTED;
+      }
+      return `${Math.round((passed / total) * 1000) / 10}%`;
+    }
+
+    function formatStorageModeLabel(value) {
+      return labelForSelect("storage-mode", value);
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return NOT_INSTRUMENTED;
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        return NOT_INSTRUMENTED;
+      }
+      return parsed.toLocaleString();
+    }
+
+    function buildScanWarnings(telemetry) {
+      const warnings = [];
+      const {
+        tickersSucceeded,
+        tickersRequested,
+        tickersFailedApi,
+        passedCount,
+        pickMode,
+        storageMode,
+        clientRuntimeMs,
+        timeoutSec,
+      } = telemetry;
+
+      if (tickersFailedApi > 0 && tickersSucceeded > 0) {
+        warnings.push({ level: "warning", text: `Partial API failures (${tickersFailedApi})` });
+      }
+      if (tickersSucceeded === 0 && tickersRequested > 0) {
+        warnings.push({ level: "error", text: "All API calls failed" });
+      }
+      if (pickMode === "gate_runner" && tickersSucceeded > 0 && passedCount === 0) {
+        warnings.push({ level: "info", text: "No gate passers (gate_runner)" });
+      }
+      if (tickersRequested > LARGE_UNIVERSE_TICKER_THRESHOLD) {
+        warnings.push({ level: "info", text: "Large universe" });
+      }
+      if (tickersRequested > LARGE_UNIVERSE_TICKER_THRESHOLD && storageMode === "save_eligible") {
+        warnings.push({ level: "warning", text: "Preview recommended for large universe" });
+      }
+      if (telemetry.universePresetId === "failure_learning") {
+        warnings.push({ level: "info", text: "Failure Learning preset (quarantine planned)" });
+      }
+      if (telemetry.universePresetId === "etfs") {
+        warnings.push({ level: "info", text: "ETF regime probe preset" });
+      }
+      if (Number.isFinite(clientRuntimeMs) && clientRuntimeMs > 300_000) {
+        warnings.push({ level: "warning", text: "Slow scan (>5 min client wall time)" });
+      }
+      if (
+        Number.isFinite(clientRuntimeMs)
+        && tickersSucceeded > 0
+        && Number.isFinite(timeoutSec)
+        && clientRuntimeMs / tickersSucceeded > timeoutSec * 1000 * 0.9
+      ) {
+        warnings.push({ level: "warning", text: "Timeout pressure (client estimate)" });
+      }
+      if (typeof telemetry.memoryWrites === "number" && telemetry.memoryWrites > 0) {
+        warnings.push({ level: "info", text: `Memory saved (${telemetry.memoryWrites} rows)` });
+      }
+      return warnings;
+    }
+
+    function buildScanTelemetry(payload, requestContext, clientRuntimeMs, options = {}) {
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+      const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+      const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+      const tickersRequested = candidates.length;
+      const tickersSucceeded = results.length;
+      const tickersFailedApi = errors.length || Math.max(0, tickersRequested - tickersSucceeded);
+      const passedCount = results.filter((row) => row.passedAllGates).length;
+      const rejectedCount = Math.max(0, tickersSucceeded - passedCount);
+      const serverTelemetry = payload?.scanTelemetry;
+      const serverRuntimeMs = serverTelemetry?.totalRuntimeMs;
+      const estimateTickerCount = tickersRequested || estimatedTickerCountForPreset(selectedUniversePreset());
+      const runtimeEstimate = formatRuntimeEstimate(estimateTickerCount, requestContext.timeout);
+
+      return {
+        ok: payload?.ok !== false,
+        timestamp: payload?.runTimestamp || new Date().toISOString(),
+        universePresetLabel: requestContext.universePresetLabel || selectedUniversePreset().label,
+        universePresetId: requestContext.universePresetId || universePresetEl.value,
+        scanPurpose: requestContext.scanPurpose || selectedUniversePreset().scanPurpose,
+        storageMode: requestContext.storageMode || storageModeEl.value,
+        storageModeLabel: formatStorageModeLabel(requestContext.storageMode || storageModeEl.value),
+        pickMode: requestContext.pickMode || payload?.pickMode || "gate_runner",
+        timeoutSec: requestContext.timeout || payload?.timeout || Number(timeoutEl.value || 25),
+        tickersProcessedLabel: tickersRequested
+          ? `${tickersSucceeded} / ${tickersRequested}`
+          : NOT_INSTRUMENTED,
+        tickersRequested,
+        tickersSucceeded,
+        tickersFailedApi,
+        passedCount,
+        rejectedCount,
+        passRate: formatPassRate(passedCount, tickersSucceeded),
+        runtimeEstimate,
+        runtimeActual: Number.isFinite(serverRuntimeMs)
+          ? formatDurationMs(serverRuntimeMs)
+          : formatDurationMs(clientRuntimeMs),
+        runtimeSource: Number.isFinite(serverRuntimeMs) ? "server" : "client",
+        avgTickerRuntime: serverTelemetry?.timingStats?.avgTickerRuntimeMs
+          ? formatDurationMs(serverTelemetry.timingStats.avgTickerRuntimeMs)
+          : NOT_INSTRUMENTED,
+        apiCallsLabel: tickersRequested
+          ? `${tickersSucceeded} ok · ${tickersFailedApi} fail`
+          : NOT_INSTRUMENTED,
+        memoryWrites: options.memoryWrites ?? (payload?.savedToMemory ? NOT_INSTRUMENTED : 0),
+        memorySaved: Boolean(payload?.savedToMemory),
+        clientRuntimeMs,
+        warnings: [],
+      };
+    }
+
+    function telemetryStat(label, value, muted = false) {
+      return `
+        <div class="telemetry-stat">
+          <span class="telemetry-stat-label">${escapeHtml(label)}</span>
+          <span class="telemetry-stat-value${muted ? " muted-value" : ""}">${escapeHtml(String(value ?? NOT_INSTRUMENTED))}</span>
+        </div>
+      `;
+    }
+
+    function renderScanTelemetryFlags(warnings) {
+      if (!warnings.length) {
+        return `<div class="telemetry-footnote">No warning flags for this run.</div>`;
+      }
+      return `
+        <div class="telemetry-flags">
+          ${warnings.map((flag) => `
+            <span class="telemetry-flag ${escapeHtml(flag.level)}">${escapeHtml(flag.text)}</span>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderScanTelemetryCard(telemetry, state = "complete") {
+      if (!scanTelemetryEl) {
+        return;
+      }
+      if (!telemetry) {
+        scanTelemetryEl.classList.add("hidden");
+        scanTelemetryEl.innerHTML = "";
+        return;
+      }
+
+      telemetry.warnings = buildScanWarnings(telemetry);
+      scanTelemetryEl.classList.remove("hidden");
+
+      if (state === "running") {
+        scanTelemetryEl.innerHTML = `
+          <div class="scan-telemetry-head">
+            <h3>Scan Telemetry</h3>
+            <span class="scan-telemetry-phase">Phase 0 · Running</span>
+          </div>
+          <div class="telemetry-grid">
+            ${telemetryStat("Status", "Scan in progress")}
+            ${telemetryStat("Preset", telemetry.universePresetLabel)}
+            ${telemetryStat("Purpose", telemetry.scanPurpose)}
+            ${telemetryStat("Storage", telemetry.storageModeLabel)}
+            ${telemetryStat("Runtime est.", telemetry.runtimeEstimate)}
+            ${telemetryStat("Runtime actual", "Measuring…")}
+            ${telemetryStat("Tickers", telemetry.tickersProcessedLabel || NOT_INSTRUMENTED)}
+            ${telemetryStat("Timestamp", formatTimestamp(telemetry.timestamp))}
+          </div>
+          <p class="telemetry-footnote">Client-derived telemetry only. Observational — does not affect scoring or picks.</p>
+        `;
+        return;
+      }
+
+      const runtimeCompare = `${telemetry.runtimeEstimate} est · ${telemetry.runtimeActual} actual (${telemetry.runtimeSource})`;
+      const memoryLabel = telemetry.memorySaved && telemetry.memoryWrites === NOT_INSTRUMENTED
+        ? "Saved (count pending)"
+        : telemetry.memoryWrites;
+
+      scanTelemetryEl.innerHTML = `
+        <div class="scan-telemetry-head">
+          <h3>Scan Telemetry</h3>
+          <span class="scan-telemetry-phase">Phase 0 · Observational</span>
+        </div>
+        <div class="telemetry-grid">
+          ${telemetryStat("Total runtime", runtimeCompare)}
+          ${telemetryStat("Tickers processed", telemetry.tickersProcessedLabel)}
+          ${telemetryStat("Passed", telemetry.passedCount)}
+          ${telemetryStat("Rejected", telemetry.rejectedCount)}
+          ${telemetryStat("Pass rate", telemetry.passRate)}
+          ${telemetryStat("Universe preset", telemetry.universePresetLabel)}
+          ${telemetryStat("Scan purpose", telemetry.scanPurpose)}
+          ${telemetryStat("Storage mode", telemetry.storageModeLabel)}
+          ${telemetryStat("API calls", telemetry.apiCallsLabel)}
+          ${telemetryStat("Avg ticker runtime", telemetry.avgTickerRuntime, telemetry.avgTickerRuntime === NOT_INSTRUMENTED)}
+          ${telemetryStat("Memory writes", memoryLabel)}
+          ${telemetryStat("Failed API calls", telemetry.tickersFailedApi)}
+          ${telemetryStat("Timestamp", formatTimestamp(telemetry.timestamp))}
+        </div>
+        ${renderScanTelemetryFlags(telemetry.warnings)}
+        <p class="telemetry-footnote">Phase 0 client-derived telemetry. Warnings are display-only and do not change scan behavior.</p>
+      `;
+    }
+
+    function hideScanTelemetry() {
+      currentScanTelemetry = null;
+      renderScanTelemetryCard(null);
+    }
+
+    function refreshScanTelemetryDisplay(state = "complete") {
+      renderScanTelemetryCard(currentScanTelemetry, state);
     }
 
     function failedGateText(result) {
@@ -2323,6 +2696,11 @@
         currentPayload.memoryRunId = payload.memoryRunId;
         currentPayload.savedToMemory = true;
         currentScanSaved = true;
+        if (currentScanTelemetry) {
+          currentScanTelemetry.memoryWrites = payload.recommendationsSaved ?? NOT_INSTRUMENTED;
+          currentScanTelemetry.memorySaved = true;
+          renderScanTelemetryCard(currentScanTelemetry);
+        }
         setStatus(payload.alreadySaved ? "Already saved." : payload.message);
       } catch (error) {
         setStatus(error.message || String(error), true);
@@ -2354,6 +2732,26 @@
         storageMode: storageModeEl.value,
         timeout: Number(document.getElementById("timeout").value || 25),
       };
+      const requestContext = buildScanRequestContext(request);
+      const scanStartedMs = performance.now();
+      const preset = selectedUniversePreset();
+      const requestedTickers = parseTickerList(request.tickers).length;
+      currentScanTelemetry = {
+        timestamp: new Date().toISOString(),
+        universePresetLabel: preset.label,
+        universePresetId: universePresetEl.value,
+        scanPurpose: preset.scanPurpose,
+        storageMode: request.storageMode,
+        storageModeLabel: formatStorageModeLabel(request.storageMode),
+        pickMode: request.pickMode,
+        timeoutSec: request.timeout,
+        tickersProcessedLabel: requestedTickers ? `0 / ${requestedTickers}` : NOT_INSTRUMENTED,
+        runtimeEstimate: formatRuntimeEstimate(
+          requestedTickers || estimatedTickerCountForPreset(preset),
+          request.timeout,
+        ),
+      };
+      renderScanTelemetryCard(currentScanTelemetry, "running");
 
       try {
         const response = await fetch("/api/run", {
@@ -2362,13 +2760,22 @@
           body: JSON.stringify(request),
         });
         const payload = await response.json();
+        const clientRuntimeMs = performance.now() - scanStartedMs;
         if (!payload.ok) {
+          if (payload.candidates || payload.errors) {
+            currentScanTelemetry = buildScanTelemetry(payload, requestContext, clientRuntimeMs);
+            renderScanTelemetryCard(currentScanTelemetry);
+          } else {
+            hideScanTelemetry();
+          }
           throw new Error(payload.message || (payload.errors || []).join("\\n") || "Run failed.");
         }
         currentPayload = payload;
-        currentRequest = request;
+        currentRequest = requestContext;
         currentScanSaved = false;
+        currentScanTelemetry = buildScanTelemetry(payload, requestContext, clientRuntimeMs);
         updateSaveButton();
+        renderScanTelemetryCard(currentScanTelemetry);
         renderResults(payload);
         const errorText = payload.errors.length ? `\\nScan errors: ${payload.errors.join("; ")}` : "";
         setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.\\nStorage mode: ${labelForSelect("storage-mode", request.storageMode)}. No memory write occurred.${errorText}`);
