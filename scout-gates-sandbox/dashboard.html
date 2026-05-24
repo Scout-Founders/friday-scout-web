@@ -219,6 +219,102 @@
       line-height: 1.5;
     }
 
+    .universe-preset-meta {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      padding: 12px 13px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #070b14;
+    }
+
+    .universe-preset-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .universe-stat {
+      display: grid;
+      gap: 3px;
+    }
+
+    .universe-stat-label {
+      color: var(--dim);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .universe-stat-value {
+      color: var(--text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .universe-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .universe-tag {
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .universe-tag.tag-research {
+      border-color: #00e5a044;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .universe-tag.tag-regime {
+      border-color: #a855f744;
+      background: #a855f718;
+      color: #c4b5fd;
+    }
+
+    .universe-tag.tag-etf {
+      border-color: #38bdf844;
+      background: #38bdf818;
+      color: #7dd3fc;
+    }
+
+    .universe-tag.tag-failure {
+      border-color: #ff3b5c44;
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .universe-tag.tag-high-vol {
+      border-color: #ffb83644;
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .universe-preset-note {
+      margin: 0;
+      color: var(--dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .universe-preset-note.preview-recommended {
+      color: var(--warning);
+    }
+
     .results {
       min-height: 520px;
       padding: 22px;
@@ -778,6 +874,41 @@
       <aside class="card controls">
         <form id="run-form">
           <div class="field">
+            <label for="universe-preset">Universe Preset</label>
+            <select id="universe-preset">
+              <option value="custom" selected>Custom</option>
+              <option value="semiconductors">Semiconductors</option>
+              <option value="mega_cap_tech">Mega Cap Tech</option>
+              <option value="retail">Retail</option>
+              <option value="healthcare">Healthcare</option>
+              <option value="etfs">ETFs</option>
+              <option value="energy">Energy</option>
+              <option value="financials">Financials</option>
+              <option value="high_beta">High Beta</option>
+              <option value="failure_learning">Failure Learning</option>
+              <option value="watchlist">Watchlist</option>
+            </select>
+            <div id="universe-preset-meta" class="universe-preset-meta" aria-live="polite">
+              <div class="universe-preset-stats">
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Tickers</span>
+                  <span id="universe-estimated-count" class="universe-stat-value">5</span>
+                </div>
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Scan purpose</span>
+                  <span id="universe-scan-purpose" class="universe-stat-value">manual_research</span>
+                </div>
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Runtime est.</span>
+                  <span id="universe-runtime-estimate" class="universe-stat-value">~1 min</span>
+                </div>
+              </div>
+              <div id="universe-tags" class="universe-tags"></div>
+              <p id="universe-preset-note" class="universe-preset-note">Custom universe uses the tickers you enter below.</p>
+            </div>
+          </div>
+
+          <div class="field">
             <label for="tickers">Ticker Universe</label>
             <textarea id="tickers" spellcheck="false">AAPL, MSFT, NVDA, AMZN, GOOGL</textarea>
           </div>
@@ -823,10 +954,6 @@
               <label>&nbsp;</label>
               <button id="save-button" class="secondary-action" type="button" disabled>Save Results to Memory</button>
             </div>
-            <div>
-              <label>&nbsp;</label>
-              <button id="export-pdf-button" class="secondary-action" type="button" disabled>Export PDF</button>
-            </div>
           </div>
 
           <div class="hint">
@@ -865,25 +992,12 @@
     <section class="modal">
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Gate Explainability</div>
+          <div class="eyebrow">Score &amp; Direction Explainability</div>
           <h2 id="why-modal-title">Why?</h2>
         </div>
         <button id="why-modal-close" class="modal-close" type="button" aria-label="Close explanation">X</button>
       </div>
       <div id="why-modal-body" class="modal-body"></div>
-    </section>
-  </div>
-
-  <div id="direction-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="direction-modal-title">
-    <section class="modal">
-      <div class="modal-head">
-        <div>
-          <div class="eyebrow">Directional Transparency</div>
-          <h2 id="direction-modal-title">Why Direction?</h2>
-        </div>
-        <button id="direction-modal-close" class="modal-close" type="button" aria-label="Close direction explanation">X</button>
-      </div>
-      <div id="direction-modal-body" class="modal-body"></div>
     </section>
   </div>
 
@@ -906,17 +1020,111 @@
     const outputEl = document.getElementById("output");
     const runButton = document.getElementById("run-button");
     const saveButton = document.getElementById("save-button");
-    const exportPdfButton = document.getElementById("export-pdf-button");
     const storageModeEl = document.getElementById("storage-mode");
+    const universePresetEl = document.getElementById("universe-preset");
+    const tickersEl = document.getElementById("tickers");
+    const timeoutEl = document.getElementById("timeout");
+    const universeEstimatedCountEl = document.getElementById("universe-estimated-count");
+    const universeScanPurposeEl = document.getElementById("universe-scan-purpose");
+    const universeRuntimeEstimateEl = document.getElementById("universe-runtime-estimate");
+    const universeTagsEl = document.getElementById("universe-tags");
+    const universePresetNoteEl = document.getElementById("universe-preset-note");
+    const LARGE_UNIVERSE_TICKER_THRESHOLD = 8;
+
+    // UI-only preset catalog (planning). Does not change scan payload or auto-fill tickers.
+    const UNIVERSE_PRESETS = {
+      custom: {
+        label: "Custom",
+        tags: ["RESEARCH"],
+        scanPurpose: "manual_research",
+        plannedTickers: null,
+        note: "Custom universe uses the tickers you enter below.",
+      },
+      semiconductors: {
+        label: "Semiconductors",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["NVDA", "AMD", "AVGO", "INTC", "QCOM", "TXN", "MU", "LRCX", "AMAT", "ASML"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      mega_cap_tech: {
+        label: "Mega Cap Tech",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "NFLX", "CRM"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      retail: {
+        label: "Retail",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["WMT", "COST", "TGT", "HD", "LOW", "AMZN", "BKNG", "ROST", "DG", "ULTA"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      healthcare: {
+        label: "Healthcare",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["UNH", "JNJ", "LLY", "MRK", "ABBV", "TMO", "ABT", "PFE", "AMGN", "ISRG"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      etfs: {
+        label: "ETFs",
+        tags: ["ETF", "REGIME"],
+        scanPurpose: "regime_probe",
+        plannedTickers: ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "HYG", "TLT"],
+        note: "Regime probe preset (UI tag only). Paste ETF tickers manually for now.",
+      },
+      energy: {
+        label: "Energy",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      financials: {
+        label: "Financials",
+        tags: ["RESEARCH"],
+        scanPurpose: "cohort_baseline",
+        plannedTickers: ["JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "USB"],
+        note: "Planning preset only — copy tickers manually until backend resolver ships.",
+      },
+      high_beta: {
+        label: "High Beta",
+        tags: ["HIGH VOL", "RESEARCH"],
+        scanPurpose: "stress_sample",
+        plannedTickers: ["TSLA", "COIN", "MSTR", "SMCI", "PLTR", "SNOW", "CRWD", "DDOG", "MRNA", "RIVN"],
+        note: "Stress-sample preset (UI tag only). Paste tickers manually for now.",
+      },
+      failure_learning: {
+        label: "Failure Learning",
+        tags: ["FAILURE LEARNING"],
+        scanPurpose: "gate_intelligence",
+        plannedTickers: ["GME", "AMC", "RIVN", "LCID", "SNAP", "LYFT", "INTC", "PYPL", "DIS", "BA"],
+        note: "Gate-intelligence preset (quarantined in future memory). Preview recommended.",
+      },
+      watchlist: {
+        label: "Watchlist",
+        tags: ["RESEARCH"],
+        scanPurpose: "manual_research",
+        plannedTickers: ["AAPL", "MSFT", "NVDA", "AMD", "META", "GOOGL"],
+        note: "Short watchlist preset for quick manual runs.",
+      },
+    };
+
+    const UNIVERSE_TAG_CLASS = {
+      RESEARCH: "tag-research",
+      REGIME: "tag-regime",
+      ETF: "tag-etf",
+      "FAILURE LEARNING": "tag-failure",
+      "HIGH VOL": "tag-high-vol",
+    };
     const optionModal = document.getElementById("option-modal");
     const optionModalBody = document.getElementById("option-modal-body");
     const optionModalClose = document.getElementById("option-modal-close");
     const whyModal = document.getElementById("why-modal");
     const whyModalBody = document.getElementById("why-modal-body");
     const whyModalClose = document.getElementById("why-modal-close");
-    const directionModal = document.getElementById("direction-modal");
-    const directionModalBody = document.getElementById("direction-modal-body");
-    const directionModalClose = document.getElementById("direction-modal-close");
     const netModal = document.getElementById("net-modal");
     const netModalBody = document.getElementById("net-modal-body");
     const netModalClose = document.getElementById("net-modal-close");
@@ -967,6 +1175,67 @@
       return option ? option.textContent : value;
     }
 
+    function parseTickerList(raw) {
+      return String(raw || "")
+        .split(/[\s,;]+/)
+        .map((ticker) => ticker.trim().toUpperCase())
+        .filter(Boolean);
+    }
+
+    function selectedUniversePreset() {
+      return UNIVERSE_PRESETS[universePresetEl.value] || UNIVERSE_PRESETS.custom;
+    }
+
+    function estimatedTickerCountForPreset(preset) {
+      if (preset.plannedTickers) {
+        return preset.plannedTickers.length;
+      }
+      return parseTickerList(tickersEl.value).length;
+    }
+
+    function formatRuntimeEstimate(tickerCount, timeoutSec) {
+      const safeCount = Math.max(1, tickerCount || 1);
+      const safeTimeout = Math.max(5, timeoutSec || 25);
+      const estimatedMs = safeCount * (safeTimeout * 1000 * 0.6) + 5000;
+      if (estimatedMs < 90_000) {
+        return "~1 min";
+      }
+      if (estimatedMs < 240_000) {
+        return `~${Math.max(2, Math.round(estimatedMs / 60_000))} min`;
+      }
+      return `~${Math.round(estimatedMs / 60_000)} min`;
+    }
+
+    function renderUniverseTags(tags) {
+      return (tags || []).map((tag) => {
+        const tagClass = UNIVERSE_TAG_CLASS[tag] || "tag-research";
+        return `<span class="universe-tag ${tagClass}">${escapeHtml(tag)}</span>`;
+      }).join("");
+    }
+
+    function updateUniversePresetPanel() {
+      const preset = selectedUniversePreset();
+      const tickerCount = estimatedTickerCountForPreset(preset);
+      const timeoutSec = Number(timeoutEl.value || 25);
+      const isLargeUniverse = tickerCount > LARGE_UNIVERSE_TICKER_THRESHOLD;
+      const storageMode = storageModeEl.value;
+
+      universeEstimatedCountEl.textContent = String(tickerCount);
+      universeScanPurposeEl.textContent = preset.scanPurpose;
+      universeRuntimeEstimateEl.textContent = formatRuntimeEstimate(tickerCount, timeoutSec);
+      universeTagsEl.innerHTML = renderUniverseTags(preset.tags);
+
+      let note = preset.note || "Planning preset — ticker list is not auto-loaded yet.";
+      if (isLargeUniverse) {
+        note += " Preview Recommended: large universes increase scan time and are best run in Preview Only until reviewed.";
+      }
+      if (storageMode === "save_eligible" && isLargeUniverse) {
+        note += " Consider switching Scan Storage Mode to Preview Only for this run.";
+      }
+      universePresetNoteEl.textContent = note;
+      universePresetNoteEl.classList.toggle("preview-recommended", isLargeUniverse);
+    }
+
     function failedGateText(result) {
       if (!result.firstFailedGate) {
         return result.passedAllGates ? "Passed all gates" : "No failed gate reported";
@@ -990,6 +1259,21 @@
       }).join("");
     }
 
+    function reportButton(ticker) {
+      return `<button class="inline-action" type="button" data-pdf-ticker="${escapeHtml(ticker)}">Open Report</button>`;
+    }
+
+    function findScanResult(payload, ticker) {
+      if (!payload || !ticker) {
+        return null;
+      }
+      return (
+        payload.results.find((item) => item.ticker === ticker)
+        || (payload.rejected || []).find((item) => item.ticker === ticker)
+        || (payload.finalPick?.ticker === ticker ? payload.finalPick : null)
+      );
+    }
+
     function renderRejected(rejected) {
       if (!rejected.length) {
         return "<p class=\"hint\">No rejected candidates.</p>";
@@ -1003,7 +1287,7 @@
               <th>First Failed Gate</th>
               <th>Directional Breakdown</th>
               <th>Why?</th>
-              <th>Why Direction?</th>
+              <th>Report</th>
             </tr>
           </thead>
           <tbody>
@@ -1013,7 +1297,7 @@
                 <td>${escapeHtml(failedGateText(item))}</td>
                 <td class="direction-cell">${directionPills(item)}</td>
                 <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
-                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+                <td>${reportButton(item.ticker)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -1035,7 +1319,6 @@
               <th>Directional Breakdown</th>
               <th>Option Pick</th>
               <th>Why?</th>
-              <th>Why Direction?</th>
             </tr>
           </thead>
           <tbody>
@@ -1045,7 +1328,6 @@
                 <td class="direction-cell">${directionPills(item)}</td>
                 <td><button class="inline-action" type="button" data-option-ticker="${escapeHtml(item.ticker)}">View Option Pick</button></td>
                 <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
-                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
               </tr>
             `).join("")}
           </tbody>
@@ -1064,7 +1346,7 @@
               <th>Status</th>
               <th>Directional Breakdown</th>
               <th>Why?</th>
-              <th>Why Direction?</th>
+              <th>Report</th>
             </tr>
           </thead>
           <tbody>
@@ -1075,7 +1357,7 @@
                 <td>${escapeHtml(item.explanation?.status || (item.passedAllGates ? "passed" : "rejected"))}</td>
                 <td class="direction-cell">${directionPills(item)}</td>
                 <td><button class="inline-action" type="button" data-why-ticker="${escapeHtml(item.ticker)}">Why?</button></td>
-                <td><button class="inline-action" type="button" data-direction-ticker="${escapeHtml(item.ticker)}">Why Direction?</button></td>
+                <td>${reportButton(item.ticker)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -1195,9 +1477,18 @@
       `;
     }
 
+    function renderCombinedWhyDetails(result) {
+      return `
+        <div class="section-title" style="margin-top: 0;"><h3>Gate &amp; Score Explanation</h3></div>
+        ${renderWhyDetails(result)}
+        <div class="section-title" style="margin-top: 20px;"><h3>Directional Explanation</h3></div>
+        ${renderDirectionDetails(result)}
+      `;
+    }
+
     function openWhyModal(result) {
-      document.getElementById("why-modal-title").textContent = `${result.ticker} Gate Explanation`;
-      whyModalBody.innerHTML = renderWhyDetails(result);
+      document.getElementById("why-modal-title").textContent = `${result.ticker} — Why?`;
+      whyModalBody.innerHTML = renderCombinedWhyDetails(result);
       whyModal.classList.remove("hidden");
     }
 
@@ -1264,16 +1555,6 @@
         <div class="section-title"><h3>Bearish Signals</h3></div>
         ${renderSignalList(direction.bearishSignals, "No bearish signals were extracted from this run.")}
       `;
-    }
-
-    function openDirectionModal(result) {
-      document.getElementById("direction-modal-title").textContent = `${result.ticker} Direction Explanation`;
-      directionModalBody.innerHTML = renderDirectionDetails(result);
-      directionModal.classList.remove("hidden");
-    }
-
-    function closeDirectionModal() {
-      directionModal.classList.add("hidden");
     }
 
     function netContributorRows(contributors, sign) {
@@ -1598,7 +1879,7 @@
         ? "<button id=\"option-pick-button\" class=\"inline-action\" type=\"button\">View Option Pick</button>"
         : "";
       const showFinalWhyButton = "<button id=\"final-why-button\" class=\"inline-action\" type=\"button\">Why?</button>";
-      const showFinalDirectionButton = "<button id=\"final-direction-button\" class=\"inline-action\" type=\"button\">Why Direction?</button>";
+      const showFinalReportButton = reportButton(pick.ticker);
 
       outputEl.className = "";
       outputEl.innerHTML = `
@@ -1616,7 +1897,7 @@
                 ${directionPills(pick)}
                 ${earningsScorePills(pick)}
               </div>
-              <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalDirectionButton}</div>
+              <div class="pick-actions">${showFinalOptionButton}${showFinalWhyButton}${showFinalReportButton}</div>
             </div>
           </section>
           ${renderEarningsIntelligence(pick)}
@@ -1672,7 +1953,6 @@
         finalOptionButton.addEventListener("click", () => openOptionModal(pick));
       }
       document.getElementById("final-why-button").addEventListener("click", () => openWhyModal(pick));
-      document.getElementById("final-direction-button").addEventListener("click", () => openDirectionModal(pick));
       document.querySelectorAll("[data-option-ticker]").forEach((button) => {
         button.addEventListener("click", () => {
           const ticker = button.getAttribute("data-option-ticker");
@@ -1685,19 +1965,16 @@
       document.querySelectorAll("[data-why-ticker]").forEach((button) => {
         button.addEventListener("click", () => {
           const ticker = button.getAttribute("data-why-ticker");
-          const result = payload.results.find((item) => item.ticker === ticker);
+          const result = findScanResult(payload, ticker);
           if (result) {
             openWhyModal(result);
           }
         });
       });
-      document.querySelectorAll("[data-direction-ticker]").forEach((button) => {
+      document.querySelectorAll("[data-pdf-ticker]").forEach((button) => {
         button.addEventListener("click", () => {
-          const ticker = button.getAttribute("data-direction-ticker");
-          const result = payload.results.find((item) => item.ticker === ticker);
-          if (result) {
-            openDirectionModal(result);
-          }
+          const ticker = button.getAttribute("data-pdf-ticker");
+          exportScoringPdf(ticker, button);
         });
       });
       document.querySelectorAll("[data-net-ticker]").forEach((button) => {
@@ -1923,12 +2200,8 @@
       if (!currentPayload || !currentPayload.ok) {
         saveButton.disabled = true;
         saveButton.textContent = "Save Results to Memory";
-        exportPdfButton.disabled = true;
-        exportPdfButton.textContent = "Export PDF";
         return;
       }
-      exportPdfButton.disabled = false;
-      exportPdfButton.textContent = "Export PDF";
       if (currentScanSaved || currentPayload.savedToMemory) {
         saveButton.disabled = true;
         saveButton.textContent = "Already saved.";
@@ -1943,7 +2216,8 @@
       saveButton.textContent = "Save Results to Memory";
     }
 
-    async function pollReportJob(jobId, maxAttempts = 80) {
+    async function pollReportJob(jobId, triggerButton, maxAttempts = 80) {
+      const defaultLabel = triggerButton?.dataset.defaultLabel || "Open Report";
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         const response = await fetch(`/api/reports/jobs/${encodeURIComponent(jobId)}`);
         const job = await response.json();
@@ -1956,26 +2230,44 @@
         if (job.status === "failed") {
           throw new Error(job.errorMessage || "PDF export failed.");
         }
-        exportPdfButton.textContent = `Exporting (${job.pipelineStage || job.status})...`;
+        if (triggerButton) {
+          triggerButton.textContent = `Exporting (${job.pipelineStage || job.status})...`;
+        }
         await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+      if (triggerButton) {
+        triggerButton.textContent = defaultLabel;
       }
       throw new Error("PDF export timed out while waiting for the background worker.");
     }
 
-    async function exportScoringPdf() {
+    async function exportScoringPdf(ticker, triggerButton = null) {
       if (!currentPayload || !currentPayload.ok) {
         setStatus("Run gates before exporting a report.", true);
         return;
       }
-      exportPdfButton.disabled = true;
-      exportPdfButton.textContent = "Exporting...";
+      const exportTicker = String(ticker || "").trim().toUpperCase();
+      if (!exportTicker) {
+        setStatus("Select a ticker row to export a report.", true);
+        return;
+      }
+      if (!findScanResult(currentPayload, exportTicker)) {
+        setStatus(`No scan result found for ${exportTicker}.`, true);
+        return;
+      }
+      const defaultLabel = triggerButton?.textContent || "Open Report";
+      if (triggerButton) {
+        triggerButton.dataset.defaultLabel = defaultLabel;
+        triggerButton.disabled = true;
+        triggerButton.textContent = "Exporting...";
+      }
       try {
         const response = await fetch("/api/reports/export-pdf", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             scan: currentPayload,
-            ticker: currentPayload.finalPick?.ticker,
+            ticker: exportTicker,
             async: true,
           }),
         });
@@ -1984,23 +2276,26 @@
           throw new Error(payload.message || "PDF export failed.");
         }
         if (payload.async && payload.jobId) {
-          payload = await pollReportJob(payload.jobId);
+          payload = await pollReportJob(payload.jobId, triggerButton);
         }
         if (payload.reused) {
-          setStatus(`Reused existing report for ${payload.ticker || "ticker"}.`);
+          setStatus(`Reused existing report for ${payload.ticker || exportTicker}.`);
         }
         if (payload.downloadUrl) {
           window.open(payload.downloadUrl, "_blank", "noopener");
         }
         setStatus(
           `PDF saved to ${payload.relativePath || "exports/reports/"}\\n`
-          + `Session ${payload.scanSessionId || "n/a"} · ${payload.ticker || "n/a"}`
+          + `Session ${payload.scanSessionId || "n/a"} · ${payload.ticker || exportTicker}`
           + (payload.jobId ? `\\nJob ${payload.jobId}` : "")
         );
       } catch (error) {
         setStatus(error.message || String(error), true);
       } finally {
-        updateSaveButton();
+        if (triggerButton) {
+          triggerButton.disabled = false;
+          triggerButton.textContent = triggerButton.dataset.defaultLabel || defaultLabel;
+        }
       }
     }
 
@@ -2091,12 +2386,17 @@
       }
     });
 
-    storageModeEl.addEventListener("change", updateSaveButton);
+    storageModeEl.addEventListener("change", () => {
+      updateSaveButton();
+      updateUniversePresetPanel();
+    });
+    universePresetEl.addEventListener("change", updateUniversePresetPanel);
+    tickersEl.addEventListener("input", updateUniversePresetPanel);
+    timeoutEl.addEventListener("input", updateUniversePresetPanel);
+    updateUniversePresetPanel();
     saveButton.addEventListener("click", saveResultsToMemory);
-    exportPdfButton.addEventListener("click", exportScoringPdf);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);
-    directionModalClose.addEventListener("click", closeDirectionModal);
     netModalClose.addEventListener("click", closeNetModal);
     optionModal.addEventListener("click", (event) => {
       if (event.target === optionModal) {
@@ -2108,11 +2408,6 @@
         closeWhyModal();
       }
     });
-    directionModal.addEventListener("click", (event) => {
-      if (event.target === directionModal) {
-        closeDirectionModal();
-      }
-    });
     netModal.addEventListener("click", (event) => {
       if (event.target === netModal) {
         closeNetModal();
@@ -2122,7 +2417,6 @@
       if (event.key === "Escape") {
         closeOptionModal();
         closeWhyModal();
-        closeDirectionModal();
         closeNetModal();
       }
     });

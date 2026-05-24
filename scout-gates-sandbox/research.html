@@ -828,8 +828,8 @@
         ${metricCard(avgScore.toFixed(1), "Avg Scout score", "Mean Scout score in the current filtered view.")}
         ${metricCard(escapeHtml(analytics.best_performing_ticker?.ticker || "n/a"), "Best ticker", "Highest realized forward return in memory.")}
         ${metricCard(escapeHtml(analytics.worst_performing_ticker?.ticker || "n/a"), "Worst ticker", "Lowest realized forward return in memory.")}
-        ${metricCard(escapeHtml(analytics.most_predictive_gate?.gate || "n/a"), "Most predictive gate", "Gate with the highest label-based win rate among completed outcomes.")}
-        ${metricCard(escapeHtml(analytics.least_predictive_gate?.gate || "n/a"), "Least predictive gate", "Gate with the lowest label-based win rate among completed outcomes.")}
+        ${metricCard(escapeHtml(analytics.most_predictive_gate?.gate || "n/a"), "Most predictive gate", "Gate with the highest pass-conditioned predictive score (wins/returns counted only when the gate passed).")}
+        ${metricCard(escapeHtml(analytics.least_predictive_gate?.gate || "n/a"), "Least predictive gate", "Gate with the lowest pass-conditioned predictive score (wins/returns counted only when the gate passed).")}
       `;
     }
 
@@ -967,13 +967,32 @@
       `;
     }
 
+    function gateIntelligenceSlices(rows) {
+      const most = [...rows].sort((a, b) => (b.predictive_score || 0) - (a.predictive_score || 0)).slice(0, 7);
+      const least = [...rows].sort((a, b) => (a.predictive_score || 0) - (b.predictive_score || 0)).slice(0, 7);
+      return { most, least };
+    }
+
+    function gateIntelligenceScoresTied(rows) {
+      const scores = rows.map((row) => Number(row.predictive_score ?? 0));
+      if (!scores.length) {
+        return false;
+      }
+      const rounded = scores.map((score) => score.toFixed(2));
+      return new Set(rounded).size <= 1;
+    }
+
     function renderGateIntelligence(rows) {
       if (!rows.length) {
         document.getElementById("gate-intelligence").innerHTML = "<p class=\"hint\">No gate intelligence yet. Update outcomes after completed recommendations are available.</p>";
         return;
       }
-      const most = [...rows].sort((a, b) => (b.predictive_score || 0) - (a.predictive_score || 0)).slice(0, 7);
-      const least = [...rows].sort((a, b) => (a.predictive_score || 0) - (b.predictive_score || 0)).slice(0, 7);
+      const { most, least } = gateIntelligenceSlices(rows);
+      const scoresTied = gateIntelligenceScoresTied(rows);
+      const overlap = most.filter((row) => least.some((other) => other.gate_key === row.gate_key && other.gate_name === row.gate_name));
+      const tieWarning = scoresTied
+        ? `<p class="hint" style="margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border, #333); border-radius: 8px;">Predictive scores are tied across gates (${overlap.length ? "most and least tables may show the same gates" : "ranking has no spread yet"}). Win rate and returns below are measured only on scans where the gate passed; refresh outcomes after more pass/fail variation accumulates.</p>`
+        : `<p class="hint" style="margin: 0 0 12px;">Win rate and forward returns are measured only on scans where the gate passed (not scan-wide outcomes shared by every gate).</p>`;
       const rowHtml = (row) => `
         <tr>
           <td>${escapeHtml(row.gate_name)}</td>
@@ -993,6 +1012,7 @@
         </tr>
       `;
       document.getElementById("gate-intelligence").innerHTML = `
+        ${tieWarning}
         <h2>Most Predictive Gates</h2>
         <table>
           <thead><tr><th>Gate</th><th>Samples</th><th>Pass / Fail</th><th>Wins / Losses</th><th>Win Rate</th><th>Avg 1D</th><th>Avg 3D</th><th>Avg 5D</th><th>Avg 10D</th><th>Avg 20D</th><th>Bull Win</th><th>Bear Win</th><th>Predictive</th><th>Confidence</th></tr></thead>

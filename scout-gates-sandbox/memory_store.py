@@ -2457,6 +2457,9 @@ def refresh_gate_intelligence_metrics(conn: Optional[sqlite3.Connection] = None)
                     item["total_passes"] += 1
                 else:
                     item["total_failures"] += 1
+                # Outcome labels and forward returns apply only when this gate passed.
+                if not gate["passed"]:
+                    continue
                 if outcome == "WIN":
                     item["win_count"] += 1
                     if direction == "Bullish":
@@ -3824,10 +3827,10 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
 
         predictive_rows = active_conn.execute(
             """
-            SELECT gate_name, win_rate, win_count, loss_count
+            SELECT gate_name, win_rate, predictive_score, win_count, loss_count
             FROM gate_intelligence_metrics
             WHERE win_count + loss_count > 0
-            ORDER BY win_rate DESC, win_count DESC
+            ORDER BY predictive_score DESC, win_rate DESC, total_passes DESC
             """
         ).fetchall()
 
@@ -3839,10 +3842,12 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
             most_predictive = {
                 "gate": top["gate_name"],
                 "win_rate": round(float(top["win_rate"] or 0), 1),
+                "predictive_score": round(float(top["predictive_score"] or 0), 2),
             }
             least_predictive = {
                 "gate": bottom["gate_name"],
                 "win_rate": round(float(bottom["win_rate"] or 0), 1),
+                "predictive_score": round(float(bottom["predictive_score"] or 0), 2),
             }
 
         return {

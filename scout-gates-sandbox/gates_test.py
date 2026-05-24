@@ -233,6 +233,85 @@ class ResearchMemoryHistoryTests(unittest.TestCase):
         self.assertIsNone(normalized.failed_gate)
 
 
+class GateIntelligenceMetricsTests(unittest.TestCase):
+    def test_pass_conditioned_metrics_diverge_most_and_least(self) -> None:
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        def gate_intel_slices(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+            most = sorted(rows, key=lambda row: row["predictive_score"] or 0, reverse=True)[:7]
+            least = sorted(rows, key=lambda row: row["predictive_score"] or 0)[:7]
+            return most, least
+
+        def insert_scan(
+            conn: sqlite3.Connection,
+            run_id: int,
+            ticker: str,
+            outcome: str,
+            return_5d: float,
+            gates: list[dict],
+        ) -> None:
+            snapshot = {"gates": gates}
+            conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction,
+                    gates_json, gate_snapshot_json, stock_outcome_label, return_5d
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    "2026-05-19T12:00:00+00:00",
+                    ticker,
+                    80.0,
+                    "Bullish",
+                    "{}",
+                    ms.json_dump(snapshot),
+                    outcome,
+                    return_5d,
+                ),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gate_intel_test.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                with ms.connect() as conn:
+                    run_id = conn.execute(
+                        """
+                        INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                        VALUES (?, ?, ?)
+                        """,
+                        ("2026-05-19T12:00:00+00:00", "test", "test"),
+                    ).lastrowid
+                    alpha = {"key": "alpha", "name": "Alpha Gate", "passed": True}
+                    beta = {"key": "beta", "name": "Beta Gate", "passed": False}
+                    insert_scan(conn, run_id, "AAA", "WIN", 10.0, [alpha, beta])
+                    insert_scan(conn, run_id, "AAB", "WIN", 8.0, [alpha, beta])
+                    beta_pass = {"key": "beta", "name": "Beta Gate", "passed": True}
+                    alpha_fail = {"key": "alpha", "name": "Alpha Gate", "passed": False}
+                    insert_scan(conn, run_id, "AAC", "LOSS", -6.0, [alpha_fail, beta_pass])
+                    insert_scan(conn, run_id, "AAD", "LOSS", -4.0, [alpha_fail, beta_pass])
+                    conn.commit()
+                    metrics = ms.refresh_gate_intelligence_metrics(conn)
+
+            by_key = {row["gate_key"]: row for row in metrics}
+            self.assertGreater(
+                by_key["alpha"]["predictive_score"],
+                by_key["beta"]["predictive_score"],
+            )
+            self.assertEqual(by_key["alpha"]["win_count"], 2)
+            self.assertEqual(by_key["beta"]["loss_count"], 2)
+            most, least = gate_intel_slices(metrics)
+            self.assertEqual(most[0]["gate_key"], "alpha")
+            self.assertEqual(least[0]["gate_key"], "beta")
+            self.assertNotEqual(most[0]["predictive_score"], least[0]["predictive_score"])
+
+
 class OutcomeAnalyticsTests(unittest.TestCase):
     def test_bullish_directional_accuracy_uses_forward_return_sign(self) -> None:
         from memory_store import directional_accuracy_stats
@@ -416,6 +495,15 @@ class ReportExportTests(unittest.TestCase):
         self.assertEqual(context["percentiles"]["universe_rank"], "1")
         self.assertEqual(context["percentiles"]["universe_percentile"], "100%")
         self.assertEqual(context["gate_rows"][0]["score"], "82.0")
+
+    def test_build_report_context_resolves_explicit_ticker_row(self) -> None:
+        from reporting import build_report_context
+
+        context = build_report_context(self.sample_scan_payload(), ticker="MSFT")
+        self.assertEqual(context["ticker"], "MSFT")
+        self.assertEqual(context["explanation_status"], "rejected")
+        self.assertEqual(context["passed_all_gates"], "NO")
+        self.assertEqual(context["explanation_summary"], "MSFT rejected.")
 
     def test_resolve_scan_session_id_uses_memory_run(self) -> None:
         from reporting import resolve_scan_session_id
