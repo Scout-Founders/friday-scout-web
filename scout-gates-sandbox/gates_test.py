@@ -698,6 +698,186 @@ class StableSignalLayersS1Tests(unittest.TestCase):
             self.assertTrue(signal["layers"]["momentum"]["gates"][0]["passed"])
 
 
+class StableSignalExplainabilityS2aTests(unittest.TestCase):
+    def _candidate(self, ticker: str, score: float, **extra: Any) -> "CandidateResult":
+        from run_gates import GATES, CandidateResult
+
+        data: dict = {
+            "ticker": ticker,
+            "scout_score": score,
+            "sector": "Technology",
+            "trend": "UPTREND",
+            "volume": 1_200_000,
+            "wind": 1.5,
+            "iv_elevated": False,
+            "piotroski": 7,
+            "z_score": 2.4,
+            "breadth_score": 62,
+            "rsi": 55,
+            "change": 1.2,
+            "gates": {key: True for key, _, _ in GATES},
+            "direction": "Bullish",
+        }
+        data.update(extra)
+        return CandidateResult(ticker=ticker, data=data)
+
+    def _serialized(self, candidate: "CandidateResult") -> dict:
+        from stable_signal_layers import build_and_attach_stable_signal
+
+        base = {
+            "ticker": candidate.ticker,
+            "score": candidate.score,
+            "passedAllGates": candidate.passed_all_gates,
+            "gates": [
+                {"key": key, "code": code, "name": name, "passed": candidate.gates.get(key) is True}
+                for key, code, name in __import__("run_gates", fromlist=["GATES"]).GATES
+            ],
+            "sector": candidate.data.get("sector"),
+            "directionBreakdown": {
+                "bullConviction": 70,
+                "bearConviction": 40,
+                "netDirectionalEdge": 30,
+                "direction": "Bullish",
+            },
+            "earningsIntelligence": {"active": False, "mode": "unavailable"},
+        }
+        if not candidate.passed_all_gates:
+            failed = candidate.first_failed_gate
+            if failed:
+                base["firstFailedGate"] = {
+                    "index": failed[0],
+                    "code": failed[1],
+                    "name": failed[2],
+                }
+        return build_and_attach_stable_signal(candidate, base)
+
+    def test_build_explainability_has_required_sections(self) -> None:
+        from stable_signal_explainability import LAYER_KEYS, build_explainability
+
+        candidate = self._candidate("MSFT", 89)
+        serialized = self._serialized(candidate)
+        explain = build_explainability(serialized, serialized["stableSignal"])
+        self.assertEqual(explain["version"], "1")
+        self.assertEqual(explain["tier"], "explainability")
+        self.assertEqual(tuple(explain["layerStrengths"].keys()), LAYER_KEYS)
+        self.assertIn("rankingExplanation", explain)
+        self.assertIn("humanSummary", explain)
+        self.assertIsNone(explain["placeholders"]["layerNumericScores"])
+
+    def test_explainability_does_not_mutate_inputs(self) -> None:
+        import copy
+
+        from stable_signal_explainability import build_explainability
+
+        candidate = self._candidate("AAPL", 80)
+        serialized = self._serialized(candidate)
+        stable_before = copy.deepcopy(serialized["stableSignal"])
+        serial_before = copy.deepcopy(serialized)
+        build_explainability(serialized, serialized["stableSignal"])
+        self.assertEqual(serialized["score"], serial_before["score"])
+        self.assertEqual(serialized["stableSignal"], stable_before)
+
+    def test_ranking_explanation_final_pick_gate_runner(self) -> None:
+        from stable_signal_explainability import ScanExplainContext, build_explainability
+
+        from run_gates import GATES
+
+        fail_gates = {key: True for key, _, _ in GATES}
+        fail_gates["specter"] = False
+        msft = self._candidate("MSFT", 89)
+        nvda = self._candidate("NVDA", 100, gates=fail_gates)
+        context = ScanExplainContext.from_universe(
+            pick_mode="gate_runner",
+            final_pick_ticker="MSFT",
+            run_timestamp="2026-05-21T12:00:00+00:00",
+            universe=[
+                ("NVDA", 100.0, False),
+                ("MSFT", 89.0, True),
+            ],
+        )
+        msft_explain = build_explainability(
+            self._serialized(msft),
+            self._serialized(msft)["stableSignal"],
+            context,
+        )
+        nvda_explain = build_explainability(
+            self._serialized(nvda),
+            self._serialized(nvda)["stableSignal"],
+            context,
+        )
+        self.assertEqual(msft_explain["rankingExplanation"]["pickRole"], "final_pick")
+        self.assertEqual(msft_explain["rankingExplanation"]["passingPoolRankByScore"], 1)
+        self.assertIn("gate-runner pick", msft_explain["rankingExplanation"]["summary"])
+        self.assertEqual(nvda_explain["rankingExplanation"]["universeRankByScore"], 1)
+        self.assertFalse(nvda_explain["rankingExplanation"]["passedAllGates"])
+        self.assertTrue(
+            any(flag["code"] == "high_score_gate_fail" for flag in nvda_explain["warningFlags"])
+        )
+
+    def test_no_numeric_layer_score_fields(self) -> None:
+        from stable_signal_explainability import build_explainability
+
+        explain = build_explainability(
+            self._serialized(self._candidate("AAPL", 75)),
+            self._serialized(self._candidate("AAPL", 75))["stableSignal"],
+        )
+        for layer in explain["layerStrengths"].values():
+            self.assertNotIn("layerScore", layer)
+            self.assertIn(layer["band"], ("strong", "neutral", "weak", "unknown"))
+
+    def test_feature_flag_default_off(self) -> None:
+        import os
+
+        from stable_signal_explainability import attach_explainability_if_enabled
+
+        os.environ.pop("SCOUT_STABLE_SIGNAL_EXPLAINABILITY", None)
+        stable = {"version": "1", "layers": {}}
+        serialized = {"ticker": "AAPL", "score": 80}
+        result = attach_explainability_if_enabled(stable, serialized)
+        self.assertNotIn("explainability", result)
+
+    def test_choose_final_pick_unaffected(self) -> None:
+        from run_gates import choose_final_pick
+
+        from stable_signal_explainability import ScanExplainContext, build_explainability
+
+        from run_gates import GATES
+
+        fail_gates = {key: True for key, _, _ in GATES}
+        fail_gates["specter"] = False
+        msft = self._candidate("MSFT", 89)
+        nvda = self._candidate("NVDA", 100, gates=fail_gates)
+        results = [nvda, msft]
+        winner_before = choose_final_pick(results)
+        context = ScanExplainContext.from_universe(
+            pick_mode="gate_runner",
+            final_pick_ticker="MSFT",
+            run_timestamp="2026-05-21T12:00:00+00:00",
+            universe=[("NVDA", 100.0, False), ("MSFT", 89.0, True)],
+        )
+        for result in results:
+            serialized = self._serialized(result)
+            build_explainability(serialized, serialized["stableSignal"], context)
+        winner_after = choose_final_pick(results)
+        self.assertEqual(winner_before.ticker, "MSFT")
+        self.assertEqual(winner_after.ticker, "MSFT")
+        self.assertEqual(winner_before.score, 89.0)
+
+    def test_serialize_result_has_no_explainability_yet(self) -> None:
+        from unittest.mock import patch
+
+        from dashboard import serialize_result
+
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        with patch(
+            "dashboard.build_earnings_intelligence_for_result",
+            return_value=inactive_ei,
+        ):
+            payload = serialize_result(self._candidate("AAPL", 80), peer_bundle=None)
+        self.assertIn("stableSignal", payload)
+        self.assertNotIn("explainability", payload["stableSignal"])
+
+
 class ReportingPipelineTests(unittest.TestCase):
     def test_registry_lists_registered_report(self) -> None:
         import tempfile

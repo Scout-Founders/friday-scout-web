@@ -1,6 +1,6 @@
 # Stable Signal S2 — Explainability Layer (Plan Only)
 
-**Status:** Planning document — **no code changes**  
+**Status:** S2a implemented (`stable_signal_explainability.py` + tests); S2b attachment not wired  
 **Prerequisite:** S1 implemented (`stable_signal_layers.py`, `stableSignal` on `serialize_result`)  
 **Goal:** Make Horizon-1 outputs more understandable via **additive metadata** under `stableSignal.explainability`  
 **Parent:** [stable-signal-state-v1.md](./stable-signal-state-v1.md)
@@ -423,7 +423,7 @@ Lightweight availability flags — **no duplication** of full `directionBreakdow
 
 ## 7. S2 implementation plan (small steps)
 
-### S2a — Schema module (no dashboard wire)
+### S2a — Schema module (no dashboard wire) — **done**
 
 - Add `stable_signal_explainability.py` with:
   - `ExplainabilityContext` dataclass (`final_pick_ticker`, `pick_mode`, `universe_scores`, `run_timestamp`)
