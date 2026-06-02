@@ -1184,5 +1184,148 @@ class ReportingPipelineTests(unittest.TestCase):
             self.assertEqual(second.get("filename"), first.get("filename"))
 
 
+class NeutralSegmentationTests(unittest.TestCase):
+    def test_actionable_win_rate_excludes_neutral(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "neutral_seg.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                with ms.connect() as conn:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                        VALUES (?, ?, ?)
+                        """,
+                        ("2026-06-01T00:00:00+00:00", "custom", "score_only"),
+                    )
+                    run_id = int(cursor.lastrowid)
+                    rows = [
+                        ("AAA", "Bullish", "WIN"),
+                        ("AAB", "Bullish", "LOSS"),
+                        ("AAC", "Bearish", "WIN"),
+                        ("AAD", "Neutral", "WIN"),
+                        ("AAE", "Neutral", "WIN"),
+                        ("AAF", "Neutral", "LOSS"),
+                    ]
+                    for ticker, direction, label in rows:
+                        conn.execute(
+                            """
+                            INSERT INTO scan_results (
+                                run_id, timestamp, ticker, scout_score,
+                                final_direction, stock_outcome_label, gates_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                run_id,
+                                "2026-06-01T00:00:00+00:00",
+                                ticker,
+                                70.0,
+                                direction,
+                                label,
+                                "{}",
+                            ),
+                        )
+                    conn.commit()
+                analytics = ms.get_outcome_analytics()
+        self.assertEqual(analytics["total_completed"], 6)
+        self.assertEqual(analytics["mixed_win_rate"], 66.7)
+        self.assertEqual(analytics["actionable_total"], 3)
+        self.assertEqual(analytics["actionable_bullish_count"], 2)
+        self.assertEqual(analytics["actionable_bearish_count"], 1)
+        self.assertAlmostEqual(analytics["actionable_win_rate"], 66.7, places=1)
+        self.assertEqual(analytics["neutral_count"], 3)
+        self.assertEqual(analytics["neutral_percentage"], 50.0)
+        self.assertEqual(analytics["win_rate"], analytics["mixed_win_rate"])
+        self.assertIn("segmentation", analytics)
+        self.assertEqual(analytics["segmentation"]["model"], "option_c")
+
+
+class UniversePresetsTests(unittest.TestCase):
+    def test_manifest_lists_phase1_presets(self) -> None:
+        from universe_presets import list_preset_catalog
+
+        catalog = list_preset_catalog()
+        self.assertEqual(catalog["manifestVersion"], "2026.06.1")
+        for preset_id in (
+            "mega_cap_tech",
+            "semiconductors",
+            "financials",
+            "healthcare",
+            "retail",
+            "energy",
+            "etfs",
+            "failure_learning",
+        ):
+            self.assertIn(preset_id, catalog["presets"])
+            preset = catalog["presets"][preset_id]
+            self.assertTrue(preset["tickers"])
+            self.assertTrue(preset["cohortClass"])
+            self.assertTrue(preset["scanPurpose"])
+
+    def test_resolve_preset_etfs_is_research_cohort(self) -> None:
+        from universe_presets import resolve_preset
+
+        preset = resolve_preset("etfs")
+        self.assertEqual(preset["cohortClass"], "research")
+        self.assertEqual(preset["scanPurpose"], "regime_probe")
+        self.assertEqual(len(preset["tickers"]), 10)
+
+    def test_save_scan_persists_cohort_metadata(self) -> None:
+        from memory_store import connect, init_db, save_scan_result
+
+        init_db()
+        payload = {
+            "runTimestamp": "2026-06-02T12:00:00+00:00",
+            "universeMode": "preset",
+            "pickMode": "score_only",
+            "timeout": 25,
+            "apiUrl": "https://example.test/gates",
+            "candidates": ["AAPL"],
+            "universePresetId": "healthcare",
+            "scanPurpose": "cohort_baseline",
+            "cohortClass": "actionable",
+            "universePresetVersion": "2026.06.1",
+            "results": [
+                {
+                    "ticker": "AAPL",
+                    "score": 70,
+                    "direction": "Bullish",
+                    "passedAllGates": True,
+                    "gates": [
+                        {
+                            "key": "sentinel",
+                            "code": "SENTINEL",
+                            "name": "Market Filter",
+                            "passed": True,
+                        }
+                    ],
+                    "directionBreakdown": {
+                        "direction": "Bullish",
+                        "bullConviction": 60,
+                        "bearConviction": 40,
+                        "netDirectionalEdge": 20,
+                    },
+                    "raw": {"ticker": "AAPL", "direction": "Bullish"},
+                }
+            ],
+        }
+        run_id = save_scan_result(payload)
+        with connect() as conn:
+            run = conn.execute("SELECT * FROM scan_runs WHERE id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM scan_results WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        self.assertEqual(run["universe_preset_id"], "healthcare")
+        self.assertEqual(run["scan_purpose"], "cohort_baseline")
+        self.assertEqual(run["cohort_class"], "actionable")
+        self.assertEqual(row["cohort_class"], "actionable")
+
+
 if __name__ == "__main__":
     unittest.main()

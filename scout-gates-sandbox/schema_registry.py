@@ -24,6 +24,10 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "engine_version": "TEXT",
             "git_commit_hash": "TEXT",
             "created_at_utc": "TEXT",
+            "universe_preset_id": "TEXT",
+            "universe_preset_version": "TEXT",
+            "scan_purpose": "TEXT",
+            "cohort_class": "TEXT",
         },
     },
     "scan_results": {
@@ -83,6 +87,9 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "gate_snapshot_json": "TEXT",
             "feature_vector_json": "TEXT",
             "explanation_json": "TEXT",
+            "universe_preset_id": "TEXT",
+            "scan_purpose": "TEXT",
+            "cohort_class": "TEXT",
         },
     },
     "feature_vectors": {

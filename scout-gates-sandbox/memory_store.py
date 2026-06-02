@@ -47,6 +47,15 @@ SCAN_RUN_COLUMNS = {
     "engine_version": "TEXT",
     "git_commit_hash": "TEXT",
     "created_at_utc": "TEXT",
+    "universe_preset_id": "TEXT",
+    "universe_preset_version": "TEXT",
+    "scan_purpose": "TEXT",
+    "cohort_class": "TEXT",
+}
+SCAN_RESULT_COHORT_COLUMNS = {
+    "universe_preset_id": "TEXT",
+    "scan_purpose": "TEXT",
+    "cohort_class": "TEXT",
 }
 OUTCOME_COLUMNS = {
     "is_test_record": "INTEGER DEFAULT 0",
@@ -293,6 +302,9 @@ def init_db() -> None:
         for column, column_type in SCAN_RUN_COLUMNS.items():
             if column not in existing_runs:
                 conn.execute(f"ALTER TABLE scan_runs ADD COLUMN {column} {column_type}")
+        for column, column_type in SCAN_RESULT_COHORT_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {column_type}")
         init_feature_store(conn)
         init_pattern_store(conn)
         ensure_performance_indexes(conn)
@@ -300,6 +312,23 @@ def init_db() -> None:
 
 
 PRIMARY_RETURN_SQL = "COALESCE(return_20d, return_10d, return_5d, return_3d, return_1d)"
+
+# Neutral segmentation (Option C): actionable = Bullish + Bearish only.
+DIRECTION_BULLISH = "Bullish"
+DIRECTION_BEARISH = "Bearish"
+DIRECTION_NEUTRAL = "Neutral"
+ACTIONABLE_DIRECTIONS = (DIRECTION_BULLISH, DIRECTION_BEARISH)
+COMPLETED_OUTCOME_LABELS_SQL = "stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')"
+ACTIONABLE_DIRECTION_SQL = "final_direction IN ('Bullish', 'Bearish')"
+NEUTRAL_DIRECTION_SQL = "final_direction = 'Neutral'"
+
+
+def is_actionable_direction(direction: Any) -> bool:
+    return str(direction or "") in ACTIONABLE_DIRECTIONS
+
+
+def is_neutral_direction(direction: Any) -> bool:
+    return str(direction or "") == DIRECTION_NEUTRAL
 
 MAX_HISTORY_PAGE_SIZE = 500
 MAX_HISTORY_EXPORT_BATCH = 500
@@ -877,6 +906,40 @@ def rejection_reason(result: dict[str, Any]) -> str:
     return "Not selected as final recommendation."
 
 
+def cohort_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Read cohort metadata attached by the dashboard or universe resolver."""
+    from universe_presets import cohort_metadata_from_request
+
+    if any(
+        payload.get(key)
+        for key in (
+            "universePresetId",
+            "scanPurpose",
+            "cohortClass",
+            "universePresetVersion",
+        )
+    ):
+        meta = cohort_metadata_from_request(payload)
+    else:
+        meta = cohort_metadata_from_request(
+            {
+                "universePresetId": payload.get("universe_preset_id"),
+                "scanPurpose": payload.get("scan_purpose"),
+                "cohortClass": payload.get("cohort_class"),
+                "universePresetVersion": payload.get("universe_preset_version"),
+            }
+        )
+    return {
+        "universe_preset_id": meta.get("universePresetId"),
+        "universe_preset_label": meta.get("universePresetLabel"),
+        "universe_preset_version": meta.get("universePresetVersion"),
+        "scan_purpose": meta.get("scanPurpose"),
+        "cohort_class": meta.get("cohortClass"),
+        "sector_hint": meta.get("sectorHint"),
+        "manifest_version": meta.get("manifestVersion"),
+    }
+
+
 def build_universe_snapshot(payload: dict[str, Any], scan_id: int) -> dict[str, Any]:
     scanned_tickers = [str(ticker) for ticker in payload.get("candidates") or []]
     results = [row for row in payload.get("results", []) if isinstance(row, dict)]
@@ -898,7 +961,7 @@ def build_universe_snapshot(payload: dict[str, Any], scan_id: int) -> dict[str, 
         }
         for row in sorted(results, key=lambda item: item.get("score") or 0, reverse=True)[:20]
     ]
-    return {
+    snapshot = {
         "scan_id": scan_id,
         "timestamp": payload.get("runTimestamp"),
         "universe_size": len(scanned_tickers),
@@ -906,6 +969,8 @@ def build_universe_snapshot(payload: dict[str, Any], scan_id: int) -> dict[str, 
         "all_rejected_tickers": rejected,
         "top_20_scores": top_scores,
     }
+    snapshot.update(cohort_fields_from_payload(payload))
+    return snapshot
 
 
 def to_optional_float(value: Any) -> Optional[float]:
@@ -1017,13 +1082,15 @@ def save_scan_result(payload: dict[str, Any]) -> int:
     engine_version = current_engine_version()
     git_commit_hash = current_git_commit_hash()
     created_at_utc = datetime.now(timezone.utc).isoformat()
+    cohort = cohort_fields_from_payload(payload)
     with connect() as conn:
         cursor = conn.execute(
             """
             INSERT INTO scan_runs (
                 timestamp, universe_mode, pick_mode, timeout, candidates_json, api_url,
-                engine_version, git_commit_hash, created_at_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                engine_version, git_commit_hash, created_at_utc,
+                universe_preset_id, universe_preset_version, scan_purpose, cohort_class
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 timestamp,
@@ -1035,6 +1102,10 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 engine_version,
                 git_commit_hash,
                 created_at_utc,
+                cohort.get("universe_preset_id"),
+                cohort.get("universe_preset_version"),
+                cohort.get("scan_purpose"),
+                cohort.get("cohort_class"),
             ),
         )
         run_id = int(cursor.lastrowid)
@@ -1053,6 +1124,10 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 "pick_mode": payload.get("pickMode"),
                 "git_commit_hash": git_commit_hash,
                 "created_at_utc": created_at_utc,
+                "universe_preset_id": cohort.get("universe_preset_id"),
+                "universe_preset_version": cohort.get("universe_preset_version"),
+                "scan_purpose": cohort.get("scan_purpose"),
+                "cohort_class": cohort.get("cohort_class"),
             },
         )
         universe_snapshot = build_universe_snapshot(payload, run_id)
@@ -1072,6 +1147,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
             reasons = failure_reasons(result)
             gate_snapshot = build_gate_snapshot(result, payload, engine_version)
             feature_vector = build_feature_vector(result, engine_version, gate_snapshot)
+            sector_hint = cohort.get("sector_hint")
+            if sector_hint and not feature_vector.get("sector_name"):
+                feature_vector["sector_name"] = str(sector_hint)
             ticker = str(result.get("ticker") or "")
             decision_explanation = build_decision_explanation(
                 result,
@@ -1095,8 +1173,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     gates_json, gate_explanations_json, failed_gates_json,
                     failure_reasons_json, raw_fmp_inputs_json, raw_result_json,
                     gate_snapshot_json, feature_vector_json, explanation_json,
-                    engine_version, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    engine_version, created_at,
+                    universe_preset_id, scan_purpose, cohort_class
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1119,6 +1198,9 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                     json_dump(decision_explanation),
                     engine_version,
                     datetime.now(timezone.utc).isoformat(),
+                    cohort.get("universe_preset_id"),
+                    cohort.get("scan_purpose"),
+                    cohort.get("cohort_class"),
                 ),
             )
             recommendation_id = int(cursor.lastrowid)
@@ -2419,10 +2501,12 @@ def refresh_gate_intelligence_metrics(conn: Optional[sqlite3.Connection] = None)
     active_conn = conn or connect()
     try:
         rows = active_conn.execute(
-            """
+            f"""
             SELECT *
             FROM scan_results
-            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+            WHERE {COMPLETED_OUTCOME_LABELS_SQL}
+              AND {ACTIONABLE_DIRECTION_SQL}
+              AND COALESCE(is_test_record, 0) = 0
             """
         ).fetchall()
         metrics: dict[str, dict[str, Any]] = {}
@@ -3737,6 +3821,40 @@ def _directional_bucket(conn: sqlite3.Connection, direction: str) -> dict[str, A
     }
 
 
+def _completed_direction_stats(
+    conn: sqlite3.Connection,
+    direction_clause: str,
+    *,
+    include_test: bool = False,
+) -> dict[str, Any]:
+    test_filter = "" if include_test else "AND COALESCE(is_test_record, 0) = 0"
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN stock_outcome_label = 'FLAT' THEN 1 ELSE 0 END) AS flats,
+            AVG(scout_score) AS avg_score
+        FROM scan_results
+        WHERE {COMPLETED_OUTCOME_LABELS_SQL}
+          AND {direction_clause}
+          {test_filter}
+        """
+    ).fetchone()
+    total = int(row["total"] or 0)
+    wins = int(row["wins"] or 0)
+    losses = int(row["losses"] or 0)
+    return {
+        "count": total,
+        "wins": wins,
+        "losses": losses,
+        "flats": int(row["flats"] or 0),
+        "win_rate": _sql_win_rate_percent(wins, losses),
+        "avg_score": round(float(row["avg_score"] or 0), 1) if total else 0.0,
+    }
+
+
 def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str, Any]:
     """Aggregate outcome metrics in SQL (no full-table Python scan)."""
     init_db()
@@ -3744,40 +3862,67 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
     active_conn = conn or connect()
     try:
         label_row = active_conn.execute(
-            """
+            f"""
             SELECT
-                SUM(CASE WHEN stock_outcome_label IN ('WIN', 'LOSS', 'FLAT') THEN 1 ELSE 0 END) AS total_completed,
+                SUM(CASE WHEN {COMPLETED_OUTCOME_LABELS_SQL} THEN 1 ELSE 0 END) AS total_completed,
                 SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
                 SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses,
                 SUM(
                     CASE
                         WHEN (stock_outcome_label IS NULL OR stock_outcome_label = 'PENDING')
-                         AND {primary} IS NULL
+                         AND {{primary}} IS NULL
                         THEN 1 ELSE 0
                     END
                 ) AS pending
             FROM scan_results
+            WHERE COALESCE(is_test_record, 0) = 0
             """.format(primary=PRIMARY_RETURN_SQL)
         ).fetchone()
 
+        mixed_win_rate = _sql_win_rate_percent(label_row["wins"], label_row["losses"])
+        total_completed = int(label_row["total_completed"] or 0)
+
+        actionable_stats = _completed_direction_stats(
+            active_conn, ACTIONABLE_DIRECTION_SQL
+        )
+        bullish_stats = _completed_direction_stats(
+            active_conn, "final_direction = 'Bullish'"
+        )
+        bearish_stats = _completed_direction_stats(
+            active_conn, "final_direction = 'Bearish'"
+        )
+        neutral_stats = _completed_direction_stats(
+            active_conn, NEUTRAL_DIRECTION_SQL
+        )
+
+        neutral_percentage = (
+            round(neutral_stats["count"] / total_completed * 100, 1)
+            if total_completed
+            else 0.0
+        )
+        actionable_win_rate = actionable_stats["win_rate"]
+        win_rate_delta = round(actionable_win_rate - mixed_win_rate, 1)
+
         bullish_label = active_conn.execute(
-            """
+            f"""
             SELECT
                 SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
                 SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses
             FROM scan_results
-            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+            WHERE {COMPLETED_OUTCOME_LABELS_SQL}
               AND final_direction = 'Bullish'
+              AND COALESCE(is_test_record, 0) = 0
             """
         ).fetchone()
         bearish_label = active_conn.execute(
-            """
+            f"""
             SELECT
                 SUM(CASE WHEN stock_outcome_label = 'WIN' THEN 1 ELSE 0 END) AS wins,
                 SUM(CASE WHEN stock_outcome_label = 'LOSS' THEN 1 ELSE 0 END) AS losses
             FROM scan_results
-            WHERE stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+            WHERE {COMPLETED_OUTCOME_LABELS_SQL}
               AND final_direction = 'Bearish'
+              AND COALESCE(is_test_record, 0) = 0
             """
         ).fetchone()
 
@@ -3851,11 +3996,28 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
             }
 
         return {
-            "total_completed": int(label_row["total_completed"] or 0),
+            "total_completed": total_completed,
             "total_completed_returns": completed_returns,
-            "win_rate": _sql_win_rate_percent(label_row["wins"], label_row["losses"]),
+            "win_rate": mixed_win_rate,
+            "mixed_win_rate": mixed_win_rate,
+            "actionable_win_rate": actionable_win_rate,
+            "win_rate_delta_actionable_minus_mixed": win_rate_delta,
+            "actionable_bullish_count": bullish_stats["count"],
+            "actionable_bearish_count": bearish_stats["count"],
+            "actionable_total": actionable_stats["count"],
+            "actionable_wins": actionable_stats["wins"],
+            "actionable_losses": actionable_stats["losses"],
+            "neutral_count": neutral_stats["count"],
+            "neutral_percentage": neutral_percentage,
+            "neutral_avg_score": neutral_stats["avg_score"],
+            "neutral_win_rate": neutral_stats["win_rate"],
             "bullish_win_rate": _sql_win_rate_percent(bullish_label["wins"], bullish_label["losses"]),
             "bearish_win_rate": _sql_win_rate_percent(bearish_label["wins"], bearish_label["losses"]),
+            "segmentation": {
+                "model": "option_c",
+                "actionable_directions": list(ACTIONABLE_DIRECTIONS),
+                "research_direction": DIRECTION_NEUTRAL,
+            },
             "bullish_directional_accuracy": bullish_directional["directional_accuracy"],
             "bearish_directional_accuracy": bearish_directional["directional_accuracy"],
             "bullish_avg_return": bullish_directional["avg_return"],

@@ -1001,16 +1001,6 @@
             <label for="universe-preset">Universe Preset</label>
             <select id="universe-preset">
               <option value="custom" selected>Custom</option>
-              <option value="semiconductors">Semiconductors</option>
-              <option value="mega_cap_tech">Mega Cap Tech</option>
-              <option value="retail">Retail</option>
-              <option value="healthcare">Healthcare</option>
-              <option value="etfs">ETFs</option>
-              <option value="energy">Energy</option>
-              <option value="financials">Financials</option>
-              <option value="high_beta">High Beta</option>
-              <option value="failure_learning">Failure Learning</option>
-              <option value="watchlist">Watchlist</option>
             </select>
             <div id="universe-preset-meta" class="universe-preset-meta" aria-live="polite">
               <div class="universe-preset-stats">
@@ -1021,6 +1011,10 @@
                 <div class="universe-stat">
                   <span class="universe-stat-label">Scan purpose</span>
                   <span id="universe-scan-purpose" class="universe-stat-value">manual_research</span>
+                </div>
+                <div class="universe-stat">
+                  <span class="universe-stat-label">Cohort</span>
+                  <span id="universe-cohort-class" class="universe-stat-value">research</span>
                 </div>
                 <div class="universe-stat">
                   <span class="universe-stat-label">Runtime est.</span>
@@ -1151,6 +1145,7 @@
     const timeoutEl = document.getElementById("timeout");
     const universeEstimatedCountEl = document.getElementById("universe-estimated-count");
     const universeScanPurposeEl = document.getElementById("universe-scan-purpose");
+    const universeCohortClassEl = document.getElementById("universe-cohort-class");
     const universeRuntimeEstimateEl = document.getElementById("universe-runtime-estimate");
     const universeTagsEl = document.getElementById("universe-tags");
     const universePresetNoteEl = document.getElementById("universe-preset-note");
@@ -1158,86 +1153,20 @@
     const LARGE_UNIVERSE_TICKER_THRESHOLD = 8;
     const NOT_INSTRUMENTED = "Not Instrumented Yet";
 
-    // UI-only preset catalog (planning). Does not change scan payload or auto-fill tickers.
-    const UNIVERSE_PRESETS = {
+    const UNIVERSE_PRESET_FALLBACK = {
       custom: {
+        id: "custom",
         label: "Custom",
         tags: ["RESEARCH"],
+        cohortClass: "research",
         scanPurpose: "manual_research",
-        plannedTickers: null,
+        tickers: [],
         note: "Custom universe uses the tickers you enter below.",
       },
-      semiconductors: {
-        label: "Semiconductors",
-        tags: ["RESEARCH"],
-        scanPurpose: "cohort_baseline",
-        plannedTickers: ["NVDA", "AMD", "AVGO", "INTC", "QCOM", "TXN", "MU", "LRCX", "AMAT", "ASML"],
-        note: "Planning preset only — copy tickers manually until backend resolver ships.",
-      },
-      mega_cap_tech: {
-        label: "Mega Cap Tech",
-        tags: ["RESEARCH"],
-        scanPurpose: "cohort_baseline",
-        plannedTickers: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "NFLX", "CRM"],
-        note: "Planning preset only — copy tickers manually until backend resolver ships.",
-      },
-      retail: {
-        label: "Retail",
-        tags: ["RESEARCH"],
-        scanPurpose: "cohort_baseline",
-        plannedTickers: ["WMT", "COST", "TGT", "HD", "LOW", "AMZN", "BKNG", "ROST", "DG", "ULTA"],
-        note: "Planning preset only — copy tickers manually until backend resolver ships.",
-      },
-      healthcare: {
-        label: "Healthcare",
-        tags: ["RESEARCH"],
-        scanPurpose: "cohort_baseline",
-        plannedTickers: ["UNH", "JNJ", "LLY", "MRK", "ABBV", "TMO", "ABT", "PFE", "AMGN", "ISRG"],
-        note: "Planning preset only — copy tickers manually until backend resolver ships.",
-      },
-      etfs: {
-        label: "ETFs",
-        tags: ["ETF", "REGIME"],
-        scanPurpose: "regime_probe",
-        plannedTickers: ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "HYG", "TLT"],
-        note: "Regime probe preset (UI tag only). Paste ETF tickers manually for now.",
-      },
-      energy: {
-        label: "Energy",
-        tags: ["RESEARCH"],
-        scanPurpose: "cohort_baseline",
-        plannedTickers: ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL"],
-        note: "Planning preset only — copy tickers manually until backend resolver ships.",
-      },
-      financials: {
-        label: "Financials",
-        tags: ["RESEARCH"],
-        scanPurpose: "cohort_baseline",
-        plannedTickers: ["JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "USB"],
-        note: "Planning preset only — copy tickers manually until backend resolver ships.",
-      },
-      high_beta: {
-        label: "High Beta",
-        tags: ["HIGH VOL", "RESEARCH"],
-        scanPurpose: "stress_sample",
-        plannedTickers: ["TSLA", "COIN", "MSTR", "SMCI", "PLTR", "SNOW", "CRWD", "DDOG", "MRNA", "RIVN"],
-        note: "Stress-sample preset (UI tag only). Paste tickers manually for now.",
-      },
-      failure_learning: {
-        label: "Failure Learning",
-        tags: ["FAILURE LEARNING"],
-        scanPurpose: "gate_intelligence",
-        plannedTickers: ["GME", "AMC", "RIVN", "LCID", "SNAP", "LYFT", "INTC", "PYPL", "DIS", "BA"],
-        note: "Gate-intelligence preset (quarantined in future memory). Preview recommended.",
-      },
-      watchlist: {
-        label: "Watchlist",
-        tags: ["RESEARCH"],
-        scanPurpose: "manual_research",
-        plannedTickers: ["AAPL", "MSFT", "NVDA", "AMD", "META", "GOOGL"],
-        note: "Short watchlist preset for quick manual runs.",
-      },
     };
+    let UNIVERSE_PRESETS = { ...UNIVERSE_PRESET_FALLBACK };
+    let universeManifestVersion = null;
+    let universeMaxTickers = 12;
 
     const UNIVERSE_TAG_CLASS = {
       RESEARCH: "tag-research",
@@ -1314,11 +1243,68 @@
       return UNIVERSE_PRESETS[universePresetEl.value] || UNIVERSE_PRESETS.custom;
     }
 
+    function formatPresetTickers(tickers) {
+      return (tickers || []).join(", ");
+    }
+
     function estimatedTickerCountForPreset(preset) {
-      if (preset.plannedTickers) {
-        return preset.plannedTickers.length;
+      if (preset.tickers && preset.tickers.length) {
+        return preset.tickers.length;
       }
       return parseTickerList(tickersEl.value).length;
+    }
+
+    function populateUniversePresetSelect() {
+      const current = universePresetEl.value || "custom";
+      const optionOrder = [
+        "custom",
+        "mega_cap_tech",
+        "semiconductors",
+        "financials",
+        "healthcare",
+        "retail",
+        "energy",
+        "etfs",
+        "failure_learning",
+      ];
+      universePresetEl.innerHTML = "";
+      optionOrder.forEach((presetId) => {
+        const preset = UNIVERSE_PRESETS[presetId];
+        if (!preset) {
+          return;
+        }
+        const option = document.createElement("option");
+        option.value = presetId;
+        option.textContent = preset.label || presetId;
+        universePresetEl.appendChild(option);
+      });
+      if ([...universePresetEl.options].some((item) => item.value === current)) {
+        universePresetEl.value = current;
+      } else {
+        universePresetEl.value = "custom";
+      }
+    }
+
+    async function loadUniversePresets() {
+      try {
+        const response = await fetch("/api/universe-presets");
+        const catalog = await response.json();
+        if (!response.ok || !catalog.presets) {
+          throw new Error("Preset catalog unavailable.");
+        }
+        universeManifestVersion = catalog.manifestVersion || null;
+        universeMaxTickers = catalog.maxTickers || 12;
+        UNIVERSE_PRESETS = {
+          ...UNIVERSE_PRESET_FALLBACK,
+          ...catalog.presets,
+        };
+        populateUniversePresetSelect();
+        updateUniversePresetPanel();
+      } catch (error) {
+        console.warn("Universe preset manifest load failed:", error);
+        UNIVERSE_PRESETS = { ...UNIVERSE_PRESET_FALLBACK };
+        updateUniversePresetPanel();
+      }
     }
 
     function formatRuntimeEstimate(tickerCount, timeoutSec) {
@@ -1341,27 +1327,50 @@
       }).join("");
     }
 
-    function updateUniversePresetPanel() {
+    function applyPresetTickersToField(preset) {
+      if (!preset || preset.id === "custom" || !(preset.tickers && preset.tickers.length)) {
+        return;
+      }
+      tickersEl.value = formatPresetTickers(preset.tickers);
+    }
+
+    function updateUniversePresetPanel(options = {}) {
       const preset = selectedUniversePreset();
+      if (options.applyTickers) {
+        applyPresetTickersToField(preset);
+      }
       const tickerCount = estimatedTickerCountForPreset(preset);
       const timeoutSec = Number(timeoutEl.value || 25);
       const isLargeUniverse = tickerCount > LARGE_UNIVERSE_TICKER_THRESHOLD;
+      const exceedsManifestCap = tickerCount > universeMaxTickers;
       const storageMode = storageModeEl.value;
 
       universeEstimatedCountEl.textContent = String(tickerCount);
-      universeScanPurposeEl.textContent = preset.scanPurpose;
+      universeScanPurposeEl.textContent = preset.scanPurpose || "manual_research";
+      if (universeCohortClassEl) {
+        universeCohortClassEl.textContent = preset.cohortClass || "research";
+      }
       universeRuntimeEstimateEl.textContent = formatRuntimeEstimate(tickerCount, timeoutSec);
       universeTagsEl.innerHTML = renderUniverseTags(preset.tags);
 
-      let note = preset.note || "Planning preset — ticker list is not auto-loaded yet.";
+      let note = preset.note || "Select a preset or enter tickers manually.";
+      if (universeManifestVersion) {
+        note += ` Manifest ${universeManifestVersion}.`;
+      }
+      if (preset.id !== "custom") {
+        note += " Ticker list loaded from versioned manifest.";
+      }
       if (isLargeUniverse) {
         note += " Preview Recommended: large universes increase scan time and are best run in Preview Only until reviewed.";
+      }
+      if (exceedsManifestCap) {
+        note += ` Reduce universe to ${universeMaxTickers} tickers or fewer for Phase 1 rotation policy.`;
       }
       if (storageMode === "save_eligible" && isLargeUniverse) {
         note += " Consider switching Scan Storage Mode to Preview Only for this run.";
       }
       universePresetNoteEl.textContent = note;
-      universePresetNoteEl.classList.toggle("preview-recommended", isLargeUniverse);
+      universePresetNoteEl.classList.toggle("preview-recommended", isLargeUniverse || exceedsManifestCap);
     }
 
     function buildScanRequestContext(request) {
@@ -1370,7 +1379,9 @@
         ...request,
         universePresetId: universePresetEl.value,
         universePresetLabel: preset.label,
+        universePresetVersion: preset.version || universeManifestVersion,
         scanPurpose: preset.scanPurpose,
+        cohortClass: preset.cohortClass,
       };
     }
 
@@ -1482,7 +1493,9 @@
         timestamp: payload?.runTimestamp || new Date().toISOString(),
         universePresetLabel: requestContext.universePresetLabel || selectedUniversePreset().label,
         universePresetId: requestContext.universePresetId || universePresetEl.value,
+        universePresetVersion: requestContext.universePresetVersion || selectedUniversePreset().version || universeManifestVersion,
         scanPurpose: requestContext.scanPurpose || selectedUniversePreset().scanPurpose,
+        cohortClass: requestContext.cohortClass || selectedUniversePreset().cohortClass,
         storageMode: requestContext.storageMode || storageModeEl.value,
         storageModeLabel: formatStorageModeLabel(requestContext.storageMode || storageModeEl.value),
         pickMode: requestContext.pickMode || payload?.pickMode || "gate_runner",
@@ -1559,6 +1572,7 @@
             ${telemetryStat("Status", "Scan in progress")}
             ${telemetryStat("Preset", telemetry.universePresetLabel)}
             ${telemetryStat("Purpose", telemetry.scanPurpose)}
+            ${telemetryStat("Cohort", telemetry.cohortClass)}
             ${telemetryStat("Storage", telemetry.storageModeLabel)}
             ${telemetryStat("Runtime est.", telemetry.runtimeEstimate)}
             ${telemetryStat("Runtime actual", "Measuring…")}
@@ -1588,6 +1602,8 @@
           ${telemetryStat("Pass rate", telemetry.passRate)}
           ${telemetryStat("Universe preset", telemetry.universePresetLabel)}
           ${telemetryStat("Scan purpose", telemetry.scanPurpose)}
+          ${telemetryStat("Cohort class", telemetry.cohortClass)}
+          ${telemetryStat("Manifest", telemetry.universePresetVersion, telemetry.universePresetVersion === NOT_INSTRUMENTED)}
           ${telemetryStat("Storage mode", telemetry.storageModeLabel)}
           ${telemetryStat("API calls", telemetry.apiCallsLabel)}
           ${telemetryStat("Avg ticker runtime", telemetry.avgTickerRuntime, telemetry.avgTickerRuntime === NOT_INSTRUMENTED)}
@@ -2740,7 +2756,9 @@
         timestamp: new Date().toISOString(),
         universePresetLabel: preset.label,
         universePresetId: universePresetEl.value,
+        universePresetVersion: preset.version || universeManifestVersion,
         scanPurpose: preset.scanPurpose,
+        cohortClass: preset.cohortClass,
         storageMode: request.storageMode,
         storageModeLabel: formatStorageModeLabel(request.storageMode),
         pickMode: request.pickMode,
@@ -2770,7 +2788,14 @@
           }
           throw new Error(payload.message || (payload.errors || []).join("\\n") || "Run failed.");
         }
-        currentPayload = payload;
+        currentPayload = {
+          ...payload,
+          universePresetId: payload.universePresetId || requestContext.universePresetId,
+          universePresetLabel: payload.universePresetLabel || requestContext.universePresetLabel,
+          universePresetVersion: payload.universePresetVersion || requestContext.universePresetVersion,
+          scanPurpose: payload.scanPurpose || requestContext.scanPurpose,
+          cohortClass: payload.cohortClass || requestContext.cohortClass,
+        };
         currentRequest = requestContext;
         currentScanSaved = false;
         currentScanTelemetry = buildScanTelemetry(payload, requestContext, clientRuntimeMs);
@@ -2797,10 +2822,12 @@
       updateSaveButton();
       updateUniversePresetPanel();
     });
-    universePresetEl.addEventListener("change", updateUniversePresetPanel);
+    universePresetEl.addEventListener("change", () => {
+      updateUniversePresetPanel({ applyTickers: true });
+    });
     tickersEl.addEventListener("input", updateUniversePresetPanel);
     timeoutEl.addEventListener("input", updateUniversePresetPanel);
-    updateUniversePresetPanel();
+    loadUniversePresets();
     saveButton.addEventListener("click", saveResultsToMemory);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);

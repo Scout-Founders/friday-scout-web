@@ -69,6 +69,7 @@ from run_gates import (
     load_env,
     parse_ticker_list,
 )
+from universe_presets import list_preset_catalog, resolve_universe_from_request
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -139,18 +140,39 @@ def pick_winner(results: list[CandidateResult], pick_mode: str) -> CandidateResu
     return choose_final_pick(results)
 
 
+def attach_cohort_metadata(payload: dict[str, Any], request_payload: dict[str, Any]) -> None:
+    """Attach universe cohort fields for memory persistence and telemetry."""
+    _, cohort = resolve_universe_from_request(request_payload)
+    payload["universePresetId"] = cohort.get("universePresetId")
+    payload["universePresetLabel"] = cohort.get("universePresetLabel")
+    payload["universePresetVersion"] = cohort.get("universePresetVersion")
+    payload["scanPurpose"] = cohort.get("scanPurpose")
+    payload["cohortClass"] = cohort.get("cohortClass")
+    telemetry = payload.get("scanTelemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    telemetry.update(
+        {
+            "universePresetId": cohort.get("universePresetId"),
+            "universePresetLabel": cohort.get("universePresetLabel"),
+            "scanPurpose": cohort.get("scanPurpose"),
+            "cohortClass": cohort.get("cohortClass"),
+            "universePresetVersion": cohort.get("universePresetVersion"),
+        }
+    )
+    payload["scanTelemetry"] = telemetry
+
+
 def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     universe_mode = str(request_payload.get("universeMode") or "custom")
-    raw_tickers = str(request_payload.get("tickers") or "")
     pick_mode = str(request_payload.get("pickMode") or "gate_runner")
     timeout = float(request_payload.get("timeout") or 25)
     run_timestamp = datetime.now(timezone.utc).isoformat()
+    preset_id = str(request_payload.get("universePresetId") or "custom").strip() or "custom"
+    if preset_id != "custom" and universe_mode != "fallback":
+        universe_mode = "preset"
 
-    candidates = (
-        DEFAULT_CANDIDATES
-        if universe_mode == "fallback"
-        else parse_ticker_list(raw_tickers)
-    )
+    candidates, _cohort = resolve_universe_from_request(request_payload)
     if not candidates:
         raise ValueError("Enter at least one ticker or choose the fallback universe.")
 
@@ -165,7 +187,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             errors.append(str(exc))
 
     if not results:
-        return {
+        failure_payload = {
             "ok": False,
             "apiUrl": api_url,
             "candidates": candidates,
@@ -176,6 +198,8 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             "errors": errors,
             "message": "No ticker scans completed successfully.",
         }
+        attach_cohort_metadata(failure_payload, request_payload)
+        return failure_payload
 
     winner = pick_winner(results, pick_mode)
     peer_bundle = build_peer_bundle_for_run(results, run_timestamp=run_timestamp)
@@ -252,7 +276,9 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
         final_pick_ticker=winner.ticker,
         run_timestamp=run_timestamp,
     )
-    return apply_explainability_to_run_payload(payload, explain_context)
+    payload = apply_explainability_to_run_payload(payload, explain_context)
+    attach_cohort_metadata(payload, request_payload)
+    return payload
 
 
 def build_memory_summary() -> dict[str, Any]:
@@ -306,6 +332,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
+            return
+        if parsed.path == "/api/universe-presets":
+            self.send_json(list_preset_catalog())
             return
         if parsed.path == "/api/control/summary":
             self.send_json(build_control_summary())
