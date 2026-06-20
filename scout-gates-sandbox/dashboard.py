@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.parse
 import webbrowser
@@ -15,32 +16,49 @@ from pathlib import Path
 from typing import Any, Optional
 
 from directionality import build_directional_breakdown
+from earnings_intelligence import attach_adjusted_scout_score, build_earnings_intelligence_for_result
 from explainability import build_explanation
 from memory_store import (
+    MAX_HISTORY_PAGE_SIZE,
+    build_memory_history_payload,
+    build_memory_summary_payload,
     create_outcome_test_record,
     create_gate_alpha_test_record,
     export_csv,
+    parse_history_filters,
     get_control_summary,
-    get_direction_accuracy,
     get_gate_attribution_summary,
     get_gate_alpha_summary,
-    get_gate_intelligence_metrics,
-    get_gate_statistics,
     get_horizon_self_audit,
-    get_option_pick_history,
-    get_outcome_analytics,
     get_outcome_audit_log,
     get_recommendation_explanation,
-    get_ticker_history,
     get_top_gate_failures,
     rebuild_regime_intelligence,
     run_horizon_backfill,
     rebuild_gate_alpha,
     rebuild_patterns,
-    save_scan_result,
+    save_scan_result_once,
 )
 from option_picker import choose_option_contract, fmp_api_key
+from peer_risk_adjusted_edge import (
+    attach_peer_scoring,
+    build_peer_bundle_for_run,
+    build_scoring_breakdown,
+)
+from stable_signal_explainability import (
+    apply_explainability_to_run_payload,
+    build_scan_explain_context,
+)
+from stable_signal_layers import build_and_attach_stable_signal
 from performance_tracker import update_outcomes
+from reporting import (
+    DEFAULT_ASYNC_EXPORT,
+    ReportConfig,
+    default_exports_dir,
+    ensure_report_worker,
+    get_report_service,
+    get_reporting_status,
+)
 from run_gates import (
     DEFAULT_CANDIDATES,
     GATES,
@@ -51,12 +69,38 @@ from run_gates import (
     load_env,
     parse_ticker_list,
 )
+from universe_presets import list_preset_catalog, resolve_universe_from_request
+from backtest_engine import (
+    get_backtest_run,
+    list_backtest_runs,
+    parse_backtest_filters,
+    preview_backtest,
+    run_backtest,
+)
+from research_job_runner import (
+    create_default_research_jobs,
+    list_research_job_runs,
+    list_research_jobs,
+    run_enabled_research_jobs,
+    run_research_job,
+)
+from research_findings_engine import (
+    generate_findings_from_recent_runs,
+    list_research_findings,
+    update_research_finding_status,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SANDBOX_DIR.parent
 DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
 RESEARCH_HTML = SANDBOX_DIR / "research.html"
 CONTROL_HTML = SANDBOX_DIR / "control.html"
+BACKTEST_HTML = SANDBOX_DIR / "backtest.html"
+RESEARCH_QUEUE_HTML = SANDBOX_DIR / "research_queue.html"
+RESEARCH_FINDINGS_HTML = SANDBOX_DIR / "research_findings.html"
+REPORTS_DIR = REPO_ROOT / "exports" / "reports"
+SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
 
 def first_failed_gate_payload(result: CandidateResult) -> Optional[dict[str, Any]]:
@@ -72,8 +116,10 @@ def serialize_result(
     option_pick: Optional[dict[str, Any]] = None,
     explanation: Optional[dict[str, Any]] = None,
     direction_breakdown: Optional[dict[str, Any]] = None,
+    peer_bundle: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    return {
+    earnings_intelligence = build_earnings_intelligence_for_result(result.data)
+    payload = {
         "ticker": result.data.get("ticker", result.ticker),
         "score": result.score,
         "price": result.data.get("price"),
@@ -95,8 +141,19 @@ def serialize_result(
         "optionPick": option_pick,
         "explanation": explanation,
         "directionBreakdown": direction_breakdown,
+        "earningsIntelligence": earnings_intelligence,
         "raw": result.data,
     }
+    payload = attach_adjusted_scout_score(payload, earnings_intelligence)
+    if peer_bundle is not None:
+        breakdown = build_scoring_breakdown(
+            str(result.ticker),
+            result.data,
+            peer_bundle,
+            earnings_intelligence=earnings_intelligence,
+        )
+        payload = attach_peer_scoring(payload, breakdown)
+    return build_and_attach_stable_signal(result, payload)
 
 
 def pick_winner(results: list[CandidateResult], pick_mode: str) -> CandidateResult:
@@ -105,18 +162,39 @@ def pick_winner(results: list[CandidateResult], pick_mode: str) -> CandidateResu
     return choose_final_pick(results)
 
 
+def attach_cohort_metadata(payload: dict[str, Any], request_payload: dict[str, Any]) -> None:
+    """Attach universe cohort fields for memory persistence and telemetry."""
+    _, cohort = resolve_universe_from_request(request_payload)
+    payload["universePresetId"] = cohort.get("universePresetId")
+    payload["universePresetLabel"] = cohort.get("universePresetLabel")
+    payload["universePresetVersion"] = cohort.get("universePresetVersion")
+    payload["scanPurpose"] = cohort.get("scanPurpose")
+    payload["cohortClass"] = cohort.get("cohortClass")
+    telemetry = payload.get("scanTelemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    telemetry.update(
+        {
+            "universePresetId": cohort.get("universePresetId"),
+            "universePresetLabel": cohort.get("universePresetLabel"),
+            "scanPurpose": cohort.get("scanPurpose"),
+            "cohortClass": cohort.get("cohortClass"),
+            "universePresetVersion": cohort.get("universePresetVersion"),
+        }
+    )
+    payload["scanTelemetry"] = telemetry
+
+
 def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     universe_mode = str(request_payload.get("universeMode") or "custom")
-    raw_tickers = str(request_payload.get("tickers") or "")
     pick_mode = str(request_payload.get("pickMode") or "gate_runner")
     timeout = float(request_payload.get("timeout") or 25)
     run_timestamp = datetime.now(timezone.utc).isoformat()
+    preset_id = str(request_payload.get("universePresetId") or "custom").strip() or "custom"
+    if preset_id != "custom" and universe_mode != "fallback":
+        universe_mode = "preset"
 
-    candidates = (
-        DEFAULT_CANDIDATES
-        if universe_mode == "fallback"
-        else parse_ticker_list(raw_tickers)
-    )
+    candidates, _cohort = resolve_universe_from_request(request_payload)
     if not candidates:
         raise ValueError("Enter at least one ticker or choose the fallback universe.")
 
@@ -131,7 +209,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             errors.append(str(exc))
 
     if not results:
-        return {
+        failure_payload = {
             "ok": False,
             "apiUrl": api_url,
             "candidates": candidates,
@@ -142,8 +220,11 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             "errors": errors,
             "message": "No ticker scans completed successfully.",
         }
+        attach_cohort_metadata(failure_payload, request_payload)
+        return failure_payload
 
     winner = pick_winner(results, pick_mode)
+    peer_bundle = build_peer_bundle_for_run(results, run_timestamp=run_timestamp)
     explanations = {
         result.ticker: build_explanation(
             result.data,
@@ -171,6 +252,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             option_picks.get(result.ticker),
             explanations.get(result.ticker),
             direction_breakdowns.get(result.ticker),
+            peer_bundle=peer_bundle,
         )
         for result in sorted(results, key=lambda item: item.score, reverse=True)
         if result.ticker != winner.ticker
@@ -189,6 +271,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             option_picks.get(winner.ticker),
             explanations.get(winner.ticker),
             direction_breakdowns.get(winner.ticker),
+            peer_bundle=peer_bundle,
         ),
         "rejected": rejected,
         "results": [
@@ -197,6 +280,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
                 option_picks.get(result.ticker),
                 explanations.get(result.ticker),
                 direction_breakdowns.get(result.ticker),
+                peer_bundle=peer_bundle,
             )
             for result in results
         ],
@@ -205,22 +289,22 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
         "directionBreakdowns": direction_breakdowns,
         "errors": errors,
     }
-    payload["memoryRunId"] = save_scan_result(payload)
+    payload["memoryRunId"] = None
+    payload["savedToMemory"] = False
+
+    explain_context = build_scan_explain_context(
+        results,
+        pick_mode=pick_mode,
+        final_pick_ticker=winner.ticker,
+        run_timestamp=run_timestamp,
+    )
+    payload = apply_explainability_to_run_payload(payload, explain_context)
+    attach_cohort_metadata(payload, request_payload)
     return payload
 
 
 def build_memory_summary() -> dict[str, Any]:
-    return {
-        "ok": True,
-        "recentScans": get_ticker_history(limit=100),
-        "gateStatistics": get_gate_statistics(),
-        "gateIntelligence": get_gate_intelligence_metrics(),
-        "directionAccuracy": get_direction_accuracy(),
-        "topGateFailures": get_top_gate_failures(),
-        "optionPickHistory": get_option_pick_history(),
-        "outcomeAnalytics": get_outcome_analytics(),
-        "outcomeAuditLog": get_outcome_audit_log(),
-    }
+    return build_memory_summary_payload()
 
 
 def build_control_summary() -> dict[str, Any]:
@@ -268,8 +352,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/control", "/control.html"):
             self.send_file(CONTROL_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/backtest", "/backtest.html"):
+            self.send_file(BACKTEST_HTML, "text/html; charset=utf-8")
+            return
+        if parsed.path in ("/research-queue", "/research-queue.html"):
+            self.send_file(RESEARCH_QUEUE_HTML, "text/html; charset=utf-8")
+            return
+        if parsed.path in ("/research-findings", "/research-findings.html"):
+            self.send_file(RESEARCH_FINDINGS_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
+            return
+        if parsed.path == "/api/universe-presets":
+            self.send_json(list_preset_catalog())
             return
         if parsed.path == "/api/control/summary":
             self.send_json(build_control_summary())
@@ -305,22 +401,200 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(response)
             return
+        if parsed.path == "/api/backtest/runs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 100)
+            except ValueError:
+                limit = 20
+            self.send_json({"ok": True, "runs": list_backtest_runs(limit=limit)})
+            return
+        if parsed.path.startswith("/api/backtest/runs/"):
+            run_id_text = parsed.path.rsplit("/", 1)[-1]
+            try:
+                run_id = int(run_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Backtest run id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            result = get_backtest_run(run_id)
+            if result is None:
+                self.send_json(
+                    {"ok": False, "message": "Backtest run was not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self.send_json(result)
+            return
+        if parsed.path == "/api/research-jobs":
+            self.send_json({"ok": True, "jobs": list_research_jobs()})
+            return
+        if parsed.path == "/api/research-jobs/runs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["50"])[0]), 1), 200)
+            except ValueError:
+                limit = 50
+            self.send_json({"ok": True, "runs": list_research_job_runs(limit=limit)})
+            return
+        if parsed.path == "/api/research-findings":
+            params = urllib.parse.parse_qs(parsed.query)
+            status = (params.get("status") or [None])[0]
+            severity = (params.get("severity") or [None])[0]
+            finding_type = (params.get("findingType") or params.get("finding_type") or [None])[0]
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), 500)
+            except ValueError:
+                limit = 100
+            self.send_json(
+                {
+                    "ok": True,
+                    "findings": list_research_findings(
+                        status=status,
+                        severity=severity,
+                        finding_type=finding_type,
+                        limit=limit,
+                    ),
+                }
+            )
+            return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
+            return
+        if parsed.path == "/api/memory/history":
+            from memory_store import DB_PATH
+
+            params = urllib.parse.parse_qs(parsed.query)
+            filters = parse_history_filters(params)
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), MAX_HISTORY_PAGE_SIZE)
+            except ValueError:
+                limit = 100
+            try:
+                offset = max(int((params.get("offset") or ["0"])[0]), 0)
+            except ValueError:
+                offset = 0
+            payload = build_memory_history_payload(limit=limit, offset=offset, filters=filters)
+            print(
+                "[dashboard] /api/memory/history "
+                f"db={DB_PATH} total={payload.get('total')} "
+                f"filtered={payload.get('filteredTotal')} returned={len(payload.get('history') or [])} "
+                f"limit={limit} offset={offset} filters={payload.get('debug', {}).get('filters')}",
+                flush=True,
+            )
+            self.send_json(payload)
+            return
+        if parsed.path == "/api/memory/audit":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["50"])[0]), 1), 200)
+            except ValueError:
+                limit = 50
+            self.send_json({"ok": True, "outcomeAuditLog": get_outcome_audit_log(limit=limit)})
             return
         if parsed.path == "/api/memory/ticker":
             params = urllib.parse.parse_qs(parsed.query)
             ticker = (params.get("ticker") or [""])[0].strip().upper()
-            self.send_json({"ok": True, "history": get_ticker_history(ticker or None)})
+            filters = parse_history_filters({"ticker": [ticker]} if ticker else {})
+            payload = build_memory_history_payload(
+                limit=MAX_HISTORY_PAGE_SIZE,
+                offset=0,
+                filters=filters,
+            )
+            self.send_json(
+                {
+                    "ok": True,
+                    "history": payload["history"],
+                    "total": payload.get("total"),
+                    "filteredTotal": payload.get("filteredTotal"),
+                    "timings": payload.get("timings"),
+                }
+            )
             return
         if parsed.path == "/api/memory/export.csv":
+            params = urllib.parse.parse_qs(parsed.query)
+            filters = parse_history_filters(params)
             self.send_text(
-                export_csv(),
+                export_csv(filters=filters),
                 "text/csv; charset=utf-8",
                 extra_headers={
                     "Content-Disposition": 'attachment; filename="scout-memory-export.csv"'
                 },
             )
+            return
+        if parsed.path == "/api/reports/status":
+            self.send_json(get_reporting_status(REPORTS_DIR))
+            return
+        if parsed.path == "/api/reports/list":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 200)
+            except ValueError:
+                limit = 20
+            try:
+                offset = max(int((params.get("offset") or ["0"])[0]), 0)
+            except ValueError:
+                offset = 0
+            ticker = (params.get("ticker") or [""])[0].strip().upper() or None
+            report_type = (params.get("reportType") or [""])[0].strip() or None
+            session_id = (params.get("scanSessionId") or [""])[0].strip() or None
+            store = get_report_service(REPORTS_DIR).store
+            payload = store.list_reports(
+                limit=limit,
+                offset=offset,
+                ticker=ticker,
+                report_type=report_type,
+                scan_session_id=session_id,
+            )
+            self.send_json({"ok": True, **payload})
+            return
+        if parsed.path == "/api/reports/jobs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 200)
+            except ValueError:
+                limit = 20
+            try:
+                offset = max(int((params.get("offset") or ["0"])[0]), 0)
+            except ValueError:
+                offset = 0
+            status = (params.get("status") or [""])[0].strip() or None
+            batch_id = (params.get("batchId") or [""])[0].strip() or None
+            store = get_report_service(REPORTS_DIR).store
+            self.send_json(
+                {
+                    "ok": True,
+                    **store.list_jobs(
+                        limit=limit,
+                        offset=offset,
+                        status=status,
+                        batch_id=batch_id,
+                    ),
+                }
+            )
+            return
+        if parsed.path.startswith("/api/reports/jobs/"):
+            job_id = parsed.path.rsplit("/", 1)[-1].strip()
+            if not job_id or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                self.send_json(
+                    {"ok": False, "message": "Invalid job id."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            self.send_json(get_report_service(REPORTS_DIR).get_job(job_id))
+            return
+        if parsed.path.startswith("/api/reports/download/"):
+            filename = parsed.path.rsplit("/", 1)[-1]
+            if not SAFE_REPORT_NAME.match(filename):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid report filename")
+                return
+            report_path = (REPORTS_DIR / filename).resolve()
+            if report_path.parent != REPORTS_DIR.resolve() or not report_path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "Report not found")
+                return
+            self.send_file(report_path, "application/pdf")
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -352,6 +626,112 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Outcome test record error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/research-findings/generate-recent":
+            try:
+                payload = self.read_json()
+                limit = int(payload.get("limit") or 20)
+                self.send_json(generate_findings_from_recent_runs(limit=limit))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research findings generation error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path.startswith("/api/research-findings/") and parsed.path.endswith("/status"):
+            finding_id_text = parsed.path.split("/")[-2]
+            try:
+                finding_id = int(finding_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Research finding id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                payload = self.read_json()
+                status = str(payload.get("status") or "").strip()
+                self.send_json(update_research_finding_status(finding_id, status))
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research finding status error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/research-jobs/defaults":
+            try:
+                self.send_json(create_default_research_jobs())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research job defaults error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/research-jobs/run-enabled":
+            try:
+                self.send_json(run_enabled_research_jobs())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Enabled research job run error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path.startswith("/api/research-jobs/") and parsed.path.endswith("/run"):
+            job_id_text = parsed.path.split("/")[-2]
+            try:
+                job_id = int(job_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Research job id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                self.send_json(run_research_job(job_id))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research job run error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/backtest/preview":
+            try:
+                payload = self.read_json()
+                filters = parse_backtest_filters(payload.get("filters") if isinstance(payload.get("filters"), dict) else payload)
+                self.send_json(preview_backtest(filters))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Backtest preview error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/backtest/run":
+            try:
+                payload = self.read_json()
+                filters_payload = payload.get("filters") if isinstance(payload.get("filters"), dict) else payload
+                response = run_backtest(
+                    name=str(payload.get("name") or "Research Backtest"),
+                    description=str(payload.get("description") or "").strip() or None,
+                    filters=parse_backtest_filters(filters_payload),
+                )
+                self.send_json(response)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Backtest run error: {exc}"},
                     status=HTTPStatus.BAD_REQUEST,
                 )
             return
@@ -392,6 +772,55 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Regime Intelligence error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/run/save":
+            try:
+                payload = self.read_json()
+                scan_payload = payload.get("scan") if isinstance(payload.get("scan"), dict) else payload
+                self.send_json(save_scan_result_once(scan_payload))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Save Results error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/reports/export-pdf":
+            try:
+                payload = self.read_json()
+                scan_payload = payload.get("scan") if isinstance(payload.get("scan"), dict) else payload
+                ticker = str(payload.get("ticker") or "").strip().upper() or None
+                async_mode = payload.get("async")
+                if async_mode is None:
+                    async_mode = DEFAULT_ASYNC_EXPORT
+                else:
+                    async_mode = async_mode in (True, "true", "1", 1)
+                service = get_report_service(REPORTS_DIR)
+                batch_tickers = payload.get("tickers")
+                if isinstance(batch_tickers, list) and batch_tickers:
+                    response = service.export_batch(
+                        scan_payload,
+                        tickers=[str(item) for item in batch_tickers],
+                        async_mode=async_mode,
+                    )
+                else:
+                    response = service.export(
+                        scan_payload,
+                        ticker=ticker,
+                        async_mode=async_mode,
+                    )
+                self.send_json(response)
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"PDF export error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
@@ -474,6 +903,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     load_env()
     args = build_parser().parse_args()
+    default_exports_dir()
+    ensure_report_worker(ReportConfig(exports_dir=REPORTS_DIR))
     address = (args.host, args.port)
     server = ThreadingHTTPServer(address, DashboardHandler)
     url = f"http://{args.host}:{args.port}"

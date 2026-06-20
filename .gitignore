@@ -3,3 +3,9 @@ node_modules
 .env
 .env.local
 package-lock.json
+exports/reports/*.pdf
+exports/reports/*.html
+exports/reports/.report-manifest.json
+exports/reports/.report-manifest.json.bak
+exports/reports/.report-registry.db
+exports/reports/.report-registry.db-*

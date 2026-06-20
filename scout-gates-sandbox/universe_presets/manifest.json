@@ -1,0 +1,183 @@
+{
+  "manifestVersion": "2026.06.1",
+  "maxTickers": 12,
+  "recommendedTimeoutSec": 25,
+  "presets": {
+    "mega_cap_tech": {
+      "id": "mega_cap_tech",
+      "label": "Mega Cap Tech",
+      "version": "2026.06.1",
+      "cohortClass": "actionable",
+      "scanPurpose": "cohort_baseline",
+      "sectorHint": "AI_INFRASTRUCTURE",
+      "tags": ["RESEARCH"],
+      "tickers": [
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "TSLA",
+        "AVGO",
+        "NFLX",
+        "CRM"
+      ],
+      "note": "Actionable technology cohort baseline. Tickers auto-load from manifest v2026.06.1."
+    },
+    "semiconductors": {
+      "id": "semiconductors",
+      "label": "Semiconductors",
+      "version": "2026.06.1",
+      "cohortClass": "actionable",
+      "scanPurpose": "cohort_baseline",
+      "sectorHint": "SEMICONDUCTORS",
+      "tags": ["RESEARCH"],
+      "tickers": [
+        "NVDA",
+        "AMD",
+        "AVGO",
+        "INTC",
+        "QCOM",
+        "TXN",
+        "MU",
+        "LRCX",
+        "AMAT",
+        "ASML"
+      ],
+      "note": "Semiconductor actionable cohort. Cap repeat scans in rotation policy."
+    },
+    "financials": {
+      "id": "financials",
+      "label": "Financials",
+      "version": "2026.06.1",
+      "cohortClass": "actionable",
+      "scanPurpose": "cohort_baseline",
+      "sectorHint": "FINTECH_CRYPTO",
+      "tags": ["RESEARCH"],
+      "tickers": [
+        "JPM",
+        "BAC",
+        "WFC",
+        "GS",
+        "MS",
+        "C",
+        "BLK",
+        "SCHW",
+        "AXP",
+        "USB"
+      ],
+      "note": "Financials actionable cohort baseline."
+    },
+    "healthcare": {
+      "id": "healthcare",
+      "label": "Healthcare",
+      "version": "2026.06.1",
+      "cohortClass": "actionable",
+      "scanPurpose": "cohort_baseline",
+      "sectorHint": "HEALTHCARE_DEVICES",
+      "tags": ["RESEARCH"],
+      "tickers": [
+        "UNH",
+        "JNJ",
+        "LLY",
+        "MRK",
+        "ABBV",
+        "TMO",
+        "ABT",
+        "PFE",
+        "AMGN",
+        "ISRG"
+      ],
+      "note": "Healthcare actionable cohort baseline."
+    },
+    "retail": {
+      "id": "retail",
+      "label": "Retail",
+      "version": "2026.06.1",
+      "cohortClass": "actionable",
+      "scanPurpose": "cohort_baseline",
+      "sectorHint": "CONSUMER_DISCRETIONARY",
+      "tags": ["RESEARCH"],
+      "tickers": [
+        "WMT",
+        "COST",
+        "TGT",
+        "HD",
+        "LOW",
+        "AMZN",
+        "BKNG",
+        "ROST",
+        "DG",
+        "ULTA"
+      ],
+      "note": "Retail and consumer discretionary cohort baseline."
+    },
+    "energy": {
+      "id": "energy",
+      "label": "Energy",
+      "version": "2026.06.1",
+      "cohortClass": "actionable",
+      "scanPurpose": "cohort_baseline",
+      "sectorHint": "ENERGY_NUCLEAR_GRID",
+      "tags": ["RESEARCH"],
+      "tickers": [
+        "XOM",
+        "CVX",
+        "COP",
+        "SLB",
+        "EOG",
+        "MPC",
+        "PSX",
+        "VLO",
+        "OXY",
+        "HAL"
+      ],
+      "note": "Energy actionable cohort baseline."
+    },
+    "etfs": {
+      "id": "etfs",
+      "label": "ETFs",
+      "version": "2026.06.1",
+      "cohortClass": "research",
+      "scanPurpose": "regime_probe",
+      "sectorHint": "ETF_REGIME",
+      "tags": ["ETF", "REGIME"],
+      "tickers": [
+        "SPY",
+        "QQQ",
+        "IWM",
+        "DIA",
+        "XLK",
+        "XLF",
+        "XLE",
+        "XLV",
+        "HYG",
+        "TLT"
+      ],
+      "note": "Research-only regime probe. Excluded from actionable win-rate KPIs."
+    },
+    "failure_learning": {
+      "id": "failure_learning",
+      "label": "Failure Learning",
+      "version": "2026.06.1",
+      "cohortClass": "failure_learning",
+      "scanPurpose": "gate_intelligence",
+      "sectorHint": "FAILURE_LEARNING",
+      "tags": ["FAILURE LEARNING"],
+      "tickers": [
+        "GME",
+        "AMC",
+        "RIVN",
+        "LCID",
+        "SNAP",
+        "LYFT",
+        "INTC",
+        "PYPL",
+        "DIS",
+        "BA"
+      ],
+      "note": "Gate-intelligence cohort. Preview recommended; quarantined from actionable analytics."
+    }
+  }
+}

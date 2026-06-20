@@ -1,0 +1,73 @@
+name: Scout Cloud Research Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      findings_limit:
+        description: Recent completed runs to scan for findings
+        required: false
+        default: "20"
+      skip_findings:
+        description: Run research jobs only (skip findings generation)
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    # Weekday mornings at 14:00 UTC (~6 AM US Pacific during standard time).
+    - cron: "0 14 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scout-cloud-research-worker
+  cancel-in-progress: false
+
+jobs:
+  research-worker:
+    name: Run scheduled research and findings
+    runs-on: ubuntu-latest
+    env:
+      SCOUT_RESEARCH_WORKER_SECRET: ${{ secrets.SCOUT_RESEARCH_WORKER_SECRET }}
+      SCOUT_CLOUD_RESEARCH_ENABLED: ${{ secrets.SCOUT_CLOUD_RESEARCH_ENABLED }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore Scout cloud research database cache
+        uses: actions/cache@v4
+        id: scout-memory-cache
+        with:
+          path: scout-gates-sandbox/scout_research_cloud.db
+          key: scout-research-cloud-db-v1-${{ github.repository }}-${{ github.ref_name }}
+          restore-keys: |
+            scout-research-cloud-db-v1-${{ github.repository }}-
+
+      - name: Run scheduled research worker
+        env:
+          SCOUT_RESEARCH_DB_PATH: scout-gates-sandbox/scout_research_cloud.db
+        run: |
+          set -euo pipefail
+          ARGS=(scout-gates-sandbox/scheduled_research_runner.py --cloud-worker)
+          if [ "${{ inputs.skip_findings }}" = "true" ]; then
+            ARGS+=(--skip-findings)
+          fi
+          FINDINGS_LIMIT="${{ inputs.findings_limit }}"
+          if [ -n "${FINDINGS_LIMIT}" ]; then
+            ARGS+=(--findings-limit "${FINDINGS_LIMIT}")
+          fi
+          python3 "${ARGS[@]}"
+
+      - name: Upload Scout cloud research database artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scout-research-cloud-db-${{ github.run_id }}
+          path: scout-gates-sandbox/scout_research_cloud.db
+          if-no-files-found: ignore
+          retention-days: 14

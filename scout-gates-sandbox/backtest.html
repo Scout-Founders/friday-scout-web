@@ -1,0 +1,1299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Backtesting</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --accent: #00e5a0;
+      --accent-soft: #00e5a022;
+      --danger: #ff3b5c;
+      --warning: #ffb836;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #00e5a018, transparent 34rem),
+        radial-gradient(circle at top right, #6366f118, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .shell { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 8px; font-size: clamp(32px, 6vw, 56px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 28px; }
+    .top-nav a, .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .top-nav a.active, .button.primary { color: var(--text); border-color: #2a3f66; background: var(--accent-soft); }
+    .card {
+      background: linear-gradient(180deg, var(--panel-soft), var(--panel));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .status { color: var(--muted); margin-bottom: 16px; min-height: 1.4em; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .metric {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #070b14;
+      color: var(--text);
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .hint-tooltip { cursor: help; border-bottom: 1px dotted var(--muted); }
+    .positive { color: var(--accent); }
+    .negative { color: var(--danger); }
+    .direction-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }
+    .direction-card {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .direction-card h3 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    .direction-card.bullish h3 { color: var(--accent); }
+    .direction-card.bearish h3 { color: var(--danger); }
+    .direction-card.neutral h3 { color: var(--warning); }
+    .direction-stat {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid #13203a;
+      font-size: 13px;
+    }
+    .direction-stat:last-child { border-bottom: 0; }
+    .direction-stat span:first-child { color: var(--muted); }
+    .audit-panel {
+      background: #0a101c;
+      border: 1px solid #3a2030;
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .audit-panel h3 {
+      margin: 0 0 12px;
+      color: var(--danger);
+      font-size: 18px;
+    }
+    .audit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .audit-metric {
+      background: #070b14;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .audit-metric .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .audit-metric .metric-value {
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .trade-audit-table-wrap {
+      overflow-x: auto;
+      margin-top: 8px;
+    }
+    .trade-audit-table-wrap table { min-width: 980px; }
+    .trade-audit-count { margin: 0 0 10px; }
+    .matrix-table-wrap {
+      overflow-x: auto;
+      max-height: 420px;
+      overflow-y: auto;
+      margin-top: 8px;
+    }
+    .matrix-table-wrap table { min-width: 920px; }
+    .legacy-banner {
+      margin-bottom: 18px;
+      padding: 14px 16px;
+      border: 1px solid #5c4a1f;
+      border-radius: 14px;
+      background: #2a2210;
+      color: #ffd88a;
+      line-height: 1.5;
+    }
+    @media (max-width: 900px) {
+      .grid, .filter-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .grid, .filter-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Backtesting Foundation 1.1</div>
+    <h1>Historical Evidence</h1>
+    <p class="lede">
+      Read-only reporting over saved Research Memory. This layer never changes gate logic,
+      ranking, Stable Signal, or live scan behavior.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a class="active" href="/backtest">Backtesting</a>
+      <a href="/research-queue">Research Queue</a>
+      <a href="/research-findings">Research Findings</a>
+      <a href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Ready.</div>
+    <div class="legacy-banner" id="legacy-metrics-banner" hidden role="status">
+      This run may use legacy raw-return metrics. Use Backtesting Foundation 1.1+ runs for direction-adjusted performance.
+    </div>
+
+    <section class="card">
+      <h2>Run Backtest</h2>
+      <p class="hint">Filters apply to completed outcomes in <code>scan_results</code> (Bullish and Bearish by default).</p>
+      <div class="filter-grid">
+        <div>
+          <label for="name">Name</label>
+          <input id="name" value="Research Memory Backtest">
+        </div>
+        <div>
+          <label for="start-date">Start date</label>
+          <input id="start-date" type="date">
+        </div>
+        <div>
+          <label for="end-date">End date</label>
+          <input id="end-date" type="date">
+        </div>
+        <div>
+          <label for="engine-version">Engine version</label>
+          <input id="engine-version" placeholder="e.g. 3.0.4+091d09da8477">
+        </div>
+        <div>
+          <label for="cohort-class">Cohort class</label>
+          <input id="cohort-class" placeholder="actionable, research">
+        </div>
+        <div>
+          <label for="sector">Sector</label>
+          <input id="sector" placeholder="Technology">
+        </div>
+        <div>
+          <label for="min-score">Min score</label>
+          <input id="min-score" type="number" min="0" max="100">
+        </div>
+        <div>
+          <label for="max-score">Max score</label>
+          <input id="max-score" type="number" min="0" max="100">
+        </div>
+        <div>
+          <label for="description">Description</label>
+          <textarea id="description" placeholder="Optional notes"></textarea>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="button" id="preview-button" type="button">Preview Filters</button>
+        <button class="button primary" id="run-button" type="button">Run Backtest</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Summary</h2>
+      <p class="hint">
+        P&amp;L metrics use
+        <span class="hint-tooltip" title="Bearish signal return = negative of stock move.">Signal Return</span>
+        (direction-adjusted). Raw underlying price moves are shown separately as Stock Return.
+      </p>
+      <div class="grid" id="summary-grid">
+        <div class="metric"><div class="metric-label">Signals</div><div class="metric-value" id="metric-signals">—</div></div>
+        <div class="metric"><div class="metric-label">Win Rate</div><div class="metric-value" id="metric-win-rate">—</div></div>
+        <div class="metric">
+          <div class="metric-label">Avg Signal Return</div>
+          <div class="metric-value" id="metric-avg-return">—</div>
+          <div class="hint">direction-adjusted</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Avg Stock Return</div>
+          <div class="metric-value" id="metric-avg-stock-return">—</div>
+          <div class="hint">raw underlying move</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Expectancy</div>
+          <div class="metric-value" id="metric-expectancy">—</div>
+          <div class="hint">mean signal return</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Direction Diagnostics</h2>
+      <p class="hint">
+        Direction-specific performance for the loaded or current backtest sample.
+        Win rate uses existing outcome labels; P&amp;L metrics use
+        <span class="hint-tooltip" title="Bearish signal return = negative of stock move.">signal return</span>
+        (direction-adjusted). Stock return shows raw underlying movement only.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Direction</th>
+            <th>Signal Count</th>
+            <th>Win Rate</th>
+            <th>Avg Signal Return</th>
+            <th>Avg Stock Return</th>
+            <th>Expectancy</th>
+          </tr>
+        </thead>
+        <tbody id="direction-diagnostics-body">
+          <tr><td colspan="6">Run or load a backtest to populate direction diagnostics.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" id="sector-audit-section" hidden>
+      <h2>Sector Failure Audit</h2>
+      <p class="hint">
+        Worst-performing sector in the current preview, saved run, or newly created backtest sample,
+        ranked by average signal return. Signal return is direction-adjusted P&amp;L; stock return is
+        raw underlying movement.
+      </p>
+      <div class="audit-panel">
+        <h3 id="audit-sector-name">—</h3>
+        <div class="audit-grid">
+          <div class="audit-metric">
+            <div class="metric-label">Signal Count</div>
+            <div class="metric-value" id="audit-signal-count">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Win Rate</div>
+            <div class="metric-value" id="audit-win-rate">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Avg Signal Return</div>
+            <div class="metric-value" id="audit-signal-return">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Avg Stock Return</div>
+            <div class="metric-value" id="audit-stock-return">—</div>
+          </div>
+        </div>
+        <h2>Top 5 Losing Tickers</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Direction</th>
+              <th>Stock Return</th>
+              <th>Signal Return</th>
+              <th>Outcome Label</th>
+              <th>Preset / Cohort</th>
+            </tr>
+          </thead>
+          <tbody id="audit-losing-tickers-body">
+            <tr><td colspan="6">Preview, run, or load a backtest to populate sector failure audit.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="bearish-failure-section" hidden>
+      <h2>Bearish Failure Audit</h2>
+      <p class="hint">
+        Bearish signals only from the current preview, saved run, or newly created backtest sample.
+        Signal return is direction-adjusted P&amp;L; stock return is raw underlying movement.
+      </p>
+      <div class="audit-panel">
+        <h2>Summary</h2>
+        <div class="audit-grid">
+          <div class="audit-metric">
+            <div class="metric-label">Signal Count</div>
+            <div class="metric-value" id="bearish-signal-count">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Win Rate</div>
+            <div class="metric-value" id="bearish-win-rate">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Avg Signal Return</div>
+            <div class="metric-value" id="bearish-signal-return">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Avg Stock Return</div>
+            <div class="metric-value" id="bearish-stock-return">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Expectancy</div>
+            <div class="metric-value" id="bearish-expectancy">—</div>
+          </div>
+        </div>
+
+        <h2>Top 10 Losing Bearish Trades</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Sector</th>
+              <th>Score</th>
+              <th>Stock Return</th>
+              <th>Signal Return</th>
+              <th>Gate Combination</th>
+            </tr>
+          </thead>
+          <tbody id="bearish-losing-trades-body">
+            <tr><td colspan="6">Preview, run, or load a backtest to populate bearish failure audit.</td></tr>
+          </tbody>
+        </table>
+
+        <div class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px;">
+          <div>
+            <h2>Loss Sectors</h2>
+            <p class="hint">Most common among bearish losses</p>
+            <table>
+              <thead><tr><th>Sector</th><th>Count</th></tr></thead>
+              <tbody id="bearish-loss-sectors-body"><tr><td colspan="2">—</td></tr></tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Loss Gate Combinations</h2>
+            <p class="hint">Most common among bearish losses</p>
+            <table>
+              <thead><tr><th>Combination</th><th>Count</th></tr></thead>
+              <tbody id="bearish-loss-combos-body"><tr><td colspan="2">—</td></tr></tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Loss Gates</h2>
+            <p class="hint">Most common individual gates among bearish losses</p>
+            <table>
+              <thead><tr><th>Gate</th><th>Count</th></tr></thead>
+              <tbody id="bearish-loss-gates-body"><tr><td colspan="2">—</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="trend-leadership-section" hidden>
+      <h2>Trend Leadership Audit</h2>
+      <p class="hint">
+        Leadership cohorts from the current preview, saved run, or newly created backtest sample.
+        Expectancy uses direction-adjusted signal return. Top tickers also show raw stock return.
+      </p>
+      <div id="trend-leadership-groups">
+        <p class="hint">Preview, run, or load a backtest to populate trend leadership audit.</p>
+      </div>
+    </section>
+
+    <section class="card" id="trade-audit-section" hidden>
+      <h2>Trade Audit</h2>
+      <p class="hint">
+        Every signal in the current preview, saved run, or newly created backtest sample.
+        Sorted by signal return (worst first). Signal return is direction-adjusted P&amp;L;
+        stock return is raw underlying movement.
+      </p>
+      <div class="filter-grid">
+        <div>
+          <label for="trade-audit-ticker">Ticker</label>
+          <input id="trade-audit-ticker" type="text" placeholder="e.g. AMD">
+        </div>
+        <div>
+          <label for="trade-audit-direction">Direction</label>
+          <select id="trade-audit-direction">
+            <option value="">All directions</option>
+            <option value="Bullish">Bullish</option>
+            <option value="Bearish">Bearish</option>
+            <option value="Neutral">Neutral</option>
+          </select>
+        </div>
+        <div>
+          <label for="trade-audit-sector">Sector</label>
+          <select id="trade-audit-sector">
+            <option value="">All sectors</option>
+          </select>
+        </div>
+        <div>
+          <label for="trade-audit-outcome">Outcome Label</label>
+          <select id="trade-audit-outcome">
+            <option value="">All outcome labels</option>
+            <option value="WIN">WIN</option>
+            <option value="LOSS">LOSS</option>
+            <option value="FLAT">FLAT</option>
+          </select>
+        </div>
+        <div>
+          <label for="trade-audit-min-score">Minimum Score</label>
+          <input id="trade-audit-min-score" type="number" step="0.1" placeholder="Any">
+        </div>
+        <div>
+          <label for="trade-audit-max-score">Maximum Score</label>
+          <input id="trade-audit-max-score" type="number" step="0.1" placeholder="Any">
+        </div>
+      </div>
+      <p class="hint trade-audit-count" id="trade-audit-count">—</p>
+      <div class="trade-audit-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Date</th>
+              <th>Preset / Cohort</th>
+              <th>Sector</th>
+              <th>Direction</th>
+              <th>Total Score</th>
+              <th>Stock Return</th>
+              <th>Signal Return</th>
+              <th>Outcome Label</th>
+              <th>Gate Combination</th>
+            </tr>
+          </thead>
+          <tbody id="trade-audit-body">
+            <tr><td colspan="10">Preview, run, or load a backtest to populate trade audit rows.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Top Sectors</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Sector</th>
+            <th>Signals</th>
+            <th>Win Rate</th>
+            <th>Signal Return</th>
+            <th>Stock Return</th>
+            <th>Expectancy</th>
+          </tr>
+        </thead>
+        <tbody id="sector-body"><tr><td colspan="6">Run a backtest to populate sector performance.</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Top Gate Combinations</h2>
+      <table>
+        <thead><tr><th>Combination</th><th>Signals</th><th>Win Rate</th><th>Expectancy</th></tr></thead>
+        <tbody id="gate-combo-body"><tr><td colspan="4">Run a backtest to populate gate combinations.</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Best / Worst Historical Setups</h2>
+      <div class="grid" style="grid-template-columns: 1fr 1fr;">
+        <div>
+          <h2>Best</h2>
+          <table>
+            <thead><tr><th>Ticker</th><th>Signal Return</th><th>Stock Return</th><th>Outcome</th></tr></thead>
+            <tbody id="best-setups-body"><tr><td colspan="4">—</td></tr></tbody>
+          </table>
+        </div>
+        <div>
+          <h2>Worst</h2>
+          <table>
+            <thead><tr><th>Ticker</th><th>Signal Return</th><th>Stock Return</th><th>Outcome</th></tr></thead>
+            <tbody id="worst-setups-body"><tr><td colspan="4">—</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="gate-contribution-section" hidden>
+      <h2>Gate Contribution Audit</h2>
+      <p class="hint">
+        Analytical view of every Horizon-1 gate over signals where the gate passed in the current
+        preview, saved run, or newly created backtest sample. Ranked by expectancy (highest first).
+        Signal return is direction-adjusted P&amp;L; stock return is raw underlying movement.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Gate</th>
+            <th>Signal Count</th>
+            <th>Win Rate</th>
+            <th>Avg Signal Return</th>
+            <th>Avg Stock Return</th>
+            <th>Expectancy</th>
+          </tr>
+        </thead>
+        <tbody id="gate-contribution-body">
+          <tr><td colspan="6">Preview, run, or load a backtest to populate gate contribution audit.</td></tr>
+        </tbody>
+      </table>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top: 16px;">
+        <div>
+          <h2>Best Performing Gates</h2>
+          <p class="hint">Top 5 by expectancy</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate</th>
+                <th>Signal Count</th>
+                <th>Expectancy</th>
+                <th>Avg Signal Return</th>
+              </tr>
+            </thead>
+            <tbody id="best-gates-body">
+              <tr><td colspan="4">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h2>Worst Performing Gates</h2>
+          <p class="hint">Bottom 5 by expectancy</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate</th>
+                <th>Signal Count</th>
+                <th>Expectancy</th>
+                <th>Avg Signal Return</th>
+              </tr>
+            </thead>
+            <tbody id="worst-gates-body">
+              <tr><td colspan="4">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="gate-intersection-section" hidden>
+      <h2>Gate Intersection Matrix</h2>
+      <p class="hint">
+        Performance when both gates in a Horizon-1 pair passed on the same signal in the current
+        preview, saved run, or newly created backtest sample. Ranked by expectancy (highest first).
+        Signal return is direction-adjusted P&amp;L; stock return is raw underlying movement.
+      </p>
+      <div class="matrix-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Gate Pair</th>
+              <th>Signal Count</th>
+              <th>Win Rate</th>
+              <th>Avg Signal Return</th>
+              <th>Avg Stock Return</th>
+              <th>Expectancy</th>
+            </tr>
+          </thead>
+          <tbody id="gate-intersection-body">
+            <tr><td colspan="6">Preview, run, or load a backtest to populate gate intersection matrix.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top: 16px;">
+        <div>
+          <h2>Top 10 Gate Pairs</h2>
+          <p class="hint">Highest expectancy</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate Pair</th>
+                <th>Signal Count</th>
+                <th>Expectancy</th>
+                <th>Avg Signal Return</th>
+              </tr>
+            </thead>
+            <tbody id="top-gate-pairs-body">
+              <tr><td colspan="4">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h2>Bottom 10 Gate Pairs</h2>
+          <p class="hint">Lowest expectancy</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate Pair</th>
+                <th>Signal Count</th>
+                <th>Expectancy</th>
+                <th>Avg Signal Return</th>
+              </tr>
+            </thead>
+            <tbody id="bottom-gate-pairs-body">
+              <tr><td colspan="4">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Gate Performance</h2>
+      <table>
+        <thead><tr><th>Gate</th><th>Signals</th><th>Win Rate</th><th>Signal Return</th><th>Stock Return</th></tr></thead>
+        <tbody id="gate-body"><tr><td colspan="5">Run a backtest to populate gate performance.</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Saved Runs</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Created</th><th>Signals</th><th>Win Rate</th><th>Signal Return</th><th>Status</th><th></th></tr></thead>
+        <tbody id="runs-body"><tr><td colspan="8">Loading...</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    let tradeAuditRows = [];
+
+    function filtersPayload() {
+      const payload = {
+        name: document.getElementById("name").value.trim(),
+        description: document.getElementById("description").value.trim(),
+        startDate: document.getElementById("start-date").value || null,
+        endDate: document.getElementById("end-date").value || null,
+        engineVersion: document.getElementById("engine-version").value.trim() || null,
+        cohortClass: document.getElementById("cohort-class").value.trim() || null,
+        sector: document.getElementById("sector").value.trim() || null,
+      };
+      const minScore = document.getElementById("min-score").value;
+      const maxScore = document.getElementById("max-score").value;
+      if (minScore !== "") payload.minScore = Number(minScore);
+      if (maxScore !== "") payload.maxScore = Number(maxScore);
+      return payload;
+    }
+
+    function formatPct(value) {
+      if (value === null || value === undefined || Number.isNaN(value)) return "—";
+      return `${Number(value).toFixed(1)}%`;
+    }
+
+    function formatReturn(value) {
+      if (value === null || value === undefined || Number.isNaN(value)) return "—";
+      const num = Number(value);
+      const cls = num >= 0 ? "positive" : "negative";
+      return `<span class="${cls}">${num.toFixed(2)}%</span>`;
+    }
+
+    function renderLegacyMetricsWarning(show) {
+      document.getElementById("legacy-metrics-banner").hidden = !show;
+    }
+
+    function renderSectorAudit(audit) {
+      const section = document.getElementById("sector-audit-section");
+      section.hidden = false;
+      const worst = audit && audit.worst_sector;
+      if (!worst) {
+        document.getElementById("audit-sector-name").textContent = "—";
+        document.getElementById("audit-signal-count").textContent = "—";
+        document.getElementById("audit-win-rate").textContent = "—";
+        document.getElementById("audit-signal-return").textContent = "—";
+        document.getElementById("audit-stock-return").textContent = "—";
+        document.getElementById("audit-losing-tickers-body").innerHTML =
+          `<tr><td colspan="6">No sector failure audit available for the current sample.</td></tr>`;
+        return;
+      }
+
+      document.getElementById("audit-sector-name").textContent = worst.sector || "Unknown";
+      document.getElementById("audit-signal-count").textContent = String(worst.signal_count ?? 0);
+      document.getElementById("audit-win-rate").textContent = formatPct(worst.win_rate);
+      document.getElementById("audit-signal-return").innerHTML = formatReturn(worst.avg_signal_return);
+      document.getElementById("audit-stock-return").innerHTML = formatReturn(worst.avg_stock_return);
+
+      const losers = worst.top_losing_tickers || [];
+      document.getElementById("audit-losing-tickers-body").innerHTML = losers.length
+        ? losers.map((row) => `
+            <tr>
+              <td>${row.ticker || "—"}</td>
+              <td>${row.direction || "—"}</td>
+              <td>${formatReturn(row.stock_return)}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${row.outcome_label || "—"}</td>
+              <td>${row.preset_cohort || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="6">No losing tickers available.</td></tr>`;
+    }
+
+    function renderCountRows(rows, emptyMessage) {
+      return (rows || []).length
+        ? rows.map((row) => `
+            <tr>
+              <td>${row.label || "—"}</td>
+              <td>${row.count ?? 0}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="2">${emptyMessage}</td></tr>`;
+    }
+
+    function renderBearishFailureAudit(audit) {
+      const section = document.getElementById("bearish-failure-section");
+      section.hidden = false;
+      const summary = (audit && audit.summary) || {};
+      const bearishCount = summary.signal_count ?? 0;
+
+      document.getElementById("bearish-signal-count").textContent = String(bearishCount);
+      document.getElementById("bearish-win-rate").textContent = formatPct(summary.win_rate);
+      document.getElementById("bearish-signal-return").innerHTML = formatReturn(summary.avg_signal_return);
+      document.getElementById("bearish-stock-return").innerHTML = formatReturn(summary.avg_stock_return);
+      document.getElementById("bearish-expectancy").innerHTML = formatReturn(summary.expectancy);
+
+      const losers = (audit && audit.top_losing_trades) || [];
+      document.getElementById("bearish-losing-trades-body").innerHTML = losers.length
+        ? losers.map((row) => `
+            <tr>
+              <td>${row.ticker || "—"}</td>
+              <td>${row.sector || "—"}</td>
+              <td>${formatScore(row.score)}</td>
+              <td>${formatReturn(row.stock_return)}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${row.gate_combination || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="6">${bearishCount ? "No completed bearish returns available." : "No bearish signals in the current sample."}</td></tr>`;
+
+      document.getElementById("bearish-loss-sectors-body").innerHTML = renderCountRows(
+        audit && audit.common_loss_sectors,
+        "No bearish loss sectors recorded."
+      );
+      document.getElementById("bearish-loss-combos-body").innerHTML = renderCountRows(
+        audit && audit.common_loss_gate_combinations,
+        "No bearish loss gate combinations recorded."
+      );
+      document.getElementById("bearish-loss-gates-body").innerHTML = renderCountRows(
+        audit && audit.common_loss_gates,
+        "No bearish loss gates recorded."
+      );
+    }
+
+    function renderTrendTickerRows(rows, emptyMessage) {
+      return (rows || []).length
+        ? rows.map((row) => `
+            <tr>
+              <td>${row.ticker || "—"}</td>
+              <td>${row.direction || "—"}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${formatReturn(row.stock_return)}</td>
+              <td>${row.outcome_label || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="5">${emptyMessage}</td></tr>`;
+    }
+
+    function renderTrendDirectionPerformance(title, block) {
+      const stats = block || {};
+      return `
+        <div>
+          <h2>${title}</h2>
+          <div class="audit-grid">
+            <div class="audit-metric">
+              <div class="metric-label">Signal Count</div>
+              <div class="metric-value">${stats.signal_count ?? 0}</div>
+            </div>
+            <div class="audit-metric">
+              <div class="metric-label">Win Rate</div>
+              <div class="metric-value">${formatPct(stats.win_rate)}</div>
+            </div>
+            <div class="audit-metric">
+              <div class="metric-label">Expectancy</div>
+              <div class="metric-value">${formatReturn(stats.expectancy)}</div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function renderTrendLeadershipAudit(audit) {
+      const section = document.getElementById("trend-leadership-section");
+      section.hidden = false;
+      const groups = (audit && audit.groups) || [];
+      const container = document.getElementById("trend-leadership-groups");
+      if (!groups.length) {
+        container.innerHTML =
+          `<p class="hint">No trend leadership audit available for the current sample.</p>`;
+        return;
+      }
+
+      container.innerHTML = groups.map((group) => `
+        <div class="audit-panel" style="margin-bottom: 16px;">
+          <h3>${group.label || "Leadership Group"}</h3>
+          <p class="hint">${group.signal_count ?? 0} matching signal(s)</p>
+          <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+            ${renderTrendDirectionPerformance("Bullish Performance", group.bullish)}
+            ${renderTrendDirectionPerformance("Bearish Performance", group.bearish)}
+          </div>
+          <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px;">
+            <div>
+              <h2>Top Winning Tickers</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>Direction</th>
+                    <th>Signal Return</th>
+                    <th>Stock Return</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderTrendTickerRows(group.top_winning_tickers, "No winning tickers available.")}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h2>Top Losing Tickers</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>Direction</th>
+                    <th>Signal Return</th>
+                    <th>Stock Return</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderTrendTickerRows(group.top_losing_tickers, "No losing tickers available.")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    function formatScore(value) {
+      if (value === null || value === undefined || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(1);
+    }
+
+    function populateTradeAuditFilterOptions() {
+      const sectorSelect = document.getElementById("trade-audit-sector");
+      const currentSector = sectorSelect.value;
+      const sectors = [...new Set(
+        tradeAuditRows
+          .map((row) => row.sector)
+          .filter((value) => value !== null && value !== undefined && String(value).trim() !== "")
+      )].sort((a, b) => String(a).localeCompare(String(b)));
+
+      sectorSelect.innerHTML = `<option value="">All sectors</option>${sectors
+        .map((sector) => `<option value="${sector}">${sector}</option>`)
+        .join("")}`;
+      if (sectors.includes(currentSector)) {
+        sectorSelect.value = currentSector;
+      }
+    }
+
+    function applyTradeAuditFilters() {
+      const ticker = document.getElementById("trade-audit-ticker").value.trim().toUpperCase();
+      const direction = document.getElementById("trade-audit-direction").value;
+      const sector = document.getElementById("trade-audit-sector").value;
+      const outcome = document.getElementById("trade-audit-outcome").value;
+      const minScoreRaw = document.getElementById("trade-audit-min-score").value;
+      const maxScoreRaw = document.getElementById("trade-audit-max-score").value;
+      const minScore = minScoreRaw === "" ? null : Number(minScoreRaw);
+      const maxScore = maxScoreRaw === "" ? null : Number(maxScoreRaw);
+
+      const filtered = tradeAuditRows.filter((row) => {
+        const rowTicker = String(row.ticker || "").toUpperCase();
+        if (ticker && !rowTicker.includes(ticker)) return false;
+        if (direction && row.direction !== direction) return false;
+        if (sector && row.sector !== sector) return false;
+        if (outcome && row.outcome_label !== outcome) return false;
+        if (minScore !== null && !Number.isNaN(minScore)) {
+          if (row.score === null || row.score === undefined || Number(row.score) < minScore) return false;
+        }
+        if (maxScore !== null && !Number.isNaN(maxScore)) {
+          if (row.score === null || row.score === undefined || Number(row.score) > maxScore) return false;
+        }
+        return true;
+      }).sort((left, right) => {
+        const leftMissing = left.signal_return === null || left.signal_return === undefined;
+        const rightMissing = right.signal_return === null || right.signal_return === undefined;
+        if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+        return Number(left.signal_return) - Number(right.signal_return);
+      });
+
+      document.getElementById("trade-audit-count").textContent =
+        `Showing ${filtered.length} of ${tradeAuditRows.length} signal(s)`;
+
+      document.getElementById("trade-audit-body").innerHTML = filtered.length
+        ? filtered.map((row) => `
+            <tr>
+              <td>${row.ticker || "—"}</td>
+              <td>${row.date || "—"}</td>
+              <td>${row.preset_cohort || "—"}</td>
+              <td>${row.sector || "—"}</td>
+              <td>${row.direction || "—"}</td>
+              <td>${formatScore(row.score)}</td>
+              <td>${formatReturn(row.stock_return)}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${row.outcome_label || "—"}</td>
+              <td>${row.gate_combination || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="10">No signals match the current filters.</td></tr>`;
+    }
+
+    function renderTradeAudit(rows) {
+      tradeAuditRows = rows || [];
+      const section = document.getElementById("trade-audit-section");
+      section.hidden = false;
+      if (!tradeAuditRows.length) {
+        document.getElementById("trade-audit-body").innerHTML =
+          `<tr><td colspan="10">No signals in the current backtest sample.</td></tr>`;
+        document.getElementById("trade-audit-count").textContent = "Showing 0 of 0 signal(s)";
+        return;
+      }
+      populateTradeAuditFilterOptions();
+      applyTradeAuditFilters();
+    }
+
+    function renderGateContributionRow(row, columns) {
+      const gateLabel = row.gate_code
+        ? `${row.gate_name || row.gate_code} (${row.gate_code})`
+        : (row.gate_name || "—");
+      if (columns === "summary") {
+        return `
+          <tr>
+            <td>${gateLabel}</td>
+            <td>${row.signal_count ?? 0}</td>
+            <td>${formatReturn(row.expectancy)}</td>
+            <td>${formatReturn(row.avg_signal_return)}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td>${gateLabel}</td>
+          <td>${row.signal_count ?? 0}</td>
+          <td>${formatPct(row.win_rate)}</td>
+          <td>${formatReturn(row.avg_signal_return)}</td>
+          <td>${formatReturn(row.avg_stock_return)}</td>
+          <td>${formatReturn(row.expectancy)}</td>
+        </tr>`;
+    }
+
+    function renderGateContributionAudit(audit) {
+      const section = document.getElementById("gate-contribution-section");
+      section.hidden = false;
+      const gates = (audit && audit.gates) || [];
+      if (!gates.length) {
+        document.getElementById("gate-contribution-body").innerHTML =
+          `<tr><td colspan="6">No gate contribution audit available for the current sample.</td></tr>`;
+        document.getElementById("best-gates-body").innerHTML = `<tr><td colspan="4">—</td></tr>`;
+        document.getElementById("worst-gates-body").innerHTML = `<tr><td colspan="4">—</td></tr>`;
+        return;
+      }
+
+      document.getElementById("gate-contribution-body").innerHTML = gates
+        .map((row) => renderGateContributionRow(row, "full"))
+        .join("");
+
+      const best = (audit.best_gates || []).slice(0, 5);
+      document.getElementById("best-gates-body").innerHTML = best.length
+        ? best.map((row) => renderGateContributionRow(row, "summary")).join("")
+        : `<tr><td colspan="4">No gates with measurable expectancy.</td></tr>`;
+
+      const worst = (audit.worst_gates || []).slice(0, 5);
+      document.getElementById("worst-gates-body").innerHTML = worst.length
+        ? worst.map((row) => renderGateContributionRow(row, "summary")).join("")
+        : `<tr><td colspan="4">No gates with measurable expectancy.</td></tr>`;
+    }
+
+    function renderGatePairRow(row, columns) {
+      if (columns === "summary") {
+        return `
+          <tr>
+            <td>${row.gate_pair || "—"}</td>
+            <td>${row.signal_count ?? 0}</td>
+            <td>${formatReturn(row.expectancy)}</td>
+            <td>${formatReturn(row.avg_signal_return)}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td>${row.gate_pair || "—"}</td>
+          <td>${row.signal_count ?? 0}</td>
+          <td>${formatPct(row.win_rate)}</td>
+          <td>${formatReturn(row.avg_signal_return)}</td>
+          <td>${formatReturn(row.avg_stock_return)}</td>
+          <td>${formatReturn(row.expectancy)}</td>
+        </tr>`;
+    }
+
+    function renderGateIntersectionMatrix(matrix) {
+      const section = document.getElementById("gate-intersection-section");
+      section.hidden = false;
+      const pairs = (matrix && matrix.pairs) || [];
+      if (!pairs.length) {
+        document.getElementById("gate-intersection-body").innerHTML =
+          `<tr><td colspan="6">No gate intersection matrix available for the current sample.</td></tr>`;
+        document.getElementById("top-gate-pairs-body").innerHTML = `<tr><td colspan="4">—</td></tr>`;
+        document.getElementById("bottom-gate-pairs-body").innerHTML = `<tr><td colspan="4">—</td></tr>`;
+        return;
+      }
+
+      document.getElementById("gate-intersection-body").innerHTML = pairs
+        .map((row) => renderGatePairRow(row, "full"))
+        .join("");
+
+      const topPairs = (matrix.top_pairs || []).slice(0, 10);
+      document.getElementById("top-gate-pairs-body").innerHTML = topPairs.length
+        ? topPairs.map((row) => renderGatePairRow(row, "summary")).join("")
+        : `<tr><td colspan="4">No gate pairs with measurable expectancy.</td></tr>`;
+
+      const bottomPairs = (matrix.bottom_pairs || []).slice(0, 10);
+      document.getElementById("bottom-gate-pairs-body").innerHTML = bottomPairs.length
+        ? bottomPairs.map((row) => renderGatePairRow(row, "summary")).join("")
+        : `<tr><td colspan="4">No gate pairs with measurable expectancy.</td></tr>`;
+    }
+
+    function renderDirectionDiagnostics(rows) {
+      const byDirection = {};
+      (rows || []).forEach((row) => {
+        byDirection[row.direction] = row;
+      });
+
+      const directions = ["Bullish", "Bearish", "Neutral"];
+      document.getElementById("direction-diagnostics-body").innerHTML = directions
+        .map((direction) => {
+          const row = byDirection[direction] || {};
+          const count = row.signal_count ?? 0;
+          return `
+            <tr>
+              <td>${direction}</td>
+              <td>${count}</td>
+              <td>${formatPct(row.win_rate)}</td>
+              <td>${formatReturn(row.avg_signal_return)}</td>
+              <td>${formatReturn(row.avg_stock_return)}</td>
+              <td>${formatReturn(row.expectancy)}</td>
+            </tr>`;
+        })
+        .join("");
+    }
+
+    function renderAnalytics(data) {
+      const metrics = data.metrics || {};
+      const analytics = data.analytics || {};
+      document.getElementById("metric-signals").textContent = analytics.total_signals ?? metrics.sample_size ?? "0";
+      document.getElementById("metric-win-rate").textContent = formatPct(metrics.win_rate ?? metrics.winRate);
+      document.getElementById("metric-avg-return").innerHTML = formatReturn(metrics.avg_return ?? metrics.avgReturn);
+      document.getElementById("metric-avg-stock-return").innerHTML = formatReturn(
+        metrics.avg_stock_return ?? metrics.avgStockReturn
+      );
+      document.getElementById("metric-expectancy").innerHTML = formatReturn(
+        metrics.expectancy === undefined || metrics.expectancy === null ? null : metrics.expectancy
+      );
+      renderDirectionDiagnostics(analytics.direction_breakdown);
+      renderSectorAudit(analytics.sector_audit);
+      renderBearishFailureAudit(analytics.bearish_failure_audit);
+      renderTrendLeadershipAudit(analytics.trend_leadership_audit);
+      renderTradeAudit(analytics.trade_audit);
+      renderGateContributionAudit(analytics.gate_contribution_audit);
+      renderGateIntersectionMatrix(analytics.gate_intersection_matrix);
+
+      const sectorRows = (analytics.sector_performance || []).slice(0, 8);
+      document.getElementById("sector-body").innerHTML = sectorRows.length
+        ? sectorRows.map((row) => `
+            <tr>
+              <td>${row.label}</td>
+              <td>${row.sample_size}</td>
+              <td>${formatPct(row.win_rate)}</td>
+              <td>${formatReturn(row.avg_return)}</td>
+              <td>${formatReturn(row.avg_stock_return)}</td>
+              <td>${formatReturn(row.expectancy)}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="6">No sector breakdown available.</td></tr>`;
+
+      const gateComboRows = (analytics.top_gate_combinations || []).slice(0, 8);
+      document.getElementById("gate-combo-body").innerHTML = gateComboRows.length
+        ? gateComboRows.map((row) => `
+            <tr>
+              <td>${row.label}</td>
+              <td>${row.sample_size}</td>
+              <td>${formatPct(row.win_rate)}</td>
+              <td>${formatReturn(row.expectancy)}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="4">No multi-gate combinations with sample size ≥ 2.</td></tr>`;
+
+      const gateRows = (analytics.gate_performance || []).slice(0, 10);
+      document.getElementById("gate-body").innerHTML = gateRows.length
+        ? gateRows.map((row) => `
+            <tr>
+              <td>${row.label}</td>
+              <td>${row.sample_size}</td>
+              <td>${formatPct(row.win_rate)}</td>
+              <td>${formatReturn(row.avg_return)}</td>
+              <td>${formatReturn(row.avg_stock_return)}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="5">No gate performance available.</td></tr>`;
+
+      const bestRows = analytics.best_setups || [];
+      document.getElementById("best-setups-body").innerHTML = bestRows.length
+        ? bestRows.map((row) => `
+            <tr>
+              <td>${row.ticker}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${formatReturn(row.stock_return ?? row.primary_return)}</td>
+              <td>${row.outcome_label || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="4">No completed returns.</td></tr>`;
+
+      const worstRows = analytics.worst_setups || [];
+      document.getElementById("worst-setups-body").innerHTML = worstRows.length
+        ? worstRows.map((row) => `
+            <tr>
+              <td>${row.ticker}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${formatReturn(row.stock_return ?? row.primary_return)}</td>
+              <td>${row.outcome_label || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="4">No completed returns.</td></tr>`;
+    }
+
+    async function loadRuns() {
+      const response = await fetch("/api/backtest/runs?limit=20");
+      const data = await response.json();
+      const rows = data.runs || [];
+      document.getElementById("runs-body").innerHTML = rows.length
+        ? rows.map((row) => `
+            <tr>
+              <td>${row.id}</td>
+              <td>${row.name}</td>
+              <td>${row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}</td>
+              <td>${row.signalCount ?? 0}</td>
+              <td>${formatPct(row.winRate)}</td>
+              <td>${formatReturn(row.avgReturn)}</td>
+              <td>${row.status}</td>
+              <td><button class="button" type="button" data-run-id="${row.id}">Load</button></td>
+            </tr>`).join("")
+        : `<tr><td colspan="8">No saved backtest runs yet.</td></tr>`;
+
+      document.querySelectorAll("[data-run-id]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const runId = button.getAttribute("data-run-id");
+          statusEl.textContent = `Loading backtest run ${runId}...`;
+          const runResponse = await fetch(`/api/backtest/runs/${encodeURIComponent(runId)}`);
+          const runData = await runResponse.json();
+          if (!runData.ok) {
+            statusEl.textContent = runData.message || "Could not load backtest run.";
+            return;
+          }
+          renderAnalytics({
+            metrics: {
+              ...(runData.metrics || {}),
+              win_rate: runData.metrics?.winRate,
+              avg_return: runData.metrics?.avgReturn,
+              avg_stock_return: runData.metrics?.avgStockReturn,
+              expectancy: runData.metrics?.expectancy,
+              sample_size: runData.analytics?.total_signals,
+            },
+            analytics: runData.analytics || {},
+          });
+          renderLegacyMetricsWarning(!!runData.legacyMetricsWarning);
+          statusEl.textContent = `Loaded backtest run ${runId}.`;
+        });
+      });
+    }
+
+    document.getElementById("preview-button").addEventListener("click", async () => {
+      statusEl.textContent = "Previewing filters...";
+      try {
+        const response = await fetch("/api/backtest/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filters: filtersPayload() }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Preview failed.");
+        renderLegacyMetricsWarning(false);
+        renderAnalytics(data);
+        statusEl.textContent = `Preview matched ${data.signalsMatched || 0} signal(s).`;
+      } catch (error) {
+        statusEl.textContent = `Preview failed: ${error.message || error}`;
+      }
+    });
+
+    document.getElementById("run-button").addEventListener("click", async () => {
+      statusEl.textContent = "Running backtest...";
+      try {
+        const payload = filtersPayload();
+        const response = await fetch("/api/backtest/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Backtest failed.");
+        renderLegacyMetricsWarning(false);
+        renderAnalytics(data);
+        statusEl.textContent = `Saved backtest run #${data.runId} with ${data.signalsSaved || 0} signal(s).`;
+        await loadRuns();
+      } catch (error) {
+        statusEl.textContent = `Backtest failed: ${error.message || error}`;
+      }
+    });
+
+    loadRuns().catch((error) => {
+      statusEl.textContent = `Could not load saved runs: ${error.message || error}`;
+    });
+
+    [
+      "trade-audit-ticker",
+      "trade-audit-direction",
+      "trade-audit-sector",
+      "trade-audit-outcome",
+      "trade-audit-min-score",
+      "trade-audit-max-score",
+    ].forEach((id) => {
+      const element = document.getElementById(id);
+      element.addEventListener("input", applyTradeAuditFilters);
+      element.addEventListener("change", applyTradeAuditFilters);
+    });
+  </script>
+</body>
+</html>
