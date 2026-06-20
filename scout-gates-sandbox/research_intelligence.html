@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Research Intelligence</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --accent: #fbbf24;
+      --accent-soft: #fbbf2422;
+      --danger: #ff3b5c;
+      --warning: #ffb836;
+      --info: #5b9dff;
+      --success: #00e5a0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #fbbf2418, transparent 34rem),
+        radial-gradient(circle at top right, #6366f118, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .shell { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 8px; font-size: clamp(32px, 6vw, 56px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 28px; }
+    .top-nav a, .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    .top-nav a.active, .button.primary { color: var(--text); border-color: #5f4a1f; background: var(--accent-soft); }
+    .card {
+      background: linear-gradient(180deg, var(--panel-soft), var(--panel));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .status { color: var(--muted); margin-bottom: 16px; min-height: 1.4em; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .metric {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .metric-sub { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.4; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .list { display: grid; gap: 12px; }
+    .item {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .item-title { font-size: 16px; font-weight: 700; margin: 0 0 8px; }
+    .item-meta { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .pill.success { color: var(--success); border-color: #1f5f49; }
+    .pill.warning { color: var(--warning); border-color: #5f4a1f; }
+    .pill.info { color: var(--info); border-color: #1f3f5f; }
+    .pill.danger { color: var(--danger); border-color: #5f1f2f; }
+    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+    .empty-state { color: var(--muted); padding: 8px 0; }
+    .button:disabled { opacity: 0.55; cursor: wait; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Research Synthesis Layer</div>
+    <h1>Research Intelligence</h1>
+    <p class="lede">
+      A read-only summary of what the research system has learned from jobs, findings, rule candidates,
+      and historical validations. No live rule changes or production behavior.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a href="/backtest">Backtesting</a>
+      <a href="/research-queue">Research Queue</a>
+      <a href="/research-findings">Research Findings</a>
+      <a href="/rule-candidates">Rule Candidates</a>
+      <a href="/rule-validations">Rule Validations</a>
+      <a class="active" href="/research-intelligence">Research Intelligence</a>
+      <a href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Loading research intelligence...</div>
+    <div class="actions">
+      <button class="button primary" id="refresh-button" type="button">Refresh</button>
+    </div>
+
+    <section class="card">
+      <h2>Executive Summary</h2>
+      <div class="grid" id="summary-grid">
+        <div class="metric"><div class="metric-label">Total Findings</div><div class="metric-value" id="metric-total-findings">—</div></div>
+        <div class="metric"><div class="metric-label">Open Findings</div><div class="metric-value" id="metric-open-findings">—</div></div>
+        <div class="metric"><div class="metric-label">Rule Candidates</div><div class="metric-value" id="metric-rule-candidates">—</div></div>
+        <div class="metric"><div class="metric-label">Completed Validations</div><div class="metric-value" id="metric-completed-validations">—</div></div>
+        <div class="metric">
+          <div class="metric-label">Highest Confidence Validation</div>
+          <div class="metric-value" id="metric-top-confidence">—</div>
+          <div class="metric-sub" id="metric-top-confidence-detail">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Strongest Validated Ideas</h2>
+      <p class="hint">Ranked by expectancy improvement and validation confidence.</p>
+      <div class="list" id="validated-ideas-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>Strongest Findings</h2>
+      <div class="list" id="findings-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>Gate Intelligence</h2>
+      <div class="two-col">
+        <div>
+          <h3>Strongest Gates</h3>
+          <div class="list" id="gate-strength-list"></div>
+        </div>
+        <div>
+          <h3>Weakest Gates</h3>
+          <div class="list" id="gate-weakness-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Recurring Patterns</h2>
+      <div class="two-col">
+        <div>
+          <h3>Success Patterns</h3>
+          <div class="list" id="success-patterns-list"></div>
+        </div>
+        <div>
+          <h3>Failure Patterns</h3>
+          <div class="list" id="failure-patterns-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Suggested Next Experiments</h2>
+      <div class="list" id="experiments-list"></div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+
+    function formatPct(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+      const numeric = Number(value);
+      return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}%`;
+    }
+
+    function formatNumber(value, digits = 1) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+      return Number(value).toFixed(digits);
+    }
+
+    function pill(text, tone = "info") {
+      return `<span class="pill ${tone}">${text}</span>`;
+    }
+
+    function renderEmpty(message) {
+      return `<div class="empty-state">${message}</div>`;
+    }
+
+    function renderPatternGroup(title, items) {
+      if (!items || !items.length) return "";
+      return `
+        <div class="item">
+          <div class="item-title">${title}</div>
+          <div class="item-meta">${items.map((item) => `${item.label} (${item.count})`).join(" · ")}</div>
+        </div>`;
+    }
+
+    function renderDashboard(data) {
+      const summary = data.summary || {};
+      document.getElementById("metric-total-findings").textContent = String(summary.totalFindings ?? 0);
+      document.getElementById("metric-open-findings").textContent = String(summary.openFindings ?? 0);
+      document.getElementById("metric-rule-candidates").textContent = String(summary.ruleCandidates ?? 0);
+      document.getElementById("metric-completed-validations").textContent = String(summary.completedValidations ?? 0);
+
+      const top = summary.highestConfidenceValidation;
+      if (top) {
+        document.getElementById("metric-top-confidence").textContent = formatNumber(top.confidenceScore, 1);
+        document.getElementById("metric-top-confidence-detail").textContent =
+          `${top.candidateTitle || "Candidate"} · expectancy ${formatPct(top.expectancyDelta)}`;
+      } else {
+        document.getElementById("metric-top-confidence").textContent = "—";
+        document.getElementById("metric-top-confidence-detail").textContent = "No completed validations yet.";
+      }
+
+      const validations = data.strongestValidatedIdeas || [];
+      document.getElementById("validated-ideas-list").innerHTML = validations.length
+        ? validations.map((item) => `
+          <article class="item">
+            <div class="item-title">${item.candidateTitle || "Untitled candidate"}</div>
+            <div class="item-meta">
+              ${pill(`confidence ${formatNumber(item.confidenceScore, 1)}`, "success")}
+              ${pill(`expectancy ${formatPct(item.expectancyDelta)}`, "info")}
+              ${pill(`win rate ${formatPct(item.winRateDelta)}`, "info")}
+              ${pill(`${item.candidateSignalCount || 0} signals`, "warning")}
+            </div>
+            <div class="item-meta">${item.validationSummary || "—"}</div>
+          </article>`).join("")
+        : renderEmpty("No completed validations yet.");
+
+      const findings = data.strongestFindings || [];
+      document.getElementById("findings-list").innerHTML = findings.length
+        ? findings.map((item) => `
+          <article class="item">
+            <div class="item-title">${item.title || "Untitled finding"}</div>
+            <div class="item-meta">
+              ${pill(item.findingType || "finding", "info")}
+              ${pill(item.severity || "info", item.severity === "warning" ? "warning" : "info")}
+              ${pill(item.confidence || "medium", "success")}
+            </div>
+            <div class="item-meta">Next test: ${item.recommendedNextTest || "—"}</div>
+          </article>`).join("")
+        : renderEmpty("No findings recorded yet.");
+
+      function renderGateList(items) {
+        if (!items || !items.length) return renderEmpty("No gate rankings available.");
+        return items.map((gate) => `
+          <article class="item">
+            <div class="item-title">${gate.gateName || gate.gateCode}</div>
+            <div class="item-meta">
+              expectancy ${formatPct(gate.expectancy)} · win rate ${formatPct(gate.winRate)} · ${gate.signalCount || 0} signals
+            </div>
+            <div class="item-meta">Findings: ${
+              (gate.linkedFindings || []).map((f) => f.title).join(" · ") || "—"
+            }</div>
+          </article>`).join("");
+      }
+
+      document.getElementById("gate-strength-list").innerHTML =
+        renderGateList(data.gateStrengthRankings || []);
+      document.getElementById("gate-weakness-list").innerHTML =
+        renderGateList(data.gateWeaknessRankings || []);
+
+      const success = data.recurringSuccessPatterns || {};
+      document.getElementById("success-patterns-list").innerHTML = [
+        renderPatternGroup("Repeated Winners", success.repeatedWinners),
+        renderPatternGroup("Leadership Groups", success.repeatedLeadershipGroups),
+        renderPatternGroup("Sectors", success.repeatedSectors),
+      ].join("") || renderEmpty("No recurring success patterns yet.");
+
+      const failure = data.recurringFailurePatterns || {};
+      document.getElementById("failure-patterns-list").innerHTML = [
+        renderPatternGroup("Repeated Losers", failure.repeatedLosers),
+        renderPatternGroup("Direction Failures", failure.repeatedDirectionFailures),
+        renderPatternGroup("Gate Weaknesses", failure.repeatedGateWeaknesses),
+      ].join("") || renderEmpty("No recurring failure patterns yet.");
+
+      const experiments = data.recommendedNextExperiments || [];
+      document.getElementById("experiments-list").innerHTML = experiments.length
+        ? experiments.map((item) => `
+          <article class="item">
+            <div class="item-title">${item.title}</div>
+            <div class="item-meta">${pill(item.source || "research", "warning")}</div>
+            <div class="item-meta">${item.rationale || "—"}</div>
+          </article>`).join("")
+        : renderEmpty("No suggested experiments yet.");
+    }
+
+    async function loadDashboard() {
+      statusEl.textContent = "Loading research intelligence...";
+      const response = await fetch("/api/research-intelligence");
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.message || "Could not load research intelligence.");
+      renderDashboard(data);
+      statusEl.textContent = "Research intelligence dashboard loaded.";
+    }
+
+    document.getElementById("refresh-button").addEventListener("click", () => {
+      loadDashboard().catch((error) => {
+        statusEl.textContent = `Load failed: ${error.message || error}`;
+      });
+    });
+
+    loadDashboard().catch((error) => {
+      statusEl.textContent = `Load failed: ${error.message || error}`;
+    });
+  </script>
+</body>
+</html>

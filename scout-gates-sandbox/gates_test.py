@@ -3555,6 +3555,183 @@ class RuleValidationApiTests(unittest.TestCase):
         self.assertEqual(len(validations), 1)
 
 
+class ResearchIntelligenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "research_intelligence_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def seed_research_stack(self) -> None:
+        import memory_store as ms
+        import research_findings_engine as rfe
+        import rule_candidates_engine as rce
+        import rule_validation_engine as rve
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "SPECTER", "passed": True}, {"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        rfe.create_research_finding(
+            finding_type="gate_strength",
+            severity="info",
+            title="SPECTER showing positive expectancy",
+            description="SPECTER passed on historical signals.",
+            confidence="high",
+            supporting_metrics={"gateCode": "SPECTER", "signalCount": 12, "expectancy": 4.5},
+            related_gates=["SPECTER"],
+            recommended_next_test="Test SPECTER emphasis on mega-cap tech",
+        )
+        rfe.create_research_finding(
+            finding_type="direction_failure",
+            severity="warning",
+            title="Bearish signals underperforming",
+            description="Bearish calls underperformed in recent runs.",
+            confidence="medium",
+            recommended_next_test="Investigate trend override logic for bearish calls.",
+        )
+
+        candidate = rce.create_rule_candidate(
+            candidate_type="gate_weight_candidate",
+            title="Test SPECTER emphasis",
+            hypothesis="SPECTER may improve expectancy.",
+            proposed_rule="Evaluate SPECTER emphasis.",
+            rationale="Gate strength finding.",
+            validation_plan="Backtest SPECTER-positive setups.",
+            status="testing",
+            affected_scope={"gates": ["SPECTER"]},
+        )
+        rve.run_rule_validation(int(candidate["candidate"]["id"]))
+
+    def test_research_intelligence_summary(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        summary = ri.get_research_intelligence_summary()
+        self.assertEqual(summary["totalFindings"], 2)
+        self.assertEqual(summary["openFindings"], 2)
+        self.assertEqual(summary["ruleCandidates"], 1)
+        self.assertEqual(summary["completedValidations"], 1)
+        self.assertIsNotNone(summary["highestConfidenceValidation"])
+
+    def test_top_findings_and_validations(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        findings = ri.get_top_findings(limit=5)
+        validations = ri.get_top_validations(limit=5)
+        self.assertGreaterEqual(len(findings), 2)
+        self.assertEqual(len(validations), 1)
+        self.assertIn("recommendedNextTest", findings[0])
+        self.assertIn("expectancyDelta", validations[0])
+
+    def test_gate_rankings_and_patterns(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        strength = ri.get_gate_strength_rankings(limit=3)
+        weakness = ri.get_gate_weakness_rankings(limit=3)
+        success = ri.get_recurring_success_patterns(limit=5)
+        failure = ri.get_recurring_failure_patterns(limit=5)
+        self.assertTrue(strength)
+        self.assertTrue(failure["repeatedDirectionFailures"])
+        self.assertTrue(success["repeatedWinners"])
+
+    def test_recommended_next_experiments(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        experiments = ri.get_recommended_next_experiments(limit=5)
+        self.assertTrue(experiments)
+        titles = " ".join(item["title"].lower() for item in experiments)
+        self.assertTrue("specter" in titles or "bearish" in titles or "follow up" in titles)
+
+    def test_dashboard_payload(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        payload = ri.get_research_intelligence_dashboard()
+        self.assertTrue(payload["ok"])
+        self.assertIn("summary", payload)
+        self.assertIn("strongestValidatedIdeas", payload)
+        self.assertIn("recommendedNextExperiments", payload)
+
+    def test_research_intelligence_api(self) -> None:
+        import json
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+        from unittest.mock import patch
+        import urllib.request
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "research_intelligence_api.db"
+            patchers = [
+                patch.object(ms, "DB_PATH", db_path),
+                patch.object(ms, "_DB_INITIALIZED", False),
+            ]
+            for patcher in patchers:
+                patcher.start()
+            try:
+                ms.init_db()
+                self.seed_research_stack()
+                server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+                port = server.server_address[1]
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/research-intelligence") as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    self.assertTrue(payload["ok"])
+                    self.assertEqual(payload["summary"]["totalFindings"], 2)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile

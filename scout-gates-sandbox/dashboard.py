@@ -101,6 +101,7 @@ from rule_validation_engine import (
     run_pending_validations,
     run_rule_validation,
 )
+from research_intelligence import get_research_intelligence_dashboard
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -113,6 +114,7 @@ RESEARCH_QUEUE_HTML = SANDBOX_DIR / "research_queue.html"
 RESEARCH_FINDINGS_HTML = SANDBOX_DIR / "research_findings.html"
 RULE_CANDIDATES_HTML = SANDBOX_DIR / "rule_candidates.html"
 RULE_VALIDATIONS_HTML = SANDBOX_DIR / "rule_validations.html"
+RESEARCH_INTELLIGENCE_HTML = SANDBOX_DIR / "research_intelligence.html"
 REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
@@ -381,6 +383,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/rule-validations", "/rule-validations.html"):
             self.send_file(RULE_VALIDATIONS_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/research-intelligence", "/research-intelligence.html"):
+            self.send_file(RESEARCH_INTELLIGENCE_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
             return
@@ -527,6 +532,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     ),
                 }
             )
+            return
+        if parsed.path == "/api/research-intelligence":
+            self.send_json(get_research_intelligence_dashboard())
             return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
