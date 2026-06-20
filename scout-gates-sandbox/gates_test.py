@@ -1593,17 +1593,30 @@ class BacktestEngineTests(unittest.TestCase):
             be.attach_return_fields({"direction": "Bearish", "outcome_label": "LOSS", "return_20d": 10.0}),
         ]
         rows = be.compute_direction_breakdown(signals)
-        self.assertEqual([row["direction"] for row in rows], ["Bullish", "Bearish"])
+        self.assertEqual([row["direction"] for row in rows], ["Bullish", "Bearish", "Neutral"])
         bullish = rows[0]
         bearish = rows[1]
         self.assertEqual(bullish["signal_count"], 1)
         self.assertEqual(bullish["win_rate"], 100.0)
         self.assertAlmostEqual(bullish["avg_signal_return"], 8.0, places=2)
         self.assertAlmostEqual(bullish["avg_stock_return"], 8.0, places=2)
+        self.assertAlmostEqual(bullish["expectancy"], 8.0, places=2)
         self.assertEqual(bearish["signal_count"], 1)
         self.assertEqual(bearish["win_rate"], 0.0)
         self.assertAlmostEqual(bearish["avg_signal_return"], -10.0, places=2)
         self.assertAlmostEqual(bearish["avg_stock_return"], 10.0, places=2)
+        self.assertAlmostEqual(bearish["expectancy"], -10.0, places=2)
+
+    def test_direction_breakdown_always_includes_neutral_row(self) -> None:
+        import backtest_engine as be
+
+        rows = be.compute_direction_breakdown([])
+        self.assertEqual([row["direction"] for row in rows], ["Bullish", "Bearish", "Neutral"])
+        neutral = rows[2]
+        self.assertEqual(neutral["signal_count"], 0)
+        self.assertIsNone(neutral["avg_signal_return"])
+        self.assertIsNone(neutral["avg_stock_return"])
+        self.assertIsNone(neutral["expectancy"])
 
     def test_direction_breakdown_includes_neutral_when_present(self) -> None:
         import backtest_engine as be
@@ -1616,6 +1629,9 @@ class BacktestEngineTests(unittest.TestCase):
         neutral = rows[2]
         self.assertEqual(neutral["direction"], "Neutral")
         self.assertEqual(neutral["signal_count"], 1)
+        self.assertAlmostEqual(neutral["avg_signal_return"], 0.5, places=2)
+        self.assertAlmostEqual(neutral["avg_stock_return"], 0.5, places=2)
+        self.assertAlmostEqual(neutral["expectancy"], 0.5, places=2)
 
     def test_sector_audit_highlights_worst_sector_and_losers(self) -> None:
         import backtest_engine as be

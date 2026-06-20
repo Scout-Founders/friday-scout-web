@@ -621,8 +621,6 @@ def compute_direction_breakdown(signals: list[dict[str, Any]]) -> list[dict[str,
     rows: list[dict[str, Any]] = []
     for direction in DIRECTION_BREAKDOWN_ORDER:
         items = grouped.get(direction, [])
-        if direction == "Neutral" and not items:
-            continue
         if not items:
             rows.append(empty_direction_breakdown(direction))
             continue

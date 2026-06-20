@@ -273,37 +273,28 @@
     </section>
 
     <section class="card">
-      <h2>Direction Breakdown</h2>
+      <h2>Direction Diagnostics</h2>
       <p class="hint">
-        Separate P&amp;L summaries for each signal direction in the filtered sample.
-        Neutral appears only when neutral signals are included in the backtest filters.
+        Direction-specific performance for the loaded or current backtest sample.
+        Win rate uses existing outcome labels; P&amp;L metrics use
+        <span class="hint-tooltip" title="Bearish signal return = negative of stock move.">signal return</span>
+        (direction-adjusted). Stock return shows raw underlying movement only.
       </p>
-      <div class="direction-grid" id="direction-breakdown">
-        <div class="direction-card bullish">
-          <h3>Bullish</h3>
-          <div class="direction-stat"><span>Signals</span><strong id="bullish-count">—</strong></div>
-          <div class="direction-stat"><span>Win Rate</span><strong id="bullish-win-rate">—</strong></div>
-          <div class="direction-stat"><span>Avg Signal Return</span><strong id="bullish-signal-return">—</strong></div>
-          <div class="direction-stat"><span>Avg Stock Return</span><strong id="bullish-stock-return">—</strong></div>
-          <div class="direction-stat"><span>Expectancy</span><strong id="bullish-expectancy">—</strong></div>
-        </div>
-        <div class="direction-card bearish">
-          <h3>Bearish</h3>
-          <div class="direction-stat"><span>Signals</span><strong id="bearish-count">—</strong></div>
-          <div class="direction-stat"><span>Win Rate</span><strong id="bearish-win-rate">—</strong></div>
-          <div class="direction-stat"><span>Avg Signal Return</span><strong id="bearish-signal-return">—</strong></div>
-          <div class="direction-stat"><span>Avg Stock Return</span><strong id="bearish-stock-return">—</strong></div>
-          <div class="direction-stat"><span>Expectancy</span><strong id="bearish-expectancy">—</strong></div>
-        </div>
-        <div class="direction-card neutral" id="neutral-direction-card" hidden>
-          <h3>Neutral</h3>
-          <div class="direction-stat"><span>Signals</span><strong id="neutral-count">—</strong></div>
-          <div class="direction-stat"><span>Win Rate</span><strong id="neutral-win-rate">—</strong></div>
-          <div class="direction-stat"><span>Avg Signal Return</span><strong id="neutral-signal-return">—</strong></div>
-          <div class="direction-stat"><span>Avg Stock Return</span><strong id="neutral-stock-return">—</strong></div>
-          <div class="direction-stat"><span>Expectancy</span><strong id="neutral-expectancy">—</strong></div>
-        </div>
-      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Direction</th>
+            <th>Signal Count</th>
+            <th>Win Rate</th>
+            <th>Avg Signal Return</th>
+            <th>Avg Stock Return</th>
+            <th>Expectancy</th>
+          </tr>
+        </thead>
+        <tbody id="direction-diagnostics-body">
+          <tr><td colspan="6">Run or load a backtest to populate direction diagnostics.</td></tr>
+        </tbody>
+      </table>
     </section>
 
     <section class="card" id="sector-audit-section" hidden>
@@ -625,32 +616,28 @@
       applyTradeAuditFilters();
     }
 
-    function renderDirectionBreakdown(rows) {
+    function renderDirectionDiagnostics(rows) {
       const byDirection = {};
       (rows || []).forEach((row) => {
         byDirection[row.direction] = row;
       });
 
-      function fill(prefix, direction) {
-        const row = byDirection[direction] || {};
-        const count = row.signal_count ?? 0;
-        document.getElementById(`${prefix}-count`).textContent = String(count);
-        document.getElementById(`${prefix}-win-rate`).textContent = formatPct(row.win_rate);
-        document.getElementById(`${prefix}-signal-return`).innerHTML = formatReturn(row.avg_signal_return);
-        document.getElementById(`${prefix}-stock-return`).innerHTML = formatReturn(row.avg_stock_return);
-        document.getElementById(`${prefix}-expectancy`).innerHTML = formatReturn(row.expectancy);
-      }
-
-      fill("bullish", "Bullish");
-      fill("bearish", "Bearish");
-
-      const neutralCard = document.getElementById("neutral-direction-card");
-      if (byDirection.Neutral) {
-        neutralCard.hidden = false;
-        fill("neutral", "Neutral");
-      } else {
-        neutralCard.hidden = true;
-      }
+      const directions = ["Bullish", "Bearish", "Neutral"];
+      document.getElementById("direction-diagnostics-body").innerHTML = directions
+        .map((direction) => {
+          const row = byDirection[direction] || {};
+          const count = row.signal_count ?? 0;
+          return `
+            <tr>
+              <td>${direction}</td>
+              <td>${count}</td>
+              <td>${formatPct(row.win_rate)}</td>
+              <td>${formatReturn(row.avg_signal_return)}</td>
+              <td>${formatReturn(row.avg_stock_return)}</td>
+              <td>${formatReturn(row.expectancy)}</td>
+            </tr>`;
+        })
+        .join("");
     }
 
     function renderAnalytics(data) {
@@ -665,7 +652,7 @@
       document.getElementById("metric-expectancy").innerHTML = formatReturn(
         metrics.expectancy === undefined || metrics.expectancy === null ? null : metrics.expectancy
       );
-      renderDirectionBreakdown(analytics.direction_breakdown);
+      renderDirectionDiagnostics(analytics.direction_breakdown);
       renderSectorAudit(analytics.sector_audit);
       renderTradeAudit(analytics.trade_audit);
 
