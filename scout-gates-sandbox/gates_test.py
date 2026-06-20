@@ -1536,6 +1536,89 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertAlmostEqual(gate_rows[0]["avg_return"], 4.5, places=2)
         self.assertAlmostEqual(gate_rows[0]["avg_stock_return"], 0.5, places=2)
 
+    def test_gate_contribution_audit_includes_all_horizon_gates(self) -> None:
+        import backtest_engine as be
+        from run_gates import GATES
+
+        audit = be.compute_gate_contribution_audit([])
+        self.assertEqual(len(audit["gates"]), len(GATES))
+        self.assertEqual(audit["gates"][0]["signal_count"], 0)
+        self.assertIsNone(audit["gates"][0]["expectancy"])
+
+    def test_gate_contribution_audit_ranks_by_expectancy(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "outcome_label": "WIN",
+                    "direction": "Bullish",
+                    "return_20d": 12.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"compass","passed":true}]}',
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "outcome_label": "LOSS",
+                    "direction": "Bearish",
+                    "return_20d": 10.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"pulse","passed":true}]}',
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "outcome_label": "WIN",
+                    "direction": "Bullish",
+                    "return_20d": 4.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"compass","passed":true}]}',
+                }
+            ),
+        ]
+        audit = be.compute_gate_contribution_audit(signals)
+        ranked = audit["gates"]
+        compass = next(row for row in ranked if row["gate_code"] == "COMPASS")
+        pulse = next(row for row in ranked if row["gate_code"] == "PULSE")
+
+        self.assertEqual(compass["signal_count"], 2)
+        self.assertAlmostEqual(compass["avg_signal_return"], 8.0, places=2)
+        self.assertAlmostEqual(compass["avg_stock_return"], 8.0, places=2)
+        self.assertAlmostEqual(compass["expectancy"], 8.0, places=2)
+        self.assertEqual(pulse["signal_count"], 1)
+        self.assertAlmostEqual(pulse["avg_signal_return"], -10.0, places=2)
+        self.assertAlmostEqual(pulse["avg_stock_return"], 10.0, places=2)
+        self.assertAlmostEqual(pulse["expectancy"], -10.0, places=2)
+        self.assertGreater(compass["expectancy"], pulse["expectancy"])
+        self.assertEqual(ranked[0]["gate_code"], "COMPASS")
+
+        measurable_codes = [row["gate_code"] for row in ranked if row["expectancy"] is not None]
+        self.assertEqual(measurable_codes[0], "COMPASS")
+        self.assertEqual(measurable_codes[-1], "PULSE")
+
+    def test_gate_contribution_audit_best_and_worst_highlights(self) -> None:
+        import backtest_engine as be
+
+        signals = []
+        for index in range(6):
+            gate_key = ("sentinel", "atlas", "oracle", "phantom", "catalyst", "specter")[index]
+            signals.append(
+                be.attach_return_fields(
+                    {
+                        "outcome_label": "WIN",
+                        "direction": "Bullish",
+                        "return_20d": float(index + 1),
+                        "gate_snapshot_json": f'{{"gates":[{{"key":"{gate_key}","passed":true}}]}}',
+                    }
+                )
+            )
+
+        audit = be.compute_gate_contribution_audit(signals)
+        self.assertEqual(len(audit["best_gates"]), 5)
+        self.assertEqual(len(audit["worst_gates"]), 5)
+        self.assertEqual(audit["best_gates"][0]["gate_code"], "SPECTER")
+        self.assertAlmostEqual(audit["best_gates"][0]["expectancy"], 6.0, places=2)
+        self.assertEqual(audit["worst_gates"][0]["gate_code"], "SENTINEL")
+        self.assertAlmostEqual(audit["worst_gates"][0]["expectancy"], 1.0, places=2)
+
     def test_directional_return_flips_bearish(self) -> None:
         import backtest_engine as be
 

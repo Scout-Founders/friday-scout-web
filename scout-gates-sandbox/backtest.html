@@ -457,6 +457,66 @@
       </div>
     </section>
 
+    <section class="card" id="gate-contribution-section" hidden>
+      <h2>Gate Contribution Audit</h2>
+      <p class="hint">
+        Analytical view of every Horizon-1 gate over signals where the gate passed in the current
+        preview, saved run, or newly created backtest sample. Ranked by expectancy (highest first).
+        Signal return is direction-adjusted P&amp;L; stock return is raw underlying movement.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Gate</th>
+            <th>Signal Count</th>
+            <th>Win Rate</th>
+            <th>Avg Signal Return</th>
+            <th>Avg Stock Return</th>
+            <th>Expectancy</th>
+          </tr>
+        </thead>
+        <tbody id="gate-contribution-body">
+          <tr><td colspan="6">Preview, run, or load a backtest to populate gate contribution audit.</td></tr>
+        </tbody>
+      </table>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top: 16px;">
+        <div>
+          <h2>Best Performing Gates</h2>
+          <p class="hint">Top 5 by expectancy</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate</th>
+                <th>Signal Count</th>
+                <th>Expectancy</th>
+                <th>Avg Signal Return</th>
+              </tr>
+            </thead>
+            <tbody id="best-gates-body">
+              <tr><td colspan="4">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h2>Worst Performing Gates</h2>
+          <p class="hint">Bottom 5 by expectancy</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Gate</th>
+                <th>Signal Count</th>
+                <th>Expectancy</th>
+                <th>Avg Signal Return</th>
+              </tr>
+            </thead>
+            <tbody id="worst-gates-body">
+              <tr><td colspan="4">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Gate Performance</h2>
       <table>
@@ -632,6 +692,57 @@
       applyTradeAuditFilters();
     }
 
+    function renderGateContributionRow(row, columns) {
+      const gateLabel = row.gate_code
+        ? `${row.gate_name || row.gate_code} (${row.gate_code})`
+        : (row.gate_name || "—");
+      if (columns === "summary") {
+        return `
+          <tr>
+            <td>${gateLabel}</td>
+            <td>${row.signal_count ?? 0}</td>
+            <td>${formatReturn(row.expectancy)}</td>
+            <td>${formatReturn(row.avg_signal_return)}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td>${gateLabel}</td>
+          <td>${row.signal_count ?? 0}</td>
+          <td>${formatPct(row.win_rate)}</td>
+          <td>${formatReturn(row.avg_signal_return)}</td>
+          <td>${formatReturn(row.avg_stock_return)}</td>
+          <td>${formatReturn(row.expectancy)}</td>
+        </tr>`;
+    }
+
+    function renderGateContributionAudit(audit) {
+      const section = document.getElementById("gate-contribution-section");
+      section.hidden = false;
+      const gates = (audit && audit.gates) || [];
+      if (!gates.length) {
+        document.getElementById("gate-contribution-body").innerHTML =
+          `<tr><td colspan="6">No gate contribution audit available for the current sample.</td></tr>`;
+        document.getElementById("best-gates-body").innerHTML = `<tr><td colspan="4">—</td></tr>`;
+        document.getElementById("worst-gates-body").innerHTML = `<tr><td colspan="4">—</td></tr>`;
+        return;
+      }
+
+      document.getElementById("gate-contribution-body").innerHTML = gates
+        .map((row) => renderGateContributionRow(row, "full"))
+        .join("");
+
+      const best = (audit.best_gates || []).slice(0, 5);
+      document.getElementById("best-gates-body").innerHTML = best.length
+        ? best.map((row) => renderGateContributionRow(row, "summary")).join("")
+        : `<tr><td colspan="4">No gates with measurable expectancy.</td></tr>`;
+
+      const worst = (audit.worst_gates || []).slice(0, 5);
+      document.getElementById("worst-gates-body").innerHTML = worst.length
+        ? worst.map((row) => renderGateContributionRow(row, "summary")).join("")
+        : `<tr><td colspan="4">No gates with measurable expectancy.</td></tr>`;
+    }
+
     function renderDirectionDiagnostics(rows) {
       const byDirection = {};
       (rows || []).forEach((row) => {
@@ -671,6 +782,7 @@
       renderDirectionDiagnostics(analytics.direction_breakdown);
       renderSectorAudit(analytics.sector_audit);
       renderTradeAudit(analytics.trade_audit);
+      renderGateContributionAudit(analytics.gate_contribution_audit);
 
       const sectorRows = (analytics.sector_performance || []).slice(0, 8);
       document.getElementById("sector-body").innerHTML = sectorRows.length

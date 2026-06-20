@@ -715,6 +715,82 @@ def compute_gate_performance(signals: list[dict[str, Any]]) -> list[dict[str, An
     return sorted(rows, key=lambda row: (row.get("expectancy") or 0.0, row["win_rate"]), reverse=True)
 
 
+def horizon_tracked_gates() -> list[tuple[str, str, str]]:
+    from run_gates import GATES
+
+    return list(GATES)
+
+
+def empty_gate_contribution_row(gate_key: str, gate_code: str, gate_name: str) -> dict[str, Any]:
+    return {
+        "gate_key": gate_key,
+        "gate_code": gate_code,
+        "gate_name": gate_name,
+        "signal_count": 0,
+        "win_rate": None,
+        "avg_signal_return": None,
+        "avg_stock_return": None,
+        "expectancy": None,
+    }
+
+
+def gate_contribution_row(
+    gate_key: str,
+    gate_code: str,
+    gate_name: str,
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not items:
+        return empty_gate_contribution_row(gate_key, gate_code, gate_name)
+    metrics = compute_core_metrics(items)
+    return {
+        "gate_key": gate_key,
+        "gate_code": gate_code,
+        "gate_name": gate_name,
+        "signal_count": metrics["sample_size"],
+        "win_rate": win_rate_for_signals(items),
+        "avg_signal_return": metrics["avg_return"],
+        "avg_stock_return": metrics["avg_stock_return"],
+        "expectancy": metrics["expectancy"],
+    }
+
+
+def rank_gate_contribution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["expectancy"] is None,
+            -(row["expectancy"] if row["expectancy"] is not None else 0.0),
+        ),
+    )
+
+
+def compute_gate_contribution_audit(
+    signals: list[dict[str, Any]],
+    *,
+    highlight_limit: int = 5,
+) -> dict[str, Any]:
+    """Contribution audit for every Horizon-1 gate over signals where the gate passed."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for signal in signals:
+        for gate_name in passed_gate_keys(signal):
+            grouped.setdefault(gate_name, []).append(signal)
+
+    rows = [
+        gate_contribution_row(gate_key, gate_code.upper(), gate_name, grouped.get(gate_code.upper(), []))
+        for gate_key, gate_code, gate_name in horizon_tracked_gates()
+    ]
+    ranked = rank_gate_contribution_rows(rows)
+    measurable = [row for row in ranked if row["expectancy"] is not None]
+    best = measurable[:highlight_limit]
+    worst = list(reversed(measurable[-highlight_limit:])) if measurable else []
+    return {
+        "gates": ranked,
+        "best_gates": best,
+        "worst_gates": worst,
+    }
+
+
 def compute_gate_combinations(signals: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for signal in signals:
@@ -765,6 +841,7 @@ def compute_analytics(signals: list[dict[str, Any]]) -> dict[str, Any]:
         "sector_audit": compute_sector_audit(signals),
         "trade_audit": compute_trade_audit(signals),
         "gate_performance": compute_gate_performance(signals),
+        "gate_contribution_audit": compute_gate_contribution_audit(signals),
         "top_gate_combinations": compute_gate_combinations(signals),
         "best_setups": best,
         "worst_setups": worst,
