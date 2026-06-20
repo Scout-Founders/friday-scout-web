@@ -21,7 +21,7 @@ DEFAULT_RESEARCH_JOB_SPECS: tuple[dict[str, Any], ...] = (
         "job_type": "cohort_scan",
         "preset": "mega_cap_tech",
         "cohort": "actionable",
-        "filters_json": {"scanPurpose": "cohort_baseline"},
+        "filters_json": {},
         "schedule_label": "weekly",
         "enabled": True,
     },
@@ -30,7 +30,7 @@ DEFAULT_RESEARCH_JOB_SPECS: tuple[dict[str, Any], ...] = (
         "job_type": "cohort_scan",
         "preset": "semiconductors",
         "cohort": "actionable",
-        "filters_json": {"scanPurpose": "cohort_baseline"},
+        "filters_json": {},
         "schedule_label": "weekly",
         "enabled": True,
     },
@@ -39,7 +39,7 @@ DEFAULT_RESEARCH_JOB_SPECS: tuple[dict[str, Any], ...] = (
         "job_type": "cohort_scan",
         "preset": "etfs",
         "cohort": "research",
-        "filters_json": {"scanPurpose": "regime_probe"},
+        "filters_json": {},
         "schedule_label": "weekly",
         "enabled": True,
     },
@@ -48,7 +48,7 @@ DEFAULT_RESEARCH_JOB_SPECS: tuple[dict[str, Any], ...] = (
         "job_type": "cohort_scan",
         "preset": "failure_learning",
         "cohort": "failure_learning",
-        "filters_json": {"scanPurpose": "gate_intelligence"},
+        "filters_json": {},
         "schedule_label": "weekly",
         "enabled": True,
     },
@@ -153,12 +153,22 @@ def research_job_run_row(row: sqlite3.Row) -> dict[str, Any]:
 def backtest_filters_for_job(job: sqlite3.Row) -> BacktestFilters:
     filters_payload = dict(json_load(job["filters_json"]) or {})
     preset_id = job["preset"] or filters_payload.get("preset")
-    if preset_id:
+    job_type = str(job["job_type"] or "")
+
+    if job_type == "cohort_scan" and preset_id:
         from universe_presets import resolve_preset
 
         preset = resolve_preset(str(preset_id))
-        filters_payload.setdefault("cohortClass", job["cohort"] or preset.get("cohortClass"))
-        filters_payload.setdefault("scanPurpose", preset.get("scanPurpose"))
+        filters_payload["tickers"] = list(preset.get("tickers") or [])
+        if "scanPurpose" not in filters_payload:
+            filters_payload.pop("scanPurpose", None)
+        if "cohortClass" not in filters_payload:
+            filters_payload.pop("cohortClass", None)
+    elif job_type == "audit":
+        if "cohortClass" not in filters_payload:
+            filters_payload.pop("cohortClass", None)
+        if "scanPurpose" not in filters_payload:
+            filters_payload.pop("scanPurpose", None)
     elif job["cohort"]:
         filters_payload.setdefault("cohortClass", job["cohort"])
     return parse_backtest_filters(filters_payload)

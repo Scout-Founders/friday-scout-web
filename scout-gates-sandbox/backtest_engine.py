@@ -165,9 +165,10 @@ class BacktestFilters:
     directions: tuple[str, ...] = ACTIONABLE_DIRECTIONS
     exclude_test_records: bool = True
     require_completed_outcomes: bool = True
+    tickers: Optional[tuple[str, ...]] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "startDate": self.start_date,
             "endDate": self.end_date,
             "engineVersion": self.engine_version,
@@ -180,6 +181,9 @@ class BacktestFilters:
             "excludeTestRecords": self.exclude_test_records,
             "requireCompletedOutcomes": self.require_completed_outcomes,
         }
+        if self.tickers:
+            payload["tickers"] = list(self.tickers)
+        return payload
 
 
 def parse_backtest_filters(payload: Optional[dict[str, Any]] = None) -> BacktestFilters:
@@ -199,6 +203,17 @@ def parse_backtest_filters(payload: Optional[dict[str, Any]] = None) -> Backtest
         except (TypeError, ValueError):
             return None
 
+    tickers_raw = payload.get("tickers")
+    tickers: Optional[tuple[str, ...]] = None
+    if isinstance(tickers_raw, (list, tuple)) and tickers_raw:
+        normalized = tuple(
+            str(item).strip().upper()
+            for item in tickers_raw
+            if str(item).strip()
+        )
+        if normalized:
+            tickers = normalized
+
     return BacktestFilters(
         start_date=str(payload["startDate"]).strip() if payload.get("startDate") else None,
         end_date=str(payload["endDate"]).strip() if payload.get("endDate") else None,
@@ -211,6 +226,7 @@ def parse_backtest_filters(payload: Optional[dict[str, Any]] = None) -> Backtest
         directions=directions,
         exclude_test_records=payload.get("excludeTestRecords", True) is not False,
         require_completed_outcomes=payload.get("requireCompletedOutcomes", True) is not False,
+        tickers=tickers,
     )
 
 
@@ -304,6 +320,11 @@ def build_signal_query(filters: BacktestFilters) -> tuple[str, list[Any]]:
     if filters.engine_version:
         clauses.append("sr.engine_version = ?")
         params.append(filters.engine_version)
+
+    if filters.tickers:
+        placeholders = ", ".join("?" for _ in filters.tickers)
+        clauses.append(f"UPPER(sr.ticker) IN ({placeholders})")
+        params.extend(filters.tickers)
 
     if filters.cohort_class:
         clauses.append("COALESCE(sr.cohort_class, run.cohort_class) = ?")

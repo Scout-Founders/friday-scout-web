@@ -2567,6 +2567,225 @@ class ResearchJobRunnerTests(unittest.TestCase):
         self.assertEqual(runs[0]["jobId"], job_id)
         self.assertTrue(runs[0]["jobName"])
 
+    def _insert_null_cohort_signal(
+        self,
+        conn,
+        *,
+        ticker: str,
+        direction: str = "Bullish",
+        outcome: str = "WIN",
+    ) -> None:
+        import memory_store as ms
+
+        run_id = conn.execute(
+            """
+            INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+            VALUES (?, ?, ?)
+            """,
+            ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+        ).lastrowid
+        BacktestEngineTests().insert_completed_signal(
+            conn,
+            run_id,
+            ticker=ticker,
+            timestamp="2026-05-10T12:00:00+00:00",
+            direction=direction,
+            outcome=outcome,
+            return_5d=4.0,
+            return_20d=8.0,
+            score=88.0,
+            sector="Technology",
+            gates=[{"key": "sentinel", "passed": True}],
+            cohort_class=None,
+        )
+
+    def test_cohort_scan_uses_preset_tickers_with_null_metadata(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            self._insert_null_cohort_signal(conn, ticker="NVDA")
+            conn.commit()
+
+        with ms.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM research_jobs WHERE name = ?",
+                ("Mega Cap Tech Scan",),
+            ).fetchone()
+            filters = rjr.backtest_filters_for_job(job)
+
+        self.assertIsNotNone(filters.tickers)
+        self.assertIn("NVDA", filters.tickers)
+        self.assertIsNone(filters.cohort_class)
+        self.assertIsNone(filters.scan_purpose)
+
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_audit_jobs_do_not_auto_apply_cohort_filter(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            self._insert_null_cohort_signal(conn, ticker="ZZZZ")
+            conn.commit()
+
+        with ms.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM research_jobs WHERE name = ?",
+                ("Bearish Failure Audit",),
+            ).fetchone()
+            filters = rjr.backtest_filters_for_job(job)
+
+        self.assertIsNone(filters.cohort_class)
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_explicit_cohort_class_in_filters_json_is_honored(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            self._insert_null_cohort_signal(conn, ticker="NVDA")
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-05-02T12:00:00+00:00", "preset", "gate_runner", "research", "regime_probe"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-11T12:00:00+00:00",
+                direction="Bearish",
+                outcome="LOSS",
+                return_5d=-3.0,
+                return_20d=-6.0,
+                score=72.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class="research",
+            )
+            conn.execute(
+                """
+                UPDATE research_jobs
+                SET filters_json = ?
+                WHERE name = ?
+                """,
+                (
+                    ms.json_dump({"cohortClass": "research", "scanPurpose": "regime_probe"}),
+                    "Mega Cap Tech Scan",
+                ),
+            )
+            conn.commit()
+
+        with ms.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM research_jobs WHERE name = ?",
+                ("Mega Cap Tech Scan",),
+            ).fetchone()
+            filters = rjr.backtest_filters_for_job(job)
+
+        self.assertEqual(filters.cohort_class, "research")
+        self.assertEqual(filters.scan_purpose, "regime_probe")
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_tickers_filter_is_uppercase_normalized(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="nvda",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        filters = be.parse_backtest_filters({"tickers": ["nvda"]})
+        self.assertEqual(filters.tickers, ("NVDA",))
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_ticker_filter_keeps_completed_outcome_and_direction_filters(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Neutral",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            pending_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-02T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                pending_id,
+                ticker="NVDA",
+                timestamp="2026-05-11T12:00:00+00:00",
+                direction="Bullish",
+                outcome="PENDING",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        filters = be.BacktestFilters(tickers=("NVDA",))
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 0)
+
 
 class ResearchFindingsEngineTests(unittest.TestCase):
     def setUp(self) -> None:
