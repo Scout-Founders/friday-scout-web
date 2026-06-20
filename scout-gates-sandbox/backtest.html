@@ -427,6 +427,17 @@
       </div>
     </section>
 
+    <section class="card" id="trend-leadership-section" hidden>
+      <h2>Trend Leadership Audit</h2>
+      <p class="hint">
+        Leadership cohorts from the current preview, saved run, or newly created backtest sample.
+        Expectancy uses direction-adjusted signal return. Top tickers also show raw stock return.
+      </p>
+      <div id="trend-leadership-groups">
+        <p class="hint">Preview, run, or load a backtest to populate trend leadership audit.</p>
+      </div>
+    </section>
+
     <section class="card" id="trade-audit-section" hidden>
       <h2>Trade Audit</h2>
       <p class="hint">
@@ -801,6 +812,99 @@
       );
     }
 
+    function renderTrendTickerRows(rows, emptyMessage) {
+      return (rows || []).length
+        ? rows.map((row) => `
+            <tr>
+              <td>${row.ticker || "—"}</td>
+              <td>${row.direction || "—"}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${formatReturn(row.stock_return)}</td>
+              <td>${row.outcome_label || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="5">${emptyMessage}</td></tr>`;
+    }
+
+    function renderTrendDirectionPerformance(title, block) {
+      const stats = block || {};
+      return `
+        <div>
+          <h2>${title}</h2>
+          <div class="audit-grid">
+            <div class="audit-metric">
+              <div class="metric-label">Signal Count</div>
+              <div class="metric-value">${stats.signal_count ?? 0}</div>
+            </div>
+            <div class="audit-metric">
+              <div class="metric-label">Win Rate</div>
+              <div class="metric-value">${formatPct(stats.win_rate)}</div>
+            </div>
+            <div class="audit-metric">
+              <div class="metric-label">Expectancy</div>
+              <div class="metric-value">${formatReturn(stats.expectancy)}</div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function renderTrendLeadershipAudit(audit) {
+      const section = document.getElementById("trend-leadership-section");
+      section.hidden = false;
+      const groups = (audit && audit.groups) || [];
+      const container = document.getElementById("trend-leadership-groups");
+      if (!groups.length) {
+        container.innerHTML =
+          `<p class="hint">No trend leadership audit available for the current sample.</p>`;
+        return;
+      }
+
+      container.innerHTML = groups.map((group) => `
+        <div class="audit-panel" style="margin-bottom: 16px;">
+          <h3>${group.label || "Leadership Group"}</h3>
+          <p class="hint">${group.signal_count ?? 0} matching signal(s)</p>
+          <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+            ${renderTrendDirectionPerformance("Bullish Performance", group.bullish)}
+            ${renderTrendDirectionPerformance("Bearish Performance", group.bearish)}
+          </div>
+          <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px;">
+            <div>
+              <h2>Top Winning Tickers</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>Direction</th>
+                    <th>Signal Return</th>
+                    <th>Stock Return</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderTrendTickerRows(group.top_winning_tickers, "No winning tickers available.")}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h2>Top Losing Tickers</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>Direction</th>
+                    <th>Signal Return</th>
+                    <th>Stock Return</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderTrendTickerRows(group.top_losing_tickers, "No losing tickers available.")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
     function formatScore(value) {
       if (value === null || value === undefined || Number.isNaN(value)) return "—";
       return Number(value).toFixed(1);
@@ -1025,6 +1129,7 @@
       renderDirectionDiagnostics(analytics.direction_breakdown);
       renderSectorAudit(analytics.sector_audit);
       renderBearishFailureAudit(analytics.bearish_failure_audit);
+      renderTrendLeadershipAudit(analytics.trend_leadership_audit);
       renderTradeAudit(analytics.trade_audit);
       renderGateContributionAudit(analytics.gate_contribution_audit);
       renderGateIntersectionMatrix(analytics.gate_intersection_matrix);

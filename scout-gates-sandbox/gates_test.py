@@ -1862,6 +1862,123 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(gate_counts["PULSE"], 2)
         self.assertEqual(gate_counts["SENTINEL"], 1)
 
+    def test_trend_leadership_bullish_bearish_expectancy(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "NVDA",
+                    "direction": "Bullish",
+                    "sector": "AI_INFRASTRUCTURE",
+                    "outcome_label": "WIN",
+                    "return_20d": 12.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "NVDA",
+                    "direction": "Bearish",
+                    "sector": "AI_INFRASTRUCTURE",
+                    "outcome_label": "LOSS",
+                    "return_20d": 10.0,
+                    "recommendation_id": 2,
+                }
+            ),
+        ]
+        audit = be.compute_trend_leadership_audit(signals)
+        leaders = next(group for group in audit["groups"] if group["id"] == "mega_cap_ai_leaders")
+        self.assertEqual(leaders["signal_count"], 2)
+        self.assertEqual(leaders["bullish"]["signal_count"], 1)
+        self.assertAlmostEqual(leaders["bullish"]["expectancy"], 12.0, places=2)
+        self.assertEqual(leaders["bearish"]["signal_count"], 1)
+        self.assertAlmostEqual(leaders["bearish"]["expectancy"], -10.0, places=2)
+
+        ai_infra = next(group for group in audit["groups"] if group["id"] == "ai_infrastructure")
+        self.assertEqual(ai_infra["signal_count"], 2)
+        self.assertAlmostEqual(ai_infra["bullish"]["expectancy"], 12.0, places=2)
+        self.assertAlmostEqual(ai_infra["bearish"]["expectancy"], -10.0, places=2)
+
+    def test_trend_leadership_classifies_semiconductors(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "AMD",
+                    "direction": "Bullish",
+                    "sector": "SEMICONDUCTORS",
+                    "outcome_label": "WIN",
+                    "return_20d": 8.0,
+                    "universe_preset_id": "semiconductors",
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "JPM",
+                    "direction": "Bullish",
+                    "sector": "FINANCIALS",
+                    "outcome_label": "WIN",
+                    "return_20d": 5.0,
+                    "recommendation_id": 2,
+                }
+            ),
+        ]
+        audit = be.compute_trend_leadership_audit(signals)
+        semi = next(group for group in audit["groups"] if group["id"] == "semiconductors")
+        ai_infra = next(group for group in audit["groups"] if group["id"] == "ai_infrastructure")
+        leaders = next(group for group in audit["groups"] if group["id"] == "mega_cap_ai_leaders")
+        self.assertEqual(semi["signal_count"], 1)
+        self.assertAlmostEqual(semi["bullish"]["expectancy"], 8.0, places=2)
+        self.assertEqual(ai_infra["signal_count"], 0)
+        self.assertEqual(leaders["signal_count"], 0)
+
+    def test_trend_leadership_top_winners_and_losers(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "NVDA",
+                    "direction": "Bullish",
+                    "sector": "AI_INFRASTRUCTURE",
+                    "outcome_label": "WIN",
+                    "return_20d": 20.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "MSFT",
+                    "direction": "Bullish",
+                    "sector": "AI_INFRASTRUCTURE",
+                    "outcome_label": "WIN",
+                    "return_20d": 6.0,
+                    "recommendation_id": 2,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "AAPL",
+                    "direction": "Bearish",
+                    "sector": "AI_INFRASTRUCTURE",
+                    "outcome_label": "LOSS",
+                    "return_20d": 15.0,
+                    "recommendation_id": 3,
+                }
+            ),
+        ]
+        audit = be.compute_trend_leadership_audit(signals)
+        leaders = next(group for group in audit["groups"] if group["id"] == "mega_cap_ai_leaders")
+        self.assertEqual(leaders["top_winning_tickers"][0]["ticker"], "NVDA")
+        self.assertAlmostEqual(leaders["top_winning_tickers"][0]["signal_return"], 20.0, places=2)
+        self.assertAlmostEqual(leaders["top_winning_tickers"][0]["stock_return"], 20.0, places=2)
+        self.assertEqual(leaders["top_losing_tickers"][0]["ticker"], "AAPL")
+        self.assertAlmostEqual(leaders["top_losing_tickers"][0]["signal_return"], -15.0, places=2)
+        self.assertAlmostEqual(leaders["top_losing_tickers"][0]["stock_return"], 15.0, places=2)
+
     def test_directional_return_flips_bearish(self) -> None:
         import backtest_engine as be
 

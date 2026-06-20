@@ -800,6 +800,134 @@ def compute_bearish_failure_audit(
     }
 
 
+MEGA_CAP_AI_LEADER_TICKERS = ("NVDA", "MSFT", "GOOGL", "META", "AMZN", "AAPL", "AVGO")
+
+
+def normalize_audit_sector(sector: Any) -> str:
+    return str(sector or "").strip().upper().replace(" ", "_")
+
+
+def normalize_audit_ticker(ticker: Any) -> str:
+    return str(ticker or "").strip().upper()
+
+
+def signal_universe_preset_id(signal: dict[str, Any]) -> str:
+    return str(signal.get("universe_preset_id") or "").strip().lower()
+
+
+def sector_matches_hints(sector: Any, hints: tuple[str, ...]) -> bool:
+    normalized = normalize_audit_sector(sector)
+    if not normalized:
+        return False
+    return any(normalized == hint or hint in normalized for hint in hints)
+
+
+def trend_leadership_group_definitions() -> tuple[dict[str, Any], ...]:
+    from universe_presets import resolve_preset
+
+    mega_cap = resolve_preset("mega_cap_tech")
+    semiconductors = resolve_preset("semiconductors")
+    return (
+        {
+            "id": "ai_infrastructure",
+            "label": "AI Infrastructure Stocks",
+            "preset_id": "mega_cap_tech",
+            "sector_hints": ("AI_INFRASTRUCTURE",),
+            "tickers": tuple(mega_cap.get("tickers") or []),
+        },
+        {
+            "id": "semiconductors",
+            "label": "Semiconductors",
+            "preset_id": "semiconductors",
+            "sector_hints": ("SEMICONDUCTOR", "SEMICONDUCTORS"),
+            "tickers": tuple(semiconductors.get("tickers") or []),
+        },
+        {
+            "id": "mega_cap_ai_leaders",
+            "label": "Mega-Cap AI Leaders",
+            "tickers": MEGA_CAP_AI_LEADER_TICKERS,
+        },
+    )
+
+
+def signal_in_trend_leadership_group(signal: dict[str, Any], group: dict[str, Any]) -> bool:
+    ticker = normalize_audit_ticker(signal.get("ticker"))
+    if group["id"] == "mega_cap_ai_leaders":
+        return ticker in group.get("tickers", ())
+
+    if sector_matches_hints(signal.get("sector"), group.get("sector_hints") or ()):
+        return True
+    preset_id = group.get("preset_id")
+    if preset_id and signal_universe_preset_id(signal) == preset_id:
+        return True
+    group_tickers = group.get("tickers") or ()
+    return bool(ticker and ticker in group_tickers)
+
+
+def empty_trend_direction_performance() -> dict[str, Any]:
+    return {
+        "signal_count": 0,
+        "win_rate": None,
+        "expectancy": None,
+    }
+
+
+def trend_direction_performance(
+    signals: list[dict[str, Any]],
+    direction: str,
+) -> dict[str, Any]:
+    subset = [signal for signal in signals if signal.get("direction") == direction]
+    if not subset:
+        return empty_trend_direction_performance()
+    metrics = compute_core_metrics(subset)
+    return {
+        "signal_count": metrics["sample_size"],
+        "win_rate": win_rate_for_signals(subset),
+        "expectancy": metrics["expectancy"],
+    }
+
+
+def trend_leadership_ticker_row(signal: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ticker": signal.get("ticker"),
+        "direction": signal.get("direction"),
+        "stock_return": signal.get("stock_return"),
+        "signal_return": signal_return_value(signal),
+        "outcome_label": signal.get("outcome_label"),
+    }
+
+
+def compute_trend_leadership_group(
+    signals: list[dict[str, Any]],
+    group: dict[str, Any],
+    *,
+    highlight_limit: int = 5,
+) -> dict[str, Any]:
+    matched = [signal for signal in signals if signal_in_trend_leadership_group(signal, group)]
+    top_winning, top_losing = compute_setups(matched, limit=highlight_limit)
+    return {
+        "id": group["id"],
+        "label": group["label"],
+        "signal_count": len(matched),
+        "bullish": trend_direction_performance(matched, "Bullish"),
+        "bearish": trend_direction_performance(matched, "Bearish"),
+        "top_winning_tickers": top_winning,
+        "top_losing_tickers": top_losing,
+    }
+
+
+def compute_trend_leadership_audit(
+    signals: list[dict[str, Any]],
+    *,
+    highlight_limit: int = 5,
+) -> dict[str, Any]:
+    groups = [
+        compute_trend_leadership_group(signals, group, highlight_limit=highlight_limit)
+        for group in trend_leadership_group_definitions()
+    ]
+    return {"groups": groups}
+
+
 def compute_gate_performance(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for signal in signals:
@@ -1009,6 +1137,7 @@ def compute_analytics(signals: list[dict[str, Any]]) -> dict[str, Any]:
         "direction_breakdown": compute_direction_breakdown(signals),
         "sector_audit": compute_sector_audit(signals),
         "bearish_failure_audit": compute_bearish_failure_audit(signals),
+        "trend_leadership_audit": compute_trend_leadership_audit(signals),
         "trade_audit": compute_trade_audit(signals),
         "gate_performance": compute_gate_performance(signals),
         "gate_contribution_audit": compute_gate_contribution_audit(signals),
