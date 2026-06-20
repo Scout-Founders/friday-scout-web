@@ -791,6 +791,81 @@ def compute_gate_contribution_audit(
     }
 
 
+def horizon_gate_codes() -> list[str]:
+    return [gate_code.upper() for _, gate_code, _ in horizon_tracked_gates()]
+
+
+def normalize_gate_pair(gate_a: str, gate_b: str) -> tuple[str, str]:
+    if gate_a <= gate_b:
+        return gate_a, gate_b
+    return gate_b, gate_a
+
+
+def iter_horizon_gate_pairs() -> list[tuple[str, str]]:
+    codes = sorted(horizon_gate_codes())
+    return [(codes[index], codes[other]) for index in range(len(codes)) for other in range(index + 1, len(codes))]
+
+
+def empty_gate_pair_row(gate_a: str, gate_b: str) -> dict[str, Any]:
+    return {
+        "gate_pair": f"{gate_a}+{gate_b}",
+        "gate_a": gate_a,
+        "gate_b": gate_b,
+        "signal_count": 0,
+        "win_rate": None,
+        "avg_signal_return": None,
+        "avg_stock_return": None,
+        "expectancy": None,
+    }
+
+
+def gate_pair_row(gate_a: str, gate_b: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    if not items:
+        return empty_gate_pair_row(gate_a, gate_b)
+    metrics = compute_core_metrics(items)
+    return {
+        "gate_pair": f"{gate_a}+{gate_b}",
+        "gate_a": gate_a,
+        "gate_b": gate_b,
+        "signal_count": metrics["sample_size"],
+        "win_rate": win_rate_for_signals(items),
+        "avg_signal_return": metrics["avg_return"],
+        "avg_stock_return": metrics["avg_stock_return"],
+        "expectancy": metrics["expectancy"],
+    }
+
+
+def compute_gate_intersection_matrix(
+    signals: list[dict[str, Any]],
+    *,
+    highlight_limit: int = 10,
+) -> dict[str, Any]:
+    """Performance for every Horizon-1 gate pair over signals where both gates passed."""
+    horizon_codes = set(horizon_gate_codes())
+    pair_grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for signal in signals:
+        passed = sorted(key for key in passed_gate_keys(signal) if key in horizon_codes)
+        for index in range(len(passed)):
+            for other in range(index + 1, len(passed)):
+                pair = normalize_gate_pair(passed[index], passed[other])
+                pair_grouped.setdefault(pair, []).append(signal)
+
+    rows = [
+        gate_pair_row(gate_a, gate_b, pair_grouped.get((gate_a, gate_b), []))
+        for gate_a, gate_b in iter_horizon_gate_pairs()
+    ]
+    ranked = rank_gate_contribution_rows(rows)
+    measurable = [row for row in ranked if row["expectancy"] is not None]
+    top_pairs = measurable[:highlight_limit]
+    bottom_pairs = list(reversed(measurable[-highlight_limit:])) if measurable else []
+    return {
+        "pairs": ranked,
+        "top_pairs": top_pairs,
+        "bottom_pairs": bottom_pairs,
+        "pair_count": len(rows),
+    }
+
+
 def compute_gate_combinations(signals: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for signal in signals:
@@ -842,6 +917,7 @@ def compute_analytics(signals: list[dict[str, Any]]) -> dict[str, Any]:
         "trade_audit": compute_trade_audit(signals),
         "gate_performance": compute_gate_performance(signals),
         "gate_contribution_audit": compute_gate_contribution_audit(signals),
+        "gate_intersection_matrix": compute_gate_intersection_matrix(signals),
         "top_gate_combinations": compute_gate_combinations(signals),
         "best_setups": best,
         "worst_setups": worst,

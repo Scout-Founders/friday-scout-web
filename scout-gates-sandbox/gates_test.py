@@ -1619,6 +1619,113 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(audit["worst_gates"][0]["gate_code"], "SENTINEL")
         self.assertAlmostEqual(audit["worst_gates"][0]["expectancy"], 1.0, places=2)
 
+    def test_gate_intersection_matrix_includes_every_valid_pair(self) -> None:
+        import backtest_engine as be
+        from run_gates import GATES
+
+        matrix = be.compute_gate_intersection_matrix([])
+        expected_pairs = len(GATES) * (len(GATES) - 1) // 2
+        self.assertEqual(matrix["pair_count"], expected_pairs)
+        self.assertEqual(len(matrix["pairs"]), expected_pairs)
+        self.assertEqual(len({row["gate_pair"] for row in matrix["pairs"]}), expected_pairs)
+        self.assertEqual(matrix["pairs"][0]["signal_count"], 0)
+        self.assertIsNone(matrix["pairs"][0]["expectancy"])
+
+    def test_gate_intersection_matrix_ranks_by_expectancy(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "outcome_label": "WIN",
+                    "direction": "Bullish",
+                    "return_20d": 12.0,
+                    "gate_snapshot_json": (
+                        '{"gates":[{"key":"compass","passed":true},{"key":"pulse","passed":true}]}'
+                    ),
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "outcome_label": "LOSS",
+                    "direction": "Bearish",
+                    "return_20d": 10.0,
+                    "gate_snapshot_json": (
+                        '{"gates":[{"key":"compass","passed":true},{"key":"sentinel","passed":true}]}'
+                    ),
+                }
+            ),
+        ]
+        matrix = be.compute_gate_intersection_matrix(signals)
+        compass_pulse = next(row for row in matrix["pairs"] if row["gate_pair"] == "COMPASS+PULSE")
+        compass_sentinel = next(row for row in matrix["pairs"] if row["gate_pair"] == "COMPASS+SENTINEL")
+
+        self.assertEqual(compass_pulse["signal_count"], 1)
+        self.assertAlmostEqual(compass_pulse["expectancy"], 12.0, places=2)
+        self.assertEqual(compass_sentinel["signal_count"], 1)
+        self.assertAlmostEqual(compass_sentinel["expectancy"], -10.0, places=2)
+        self.assertGreater(compass_pulse["expectancy"], compass_sentinel["expectancy"])
+
+        measurable = [row for row in matrix["pairs"] if row["expectancy"] is not None]
+        self.assertEqual(measurable[0]["gate_pair"], "COMPASS+PULSE")
+        self.assertEqual(measurable[-1]["gate_pair"], "COMPASS+SENTINEL")
+
+    def test_gate_intersection_signal_and_stock_return_are_separate(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "outcome_label": "LOSS",
+                    "direction": "Bearish",
+                    "return_20d": 10.0,
+                    "gate_snapshot_json": (
+                        '{"gates":[{"key":"compass","passed":true},{"key":"pulse","passed":true}]}'
+                    ),
+                }
+            ),
+        ]
+        matrix = be.compute_gate_intersection_matrix(signals)
+        row = next(item for item in matrix["pairs"] if item["gate_pair"] == "COMPASS+PULSE")
+        self.assertAlmostEqual(row["avg_stock_return"], 10.0, places=2)
+        self.assertAlmostEqual(row["avg_signal_return"], -10.0, places=2)
+        self.assertAlmostEqual(row["expectancy"], -10.0, places=2)
+
+    def test_gate_intersection_top_and_bottom_pairs_capped_at_ten(self) -> None:
+        import json
+
+        import backtest_engine as be
+        from run_gates import GATES
+
+        signals = []
+        for index, (gate_a, gate_b) in enumerate(be.iter_horizon_gate_pairs()[:12]):
+            key_a = next(key for key, code, _ in GATES if code.upper() == gate_a)
+            key_b = next(key for key, code, _ in GATES if code.upper() == gate_b)
+            signals.append(
+                be.attach_return_fields(
+                    {
+                        "outcome_label": "WIN",
+                        "direction": "Bullish",
+                        "return_20d": float(index + 1),
+                        "gate_snapshot_json": json.dumps(
+                            {
+                                "gates": [
+                                    {"key": key_a, "passed": True},
+                                    {"key": key_b, "passed": True},
+                                ]
+                            }
+                        ),
+                    }
+                )
+            )
+
+        matrix = be.compute_gate_intersection_matrix(signals)
+        self.assertEqual(len(matrix["top_pairs"]), 10)
+        self.assertEqual(len(matrix["bottom_pairs"]), 10)
+        self.assertAlmostEqual(matrix["top_pairs"][0]["expectancy"], 12.0, places=2)
+        self.assertAlmostEqual(matrix["bottom_pairs"][0]["expectancy"], 1.0, places=2)
+        self.assertAlmostEqual(matrix["bottom_pairs"][-1]["expectancy"], 10.0, places=2)
+
     def test_directional_return_flips_bearish(self) -> None:
         import backtest_engine as be
 
