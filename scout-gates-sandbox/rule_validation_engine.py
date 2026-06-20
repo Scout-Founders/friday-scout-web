@@ -650,3 +650,25 @@ def generate_validations_from_testing_candidates(*, limit: int = 50) -> dict[str
         "skippedDuplicates": skipped,
         "validations": created_validations,
     }
+
+
+def generate_and_run_pending_validations(
+    *,
+    generate_limit: int = 50,
+    run_limit: int = 20,
+) -> dict[str, Any]:
+    """Create pending validations for testing candidates, then execute the pending queue."""
+    generated = generate_validations_from_testing_candidates(limit=generate_limit)
+    ran_batch = run_pending_validations(limit=run_limit)
+    return {
+        "ok": bool(generated.get("ok")) and bool(ran_batch.get("ok")),
+        "candidatesProcessed": int(generated.get("candidatesProcessed") or 0),
+        "created": int(generated.get("created") or 0),
+        "skippedDuplicates": int(generated.get("skippedDuplicates") or 0),
+        "ran": int(ran_batch.get("ran") or 0),
+        "completed": int(ran_batch.get("completed") or 0),
+        "failed": int(ran_batch.get("failed") or 0),
+        "generate": generated,
+        "run": ran_batch,
+        "results": ran_batch.get("results") or [],
+    }

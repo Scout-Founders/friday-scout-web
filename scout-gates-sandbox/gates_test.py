@@ -3393,6 +3393,25 @@ class RuleValidationEngineTests(unittest.TestCase):
         self.assertEqual(batch["failed"], 0)
         self.assertEqual(batch["results"][0]["validation"]["status"], "completed")
 
+    def test_generate_and_run_pending_validations(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=4.0)
+        self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Generate and run test",
+            affected_scope={"direction": "Bearish"},
+        )
+
+        result = rve.generate_and_run_pending_validations(generate_limit=10, run_limit=10)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["failed"], 0)
+
+        validations = rve.list_rule_validations(status="completed")
+        self.assertEqual(len(validations), 1)
+
 
 class RuleValidationApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -3504,14 +3523,36 @@ class RuleValidationApiTests(unittest.TestCase):
         self.assertGreaterEqual(payload["validation"]["baselineSignalCount"], 1)
 
     def test_post_run_pending_validations_api(self) -> None:
+        candidate_id = self.seed_testing_candidate()
+        payload = self._request("POST", "/api/rule-validations/run-pending", {"generateLimit": 5, "runLimit": 5})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["created"], 1)
+        self.assertEqual(payload["completed"], 1)
+        self.assertEqual(payload["failed"], 0)
+
+    def test_mark_testing_creates_pending_validation(self) -> None:
+        import rule_candidates_engine as rce
         import rule_validation_engine as rve
 
-        candidate_id = self.seed_testing_candidate()
-        rve.create_rule_validation(candidate_id)
-        payload = self._request("POST", "/api/rule-validations/run-pending", {"limit": 5})
+        created = rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Status transition candidate",
+            hypothesis="Status hypothesis",
+            proposed_rule="Status proposed rule",
+            rationale="Status rationale",
+            validation_plan="Status validation plan",
+            status="proposed",
+        )
+        candidate_id = int(created["candidate"]["id"])
+        payload = self._request(
+            "POST",
+            f"/api/rule-candidates/{candidate_id}/status",
+            {"status": "testing"},
+        )
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["ran"], 1)
-        self.assertEqual(payload["completed"], 1)
+        self.assertTrue(payload.get("validationCreated"))
+        validations = rve.list_rule_validations(candidate_id=candidate_id, status="pending")
+        self.assertEqual(len(validations), 1)
 
 
 class ScheduledResearchRunnerTests(unittest.TestCase):

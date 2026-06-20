@@ -95,6 +95,8 @@ from rule_candidates_engine import (
     update_rule_candidate_status,
 )
 from rule_validation_engine import (
+    create_rule_validation,
+    generate_and_run_pending_validations,
     list_rule_validations,
     run_pending_validations,
     run_rule_validation,
@@ -759,7 +761,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 payload = self.read_json()
                 status = str(payload.get("status") or "").strip()
-                self.send_json(update_rule_candidate_status(candidate_id, status))
+                result = update_rule_candidate_status(candidate_id, status)
+                if result.get("ok") and status == "testing":
+                    validation_result = create_rule_validation(candidate_id)
+                    result["validationCreated"] = bool(validation_result.get("created"))
+                    if validation_result.get("validation"):
+                        result["validation"] = validation_result["validation"]
+                self.send_json(result)
             except ValueError as exc:
                 self.send_json(
                     {"ok": False, "message": str(exc)},
@@ -775,8 +783,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/rule-validations/run-pending":
             try:
                 payload = self.read_json()
-                limit = int(payload.get("limit") or 20)
-                self.send_json(run_pending_validations(limit=limit))
+                generate_limit = int(payload.get("generateLimit") or payload.get("limit") or 50)
+                run_limit = int(payload.get("runLimit") or payload.get("limit") or 20)
+                self.send_json(
+                    generate_and_run_pending_validations(
+                        generate_limit=generate_limit,
+                        run_limit=run_limit,
+                    )
+                )
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Rule validation run error: {exc}"},

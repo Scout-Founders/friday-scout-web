@@ -186,9 +186,9 @@
 
     <section class="card">
       <h2>Actions</h2>
-      <p class="hint">Run pending validations against completed historical signals. Only candidates in testing status are eligible.</p>
+      <p class="hint">Generate pending validations from testing rule candidates, then execute the pending queue. Only candidates in testing status are eligible.</p>
       <div class="actions">
-        <button class="button primary" id="run-pending-button" type="button">Run Pending</button>
+        <button class="button primary" id="run-pending-button" type="button">Generate &amp; Run Pending</button>
         <button class="button" id="refresh-button" type="button">Refresh</button>
       </div>
     </section>
@@ -372,24 +372,30 @@
     async function runPendingValidations() {
       const button = document.getElementById("run-pending-button");
       button.disabled = true;
-      statusEl.textContent = "Running pending validations...";
+      statusEl.textContent = "Generating and running pending validations...";
       try {
         const response = await fetch("/api/rule-validations/run-pending", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ limit: 20 }),
+          body: JSON.stringify({ generateLimit: 50, runLimit: 20 }),
         });
         const data = await response.json();
-        if (!data.ok && data.failed) {
-          statusEl.textContent = `Pending validations finished with ${data.failed} failure(s).`;
+        const created = data.created || 0;
+        const completed = data.completed || 0;
+        const failed = data.failed || 0;
+        const skipped = data.skippedDuplicates || 0;
+        if (!data.ok && failed) {
+          statusEl.textContent =
+            `Created ${created}, completed ${completed}, failed ${failed}, skipped ${skipped}.`;
         } else if (!data.ok) {
-          throw new Error(data.message || "Pending validation run failed.");
+          throw new Error(data.message || "Generate and run pending failed.");
         } else {
-          statusEl.textContent = `Ran ${data.ran || 0} pending validation(s).`;
+          statusEl.textContent =
+            `Created ${created} pending validation(s), completed ${completed}, failed ${failed}, skipped ${skipped}.`;
         }
         await loadValidations();
       } catch (error) {
-        statusEl.textContent = `Pending validation run failed: ${error.message || error}`;
+        statusEl.textContent = `Generate and run pending failed: ${error.message || error}`;
       } finally {
         button.disabled = false;
       }
