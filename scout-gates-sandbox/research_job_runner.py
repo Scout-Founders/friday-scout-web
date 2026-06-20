@@ -292,7 +292,55 @@ def list_research_jobs(*, include_disabled: bool = True) -> list[dict[str, Any]]
             rows = conn.execute(
                 "SELECT * FROM research_jobs WHERE enabled = 1 ORDER BY name ASC"
             ).fetchall()
-        return [research_job_row(row) for row in rows]
+        jobs: list[dict[str, Any]] = []
+        for row in rows:
+            job = research_job_row(row)
+            last_run_row = conn.execute(
+                """
+                SELECT * FROM research_job_runs
+                WHERE job_id = ?
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """,
+                (row["id"],),
+            ).fetchone()
+            if last_run_row is not None:
+                last_run = research_job_run_row(last_run_row)
+                job["lastRun"] = {
+                    "status": last_run["status"],
+                    "signalsCount": last_run["signalsCount"],
+                    "expectancy": last_run["summary"].get("expectancy"),
+                    "startedAt": last_run["startedAt"],
+                    "completedAt": last_run["completedAt"],
+                }
+            else:
+                job["lastRun"] = None
+            jobs.append(job)
+        return jobs
+
+
+def list_research_job_runs(limit: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    bounded_limit = min(max(int(limit), 1), 200)
+    with connect() as conn:
+        init_research_job_store(conn)
+        rows = conn.execute(
+            """
+            SELECT r.*, j.name AS job_name
+            FROM research_job_runs r
+            JOIN research_jobs j ON j.id = r.job_id
+            ORDER BY r.started_at DESC, r.id DESC
+            LIMIT ?
+            """,
+            (bounded_limit,),
+        ).fetchall()
+        return [
+            {
+                **research_job_run_row(row),
+                "jobName": row["job_name"],
+            }
+            for row in rows
+        ]
 
 
 def get_research_job(job_id: int) -> Optional[dict[str, Any]]:

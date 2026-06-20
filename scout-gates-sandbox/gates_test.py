@@ -2555,6 +2555,18 @@ class ResearchJobRunnerTests(unittest.TestCase):
         self.assertEqual(result["run"]["status"], "failed")
         self.assertIn("preview failed", result["run"]["errorMessage"] or "")
 
+    def test_list_research_job_runs_includes_job_name(self) -> None:
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        jobs = rjr.list_research_jobs()
+        job_id = jobs[0]["id"]
+        rjr.run_research_job(job_id)
+        runs = rjr.list_research_job_runs(limit=10)
+        self.assertGreaterEqual(len(runs), 1)
+        self.assertEqual(runs[0]["jobId"], job_id)
+        self.assertTrue(runs[0]["jobName"])
+
 
 if __name__ == "__main__":
     unittest.main()

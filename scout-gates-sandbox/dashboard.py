@@ -79,6 +79,7 @@ from backtest_engine import (
 )
 from research_job_runner import (
     create_default_research_jobs,
+    list_research_job_runs,
     list_research_jobs,
     run_enabled_research_jobs,
     run_research_job,
@@ -91,6 +92,7 @@ DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
 RESEARCH_HTML = SANDBOX_DIR / "research.html"
 CONTROL_HTML = SANDBOX_DIR / "control.html"
 BACKTEST_HTML = SANDBOX_DIR / "backtest.html"
+RESEARCH_QUEUE_HTML = SANDBOX_DIR / "research_queue.html"
 REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
@@ -347,6 +349,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/backtest", "/backtest.html"):
             self.send_file(BACKTEST_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/research-queue", "/research-queue.html"):
+            self.send_file(RESEARCH_QUEUE_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
             return
@@ -416,6 +421,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/research-jobs":
             self.send_json({"ok": True, "jobs": list_research_jobs()})
+            return
+        if parsed.path == "/api/research-jobs/runs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["50"])[0]), 1), 200)
+            except ValueError:
+                limit = 50
+            self.send_json({"ok": True, "runs": list_research_job_runs(limit=limit)})
             return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())

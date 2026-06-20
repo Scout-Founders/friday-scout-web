@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Research Queue</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --accent: #00e5a0;
+      --accent-soft: #00e5a022;
+      --danger: #ff3b5c;
+      --warning: #ffb836;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #00e5a018, transparent 34rem),
+        radial-gradient(circle at top right, #6366f118, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .shell { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 8px; font-size: clamp(32px, 6vw, 56px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 28px; }
+    .top-nav a, .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    .top-nav a.active, .button.primary { color: var(--text); border-color: #2a3f66; background: var(--accent-soft); }
+    .card {
+      background: linear-gradient(180deg, var(--panel-soft), var(--panel));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .status { color: var(--muted); margin-bottom: 16px; min-height: 1.4em; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .metric {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .pill.completed { color: var(--accent); border-color: #1f5f49; background: #0d2018; }
+    .pill.failed { color: var(--danger); border-color: #5f1f2f; background: #201018; }
+    .pill.running { color: var(--warning); border-color: #5f4a1f; background: #201a0d; }
+    .pill.never { color: var(--muted); }
+    .positive { color: var(--accent); }
+    .negative { color: var(--danger); }
+    .button:disabled { opacity: 0.55; cursor: wait; }
+    .table-wrap { overflow-x: auto; }
+    .table-wrap table { min-width: 920px; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Research Orchestration</div>
+    <h1>Research Queue</h1>
+    <p class="lede">
+      Manage predefined Scout research jobs and review run history. Jobs use read-only backtest preview
+      analytics only. No trades, no gate changes, and no live scan changes.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a href="/backtest">Backtesting</a>
+      <a class="active" href="/research-queue">Research Queue</a>
+      <a href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Loading research queue...</div>
+
+    <section class="card">
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="metric">
+          <div class="metric-label">Total Jobs</div>
+          <div class="metric-value" id="metric-total-jobs">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Enabled Jobs</div>
+          <div class="metric-value" id="metric-enabled-jobs">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Completed Runs</div>
+          <div class="metric-value" id="metric-completed-runs">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Failed Runs</div>
+          <div class="metric-value" id="metric-failed-runs">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Research Jobs</h2>
+      <p class="hint">Predefined research jobs backed by the Research Job Runner.</p>
+      <div class="actions">
+        <button class="button primary" id="run-enabled-button" type="button">Run All Enabled</button>
+        <button class="button" id="refresh-button" type="button">Refresh</button>
+        <button class="button" id="seed-defaults-button" type="button">Initialize Default Jobs</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Job Name</th>
+              <th>Job Type</th>
+              <th>Schedule</th>
+              <th>Enabled</th>
+              <th>Last Run</th>
+              <th>Status</th>
+              <th>Signals</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="jobs-body">
+            <tr><td colspan="8">Loading jobs...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Research Job History</h2>
+      <p class="hint">Recent run evidence from stored research job executions.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Job Name</th>
+              <th>Run Timestamp</th>
+              <th>Status</th>
+              <th>Signals</th>
+              <th>Expectancy</th>
+              <th>Summary Metrics</th>
+            </tr>
+          </thead>
+          <tbody id="history-body">
+            <tr><td colspan="6">Loading run history...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    let jobs = [];
+    let runs = [];
+
+    function formatDate(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function formatPct(value) {
+      if (value === null || value === undefined || Number.isNaN(value)) return "—";
+      return `${Number(value).toFixed(1)}%`;
+    }
+
+    function formatReturn(value) {
+      if (value === null || value === undefined || Number.isNaN(value)) return "—";
+      const num = Number(value);
+      const cls = num >= 0 ? "positive" : "negative";
+      return `<span class="${cls}">${num.toFixed(2)}%</span>`;
+    }
+
+    function statusPill(status) {
+      const normalized = String(status || "never").toLowerCase();
+      const label = normalized === "never" ? "Never Run" : normalized;
+      return `<span class="pill ${normalized}">${label}</span>`;
+    }
+
+    function summaryMetricsText(summary) {
+      const metrics = summary || {};
+      const parts = [
+        metrics.winRate !== undefined && metrics.winRate !== null ? `Win ${formatPct(metrics.winRate)}` : null,
+        metrics.avgSignalReturn !== undefined && metrics.avgSignalReturn !== null
+          ? `Signal ${Number(metrics.avgSignalReturn).toFixed(2)}%`
+          : null,
+        metrics.avgStockReturn !== undefined && metrics.avgStockReturn !== null
+          ? `Stock ${Number(metrics.avgStockReturn).toFixed(2)}%`
+          : null,
+      ].filter(Boolean);
+      if (metrics.audit && metrics.audit.kind) {
+        parts.push(`Audit ${metrics.audit.kind}`);
+      }
+      return parts.length ? parts.join(" · ") : "—";
+    }
+
+    function renderSummaryCards() {
+      document.getElementById("metric-total-jobs").textContent = String(jobs.length);
+      document.getElementById("metric-enabled-jobs").textContent = String(
+        jobs.filter((job) => job.enabled).length
+      );
+      document.getElementById("metric-completed-runs").textContent = String(
+        runs.filter((run) => run.status === "completed").length
+      );
+      document.getElementById("metric-failed-runs").textContent = String(
+        runs.filter((run) => run.status === "failed").length
+      );
+    }
+
+    function renderJobsTable() {
+      document.getElementById("jobs-body").innerHTML = jobs.length
+        ? jobs.map((job) => {
+            const lastRun = job.lastRun || {};
+            const status = lastRun.status || "never";
+            return `
+              <tr>
+                <td>${job.name || "—"}</td>
+                <td>${job.jobType || "—"}</td>
+                <td>${job.scheduleLabel || "—"}</td>
+                <td>${job.enabled ? "Yes" : "No"}</td>
+                <td>${formatDate(job.lastRunAt || lastRun.completedAt || lastRun.startedAt)}</td>
+                <td>${statusPill(status)}</td>
+                <td>${lastRun.signalsCount ?? "—"}</td>
+                <td>
+                  <button class="button" type="button" data-run-job-id="${job.id}">
+                    Run Now
+                  </button>
+                </td>
+              </tr>`;
+          }).join("")
+        : `<tr><td colspan="8">No research jobs found. Initialize default jobs to get started.</td></tr>`;
+
+      document.querySelectorAll("[data-run-job-id]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const jobId = button.getAttribute("data-run-job-id");
+          await runJob(jobId, button);
+        });
+      });
+    }
+
+    function renderHistoryTable() {
+      document.getElementById("history-body").innerHTML = runs.length
+        ? runs.map((run) => `
+            <tr>
+              <td>${run.jobName || "—"}</td>
+              <td>${formatDate(run.completedAt || run.startedAt)}</td>
+              <td>${statusPill(run.status)}</td>
+              <td>${run.signalsCount ?? 0}</td>
+              <td>${formatReturn((run.summary || {}).expectancy)}</td>
+              <td>${summaryMetricsText(run.summary)}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="6">No research job runs recorded yet.</td></tr>`;
+    }
+
+    async function loadQueue() {
+      statusEl.textContent = "Loading research queue...";
+      const [jobsResponse, runsResponse] = await Promise.all([
+        fetch("/api/research-jobs"),
+        fetch("/api/research-jobs/runs?limit=50"),
+      ]);
+      const jobsData = await jobsResponse.json();
+      const runsData = await runsResponse.json();
+      if (!jobsData.ok) throw new Error(jobsData.message || "Could not load research jobs.");
+      if (!runsData.ok) throw new Error(runsData.message || "Could not load research job history.");
+      jobs = jobsData.jobs || [];
+      runs = runsData.runs || [];
+      renderSummaryCards();
+      renderJobsTable();
+      renderHistoryTable();
+      statusEl.textContent = `Loaded ${jobs.length} job(s) and ${runs.length} recent run(s).`;
+    }
+
+    async function runJob(jobId, button) {
+      if (button) button.disabled = true;
+      statusEl.textContent = `Running research job ${jobId}...`;
+      try {
+        const response = await fetch(`/api/research-jobs/${encodeURIComponent(jobId)}/run`, {
+          method: "POST",
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || data.run?.errorMessage || "Job run failed.");
+        statusEl.textContent = `Completed research job ${jobId}.`;
+        await loadQueue();
+      } catch (error) {
+        statusEl.textContent = `Job run failed: ${error.message || error}`;
+        await loadQueue();
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    document.getElementById("run-enabled-button").addEventListener("click", async () => {
+      const button = document.getElementById("run-enabled-button");
+      button.disabled = true;
+      statusEl.textContent = "Running all enabled research jobs...";
+      try {
+        const response = await fetch("/api/research-jobs/run-enabled", { method: "POST" });
+        const data = await response.json();
+        if (!data.ok && (data.failed || 0) > 0) {
+          statusEl.textContent = `Enabled batch finished with ${data.failed} failed run(s).`;
+        } else if (!data.ok) {
+          throw new Error(data.message || "Enabled batch run failed.");
+        } else {
+          statusEl.textContent = `Ran ${data.ran || 0} enabled job(s).`;
+        }
+        await loadQueue();
+      } catch (error) {
+        statusEl.textContent = `Enabled batch failed: ${error.message || error}`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    document.getElementById("refresh-button").addEventListener("click", () => {
+      loadQueue().catch((error) => {
+        statusEl.textContent = `Refresh failed: ${error.message || error}`;
+      });
+    });
+
+    document.getElementById("seed-defaults-button").addEventListener("click", async () => {
+      const button = document.getElementById("seed-defaults-button");
+      button.disabled = true;
+      statusEl.textContent = "Initializing default research jobs...";
+      try {
+        const response = await fetch("/api/research-jobs/defaults", { method: "POST" });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Could not initialize default jobs.");
+        statusEl.textContent = `Initialized ${data.created || 0} new default job(s).`;
+        await loadQueue();
+      } catch (error) {
+        statusEl.textContent = `Initialize failed: ${error.message || error}`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    loadQueue().catch((error) => {
+      statusEl.textContent = `Could not load research queue: ${error.message || error}`;
+    });
+  </script>
+</body>
+</html>
