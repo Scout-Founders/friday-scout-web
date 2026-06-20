@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Rule Validations</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --accent: #34d399;
+      --accent-soft: #34d39922;
+      --danger: #ff3b5c;
+      --warning: #ffb836;
+      --info: #5b9dff;
+      --success: #00e5a0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #34d39918, transparent 34rem),
+        radial-gradient(circle at top right, #6366f118, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .shell { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 8px; font-size: clamp(32px, 6vw, 56px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 28px; }
+    .top-nav a, .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    .top-nav a.active, .button.primary { color: var(--text); border-color: #1f5f49; background: var(--accent-soft); }
+    .card {
+      background: linear-gradient(180deg, var(--panel-soft), var(--panel));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .status { color: var(--muted); margin-bottom: 16px; min-height: 1.4em; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .metric {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .pill.pending { color: var(--warning); border-color: #5f4a1f; background: #201a0d; }
+    .pill.running { color: var(--info); border-color: #1f3f5f; background: #0d1520; }
+    .pill.completed { color: var(--success); border-color: #1f5f49; background: #0d2018; }
+    .pill.failed { color: var(--danger); border-color: #5f1f2f; background: #201018; }
+    .validation-list { display: grid; gap: 14px; }
+    .validation-card {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .validation-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .validation-title { font-size: 18px; font-weight: 700; margin: 0 0 8px; }
+    .validation-body { color: var(--muted); line-height: 1.55; font-size: 14px; }
+    .validation-section { margin-top: 12px; }
+    .validation-section strong {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+    }
+    .mini-metric {
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #070b14;
+      border: 1px solid var(--border);
+    }
+    .mini-metric-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .mini-metric-value { font-size: 16px; font-weight: 700; margin-top: 4px; }
+    .delta-positive { color: var(--success); }
+    .delta-negative { color: var(--danger); }
+    .summary-box {
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #070b14;
+      border: 1px solid var(--border);
+      line-height: 1.55;
+    }
+    .button:disabled { opacity: 0.55; cursor: wait; }
+    .empty-state { color: var(--muted); padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Research Validation Layer</div>
+    <h1>Rule Validations</h1>
+    <p class="lede">
+      Automatically validate rule candidates against historical signals before any human review or
+      promotion. All simulations are in-memory only. No live rule changes, no gate weight changes,
+      and no automatic promotion.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a href="/backtest">Backtesting</a>
+      <a href="/research-queue">Research Queue</a>
+      <a href="/research-findings">Research Findings</a>
+      <a href="/rule-candidates">Rule Candidates</a>
+      <a class="active" href="/rule-validations">Rule Validations</a>
+      <a href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Loading rule validations...</div>
+
+    <section class="card">
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="metric">
+          <div class="metric-label">Pending</div>
+          <div class="metric-value" id="metric-pending">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Running</div>
+          <div class="metric-value" id="metric-running">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Completed</div>
+          <div class="metric-value" id="metric-completed">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Failed</div>
+          <div class="metric-value" id="metric-failed">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Actions</h2>
+      <p class="hint">Run pending validations against completed historical signals. Only candidates in testing status are eligible.</p>
+      <div class="actions">
+        <button class="button primary" id="run-pending-button" type="button">Run Pending</button>
+        <button class="button" id="refresh-button" type="button">Refresh</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Validations</h2>
+      <div class="validation-list" id="validations-list">
+        <div class="empty-state">Loading validations...</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    let allValidations = [];
+
+    function formatDate(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function formatLabel(value) {
+      if (!value) return "—";
+      return String(value).replace(/_/g, " ");
+    }
+
+    function formatNumber(value, digits = 2) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+      return Number(value).toFixed(digits);
+    }
+
+    function formatPct(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+      const numeric = Number(value);
+      return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}%`;
+    }
+
+    function deltaClass(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "";
+      return Number(value) >= 0 ? "delta-positive" : "delta-negative";
+    }
+
+    function pill(value) {
+      const normalized = String(value || "unknown").toLowerCase();
+      return `<span class="pill ${normalized}">${formatLabel(value)}</span>`;
+    }
+
+    function renderSummaryCards(validations) {
+      document.getElementById("metric-pending").textContent = String(
+        validations.filter((item) => item.status === "pending").length
+      );
+      document.getElementById("metric-running").textContent = String(
+        validations.filter((item) => item.status === "running").length
+      );
+      document.getElementById("metric-completed").textContent = String(
+        validations.filter((item) => item.status === "completed").length
+      );
+      document.getElementById("metric-failed").textContent = String(
+        validations.filter((item) => item.status === "failed").length
+      );
+    }
+
+    function renderMetricBlock(label, baseline, candidate) {
+      return `
+        <div class="mini-metric">
+          <div class="mini-metric-label">${label}</div>
+          <div class="mini-metric-value">${formatNumber(baseline)} → ${formatNumber(candidate)}</div>
+        </div>`;
+    }
+
+    function renderDeltaBlock(label, value, formatter = formatNumber) {
+      return `
+        <div class="mini-metric">
+          <div class="mini-metric-label">${label}</div>
+          <div class="mini-metric-value ${deltaClass(value)}">${formatter(value)}</div>
+        </div>`;
+    }
+
+    function renderValidationsList(validations) {
+      const listEl = document.getElementById("validations-list");
+      if (!validations.length) {
+        listEl.innerHTML = `<div class="empty-state">No validations recorded yet.</div>`;
+        return;
+      }
+
+      listEl.innerHTML = validations.map((validation) => {
+        const runButton = validation.status === "pending"
+          ? `<button class="button" type="button" data-run-validation="${validation.candidateId}">Run Validation</button>`
+          : "";
+
+        return `
+          <article class="validation-card">
+            <div class="validation-header">
+              <div>
+                <h3 class="validation-title">${validation.candidateTitle || "Untitled candidate"}</h3>
+                <div>${pill(validation.status)} ${pill(validation.candidateType)}</div>
+              </div>
+              <div class="validation-body">
+                <div>Validation #${validation.id}</div>
+                <div>Candidate ID: ${validation.candidateId}</div>
+                <div>Created: ${formatDate(validation.createdAt)}</div>
+                <div>Completed: ${formatDate(validation.completedAt)}</div>
+              </div>
+            </div>
+
+            <div class="validation-section">
+              <strong>Baseline Metrics</strong>
+              <div class="metrics-grid">
+                ${renderMetricBlock("Signals", validation.baselineSignalCount, validation.candidateSignalCount)}
+                ${renderMetricBlock("Win Rate", validation.baselineWinRate, validation.candidateWinRate)}
+                ${renderMetricBlock("Expectancy", validation.baselineExpectancy, validation.candidateExpectancy)}
+                ${renderMetricBlock("Avg Return", validation.baselineAvgSignalReturn, validation.candidateAvgSignalReturn)}
+                ${renderMetricBlock("Max Drawdown", validation.baselineMaxDrawdown, validation.candidateMaxDrawdown)}
+              </div>
+            </div>
+
+            <div class="validation-section">
+              <strong>Deltas</strong>
+              <div class="metrics-grid">
+                ${renderDeltaBlock("Win Rate Δ", validation.winRateDelta, formatPct)}
+                ${renderDeltaBlock("Expectancy Δ", validation.expectancyDelta, formatPct)}
+                ${renderDeltaBlock("Return Δ", validation.returnDelta, formatPct)}
+                ${renderDeltaBlock("Drawdown Δ", validation.drawdownDelta, formatNumber)}
+              </div>
+            </div>
+
+            <div class="validation-section">
+              <strong>Confidence Score</strong>
+              <div class="mini-metric-value">${formatNumber(validation.confidenceScore, 1)} / 100</div>
+            </div>
+
+            <div class="validation-section">
+              <strong>Summary</strong>
+              <div class="summary-box">${validation.validationSummary || "—"}</div>
+            </div>
+
+            <div class="actions">${runButton}</div>
+          </article>`;
+      }).join("");
+
+      document.querySelectorAll("[data-run-validation]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const candidateId = button.getAttribute("data-run-validation");
+          await runValidation(candidateId, button);
+        });
+      });
+    }
+
+    async function loadValidations() {
+      statusEl.textContent = "Loading rule validations...";
+      const response = await fetch("/api/rule-validations?limit=200");
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.message || "Could not load rule validations.");
+      allValidations = data.validations || [];
+      renderSummaryCards(allValidations);
+      renderValidationsList(allValidations);
+      statusEl.textContent = `Loaded ${allValidations.length} validation(s).`;
+    }
+
+    async function runValidation(candidateId, button) {
+      if (button) button.disabled = true;
+      statusEl.textContent = `Running validation for candidate ${candidateId}...`;
+      try {
+        const response = await fetch(`/api/rule-validations/${encodeURIComponent(candidateId)}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Validation run failed.");
+        statusEl.textContent = `Validation completed for candidate ${candidateId}.`;
+        await loadValidations();
+      } catch (error) {
+        statusEl.textContent = `Validation run failed: ${error.message || error}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function runPendingValidations() {
+      const button = document.getElementById("run-pending-button");
+      button.disabled = true;
+      statusEl.textContent = "Running pending validations...";
+      try {
+        const response = await fetch("/api/rule-validations/run-pending", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 20 }),
+        });
+        const data = await response.json();
+        if (!data.ok && data.failed) {
+          statusEl.textContent = `Pending validations finished with ${data.failed} failure(s).`;
+        } else if (!data.ok) {
+          throw new Error(data.message || "Pending validation run failed.");
+        } else {
+          statusEl.textContent = `Ran ${data.ran || 0} pending validation(s).`;
+        }
+        await loadValidations();
+      } catch (error) {
+        statusEl.textContent = `Pending validation run failed: ${error.message || error}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("run-pending-button").addEventListener("click", runPendingValidations);
+    document.getElementById("refresh-button").addEventListener("click", loadValidations);
+    loadValidations().catch((error) => {
+      statusEl.textContent = `Load failed: ${error.message || error}`;
+    });
+  </script>
+</body>
+</html>

@@ -94,6 +94,11 @@ from rule_candidates_engine import (
     list_rule_candidates,
     update_rule_candidate_status,
 )
+from rule_validation_engine import (
+    list_rule_validations,
+    run_pending_validations,
+    run_rule_validation,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -105,6 +110,7 @@ BACKTEST_HTML = SANDBOX_DIR / "backtest.html"
 RESEARCH_QUEUE_HTML = SANDBOX_DIR / "research_queue.html"
 RESEARCH_FINDINGS_HTML = SANDBOX_DIR / "research_findings.html"
 RULE_CANDIDATES_HTML = SANDBOX_DIR / "rule_candidates.html"
+RULE_VALIDATIONS_HTML = SANDBOX_DIR / "rule_validations.html"
 REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
@@ -370,6 +376,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/rule-candidates", "/rule-candidates.html"):
             self.send_file(RULE_CANDIDATES_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/rule-validations", "/rule-validations.html"):
+            self.send_file(RULE_VALIDATIONS_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
             return
@@ -483,6 +492,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "candidates": list_rule_candidates(
                         status=status,
                         candidate_type=candidate_type,
+                        limit=limit,
+                    ),
+                }
+            )
+            return
+        if parsed.path == "/api/rule-validations":
+            params = urllib.parse.parse_qs(parsed.query)
+            status = (params.get("status") or [None])[0]
+            candidate_id_raw = (params.get("candidateId") or params.get("candidate_id") or [None])[0]
+            candidate_id = None
+            if candidate_id_raw not in (None, ""):
+                try:
+                    candidate_id = int(candidate_id_raw)
+                except ValueError:
+                    self.send_json(
+                        {"ok": False, "message": "candidateId must be numeric."},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), 500)
+            except ValueError:
+                limit = 100
+            self.send_json(
+                {
+                    "ok": True,
+                    "validations": list_rule_validations(
+                        status=status,
+                        candidate_id=candidate_id,
                         limit=limit,
                     ),
                 }
@@ -730,6 +768,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Rule candidate status error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/rule-validations/run-pending":
+            try:
+                payload = self.read_json()
+                limit = int(payload.get("limit") or 20)
+                self.send_json(run_pending_validations(limit=limit))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Rule validation run error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path.startswith("/api/rule-validations/") and parsed.path.endswith("/run"):
+            candidate_id_text = parsed.path.split("/")[-2]
+            try:
+                candidate_id = int(candidate_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Rule candidate id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                self.send_json(run_rule_validation(candidate_id))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Rule validation error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return

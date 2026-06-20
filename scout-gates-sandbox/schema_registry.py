@@ -365,6 +365,33 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "validation_result_json": "TEXT",
         },
     },
+    "rule_validations": {
+        "table": "rule_validations",
+        "columns": {
+            "id": "INTEGER",
+            "candidate_id": "INTEGER",
+            "created_at": "TEXT",
+            "completed_at": "TEXT",
+            "status": "TEXT",
+            "baseline_signal_count": "INTEGER",
+            "candidate_signal_count": "INTEGER",
+            "baseline_win_rate": "REAL",
+            "candidate_win_rate": "REAL",
+            "baseline_expectancy": "REAL",
+            "candidate_expectancy": "REAL",
+            "baseline_avg_signal_return": "REAL",
+            "candidate_avg_signal_return": "REAL",
+            "baseline_max_drawdown": "REAL",
+            "candidate_max_drawdown": "REAL",
+            "win_rate_delta": "REAL",
+            "expectancy_delta": "REAL",
+            "return_delta": "REAL",
+            "drawdown_delta": "REAL",
+            "confidence_score": "REAL",
+            "validation_summary": "TEXT",
+            "validation_details_json": "TEXT",
+        },
+    },
 }
 
 

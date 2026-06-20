@@ -3142,6 +3142,378 @@ class RuleCandidatesEngineTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
 
 
+class RuleValidationEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "rule_validations_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def insert_signal(
+        self,
+        *,
+        ticker: str,
+        direction: str,
+        outcome: str,
+        return_20d: float,
+        gates: list[dict] | None = None,
+    ) -> None:
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker=ticker,
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction=direction,
+                outcome=outcome,
+                return_5d=return_20d / 2,
+                return_20d=return_20d,
+                score=82.0,
+                sector="Technology",
+                gates=gates or [{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+    def create_testing_candidate(
+        self,
+        *,
+        candidate_type: str,
+        title: str,
+        affected_scope: dict | None = None,
+    ) -> int:
+        import rule_candidates_engine as rce
+
+        created = rce.create_rule_candidate(
+            candidate_type=candidate_type,
+            title=title,
+            hypothesis="Validation hypothesis",
+            proposed_rule="Validation proposed rule",
+            rationale="Validation rationale",
+            validation_plan="Validation plan",
+            status="testing",
+            affected_scope=affected_scope or {},
+        )
+        return int(created["candidate"]["id"])
+
+    def test_create_and_list_rule_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        candidate_id = self.create_testing_candidate(
+            candidate_type="system_note",
+            title="Validation creation test",
+        )
+        created = rve.create_rule_validation(candidate_id)
+        self.assertTrue(created["ok"])
+        self.assertTrue(created["created"])
+        self.assertEqual(created["validation"]["status"], "pending")
+
+        duplicate = rve.create_rule_validation(candidate_id)
+        self.assertTrue(duplicate["ok"])
+        self.assertFalse(duplicate["created"])
+
+        validations = rve.list_rule_validations(candidate_id=candidate_id)
+        self.assertEqual(len(validations), 1)
+        self.assertEqual(validations[0]["candidateTitle"], "Validation creation test")
+
+    def test_trend_override_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=8.0)
+        self.insert_signal(ticker="INTC", direction="Bearish", outcome="LOSS", return_20d=-6.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Test bearish trend override",
+            affected_scope={"direction": "Bearish", "scopeType": "direction_filter"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        validation = result["validation"]
+        self.assertEqual(validation["status"], "completed")
+        self.assertEqual(validation["baselineSignalCount"], 2)
+        self.assertEqual(validation["candidateSignalCount"], 1)
+        self.assertGreater(validation["expectancyDelta"], 0)
+
+    def test_direction_filter_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="NVDA", direction="Bearish", outcome="LOSS", return_20d=-5.0)
+        self.insert_signal(ticker="ZZZZ", direction="Bearish", outcome="LOSS", return_20d=-2.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="direction_filter",
+            title="Test leadership bearish suppression",
+            affected_scope={
+                "direction": "Bearish",
+                "scopeType": "leadership_cohort",
+                "groupId": "mega_cap_ai_leaders",
+            },
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        validation = result["validation"]
+        self.assertEqual(validation["baselineSignalCount"], 2)
+        self.assertEqual(validation["candidateSignalCount"], 1)
+        self.assertEqual(validation["candidateSignalCount"], validation["baselineSignalCount"] - 1)
+
+    def test_gate_weight_candidate_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(
+            ticker="NVDA",
+            direction="Bullish",
+            outcome="WIN",
+            return_20d=6.0,
+            gates=[{"key": "SPECTER", "passed": True}, {"key": "sentinel", "passed": True}],
+        )
+        self.insert_signal(
+            ticker="AMD",
+            direction="Bullish",
+            outcome="LOSS",
+            return_20d=-4.0,
+            gates=[{"key": "sentinel", "passed": True}],
+        )
+        candidate_id = self.create_testing_candidate(
+            candidate_type="gate_weight_candidate",
+            title="Test SPECTER emphasis",
+            affected_scope={"gates": ["SPECTER"], "scopeType": "gate_weight"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        validation = result["validation"]
+        self.assertEqual(validation["baselineSignalCount"], 2)
+        self.assertEqual(validation["candidateSignalCount"], 1)
+        self.assertGreater(validation["candidateExpectancy"], validation["baselineExpectancy"])
+
+    def test_confidence_score_generation(self) -> None:
+        import rule_validation_engine as rve
+
+        for _ in range(6):
+            self.insert_signal(ticker="NVDA", direction="Bullish", outcome="WIN", return_20d=5.0)
+        self.insert_signal(ticker="INTC", direction="Bearish", outcome="LOSS", return_20d=-8.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Confidence score test",
+            affected_scope={"direction": "Bearish"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        score = result["validation"]["confidenceScore"]
+        self.assertIsNotNone(score)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 100.0)
+
+    def test_completed_validation_summary(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="NVDA", direction="Bearish", outcome="LOSS", return_20d=-4.0)
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=6.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Summary generation test",
+            affected_scope={"direction": "Bearish"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        summary = result["validation"]["validationSummary"] or ""
+        self.assertIn("Summary generation test", summary)
+        self.assertIn("expectancy", summary.lower())
+
+    def test_generate_validations_from_testing_candidates(self) -> None:
+        import rule_candidates_engine as rce
+        import rule_validation_engine as rve
+
+        self.create_testing_candidate(candidate_type="system_note", title="Testing candidate A")
+        self.create_testing_candidate(candidate_type="system_note", title="Testing candidate B")
+        proposed = rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Proposed candidate",
+            hypothesis="Proposed hypothesis",
+            proposed_rule="Proposed rule",
+            rationale="Proposed rationale",
+            validation_plan="Proposed plan",
+            status="proposed",
+        )
+        blocked = rve.create_rule_validation(int(proposed["candidate"]["id"]))
+        self.assertFalse(blocked["ok"])
+
+        generated = rve.generate_validations_from_testing_candidates()
+        self.assertTrue(generated["ok"])
+        self.assertEqual(generated["created"], 2)
+        self.assertEqual(generated["skippedDuplicates"], 0)
+
+        second = rve.generate_validations_from_testing_candidates()
+        self.assertEqual(second["created"], 0)
+        self.assertEqual(second["skippedDuplicates"], 2)
+
+    def test_run_pending_validations(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=4.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Pending run test",
+            affected_scope={"direction": "Bearish"},
+        )
+        created = rve.create_rule_validation(candidate_id)
+        self.assertTrue(created["created"])
+
+        batch = rve.run_pending_validations()
+        self.assertEqual(batch["ran"], 1)
+        self.assertEqual(batch["completed"], 1)
+        self.assertEqual(batch["failed"], 0)
+        self.assertEqual(batch["results"][0]["validation"]["status"], "completed")
+
+
+class RuleValidationApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import json
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "rule_validations_api_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        self._port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def tearDown(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        import json
+        import urllib.request
+
+        data = None
+        headers = {}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self._port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def seed_testing_candidate(self) -> int:
+        import memory_store as ms
+        import rule_candidates_engine as rce
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="AMD",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=2.0,
+                return_20d=4.0,
+                score=80.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        created = rce.create_rule_candidate(
+            candidate_type="trend_override",
+            title="API validation candidate",
+            hypothesis="API hypothesis",
+            proposed_rule="API proposed rule",
+            rationale="API rationale",
+            validation_plan="API validation plan",
+            status="testing",
+            affected_scope={"direction": "Bearish"},
+        )
+        return int(created["candidate"]["id"])
+
+    def test_get_rule_validations_api(self) -> None:
+        import rule_validation_engine as rve
+
+        candidate_id = self.seed_testing_candidate()
+        rve.create_rule_validation(candidate_id)
+        payload = self._request("GET", "/api/rule-validations?limit=10")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["validations"]), 1)
+        self.assertEqual(payload["validations"][0]["candidateId"], candidate_id)
+
+    def test_post_run_validation_api(self) -> None:
+        candidate_id = self.seed_testing_candidate()
+        payload = self._request("POST", f"/api/rule-validations/{candidate_id}/run", {})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["validation"]["status"], "completed")
+        self.assertGreaterEqual(payload["validation"]["baselineSignalCount"], 1)
+
+    def test_post_run_pending_validations_api(self) -> None:
+        import rule_validation_engine as rve
+
+        candidate_id = self.seed_testing_candidate()
+        rve.create_rule_validation(candidate_id)
+        payload = self._request("POST", "/api/rule-validations/run-pending", {"limit": 5})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["ran"], 1)
+        self.assertEqual(payload["completed"], 1)
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile

@@ -32,6 +32,7 @@ PRESERVED_RESEARCH_TABLES = (
     "research_job_runs",
     "research_findings",
     "rule_candidates",
+    "rule_validations",
 )
 
 SNAPSHOT_TABLES_DROP_ORDER = ("feature_vectors", "scan_results", "scan_runs")
