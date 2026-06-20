@@ -1327,5 +1327,553 @@ class UniversePresetsTests(unittest.TestCase):
         self.assertEqual(row["cohort_class"], "actionable")
 
 
+class BacktestEngineTests(unittest.TestCase):
+    def insert_completed_signal(
+        self,
+        conn,
+        run_id: int,
+        *,
+        ticker: str,
+        timestamp: str,
+        direction: str,
+        outcome: str,
+        return_5d: float,
+        return_20d: float,
+        score: float,
+        sector: str,
+        gates: list[dict],
+        cohort_class: str = "actionable",
+        engine_version: str = "3.0.test",
+        is_test: int = 0,
+    ) -> int:
+        import memory_store as ms
+
+        snapshot = {"gates": gates}
+        cursor = conn.execute(
+            """
+            INSERT INTO scan_results (
+                run_id, timestamp, ticker, scout_score, final_direction,
+                gates_json, gate_snapshot_json, stock_outcome_label,
+                return_5d, return_20d, engine_version, cohort_class, is_test_record,
+                feature_vector_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                timestamp,
+                ticker,
+                score,
+                direction,
+                ms.json_dump({gate["key"]: gate["passed"] for gate in gates}),
+                ms.json_dump(snapshot),
+                outcome,
+                return_5d,
+                return_20d,
+                engine_version,
+                cohort_class,
+                is_test,
+                ms.json_dump({"sector": sector}),
+            ),
+        )
+        recommendation_id = int(cursor.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO feature_vectors (
+                recommendation_id, scan_id, ticker, timestamp, engine_version, sector_name
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (recommendation_id, run_id, ticker, timestamp, engine_version, sector),
+        )
+        return recommendation_id
+
+    def test_run_backtest_filters_and_persists_metrics(self) -> None:
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import backtest_engine as be
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "backtest_test.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                with ms.connect() as conn:
+                    run_id = conn.execute(
+                        """
+                        INSERT INTO scan_runs (
+                            timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("2026-05-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+                    ).lastrowid
+                    self.insert_completed_signal(
+                        conn,
+                        run_id,
+                        ticker="AAA",
+                        timestamp="2026-05-10T12:00:00+00:00",
+                        direction="Bullish",
+                        outcome="WIN",
+                        return_5d=4.0,
+                        return_20d=8.0,
+                        score=88.0,
+                        sector="Technology",
+                        gates=[
+                            {"key": "sentinel", "passed": True},
+                            {"key": "compass", "passed": True},
+                        ],
+                    )
+                    self.insert_completed_signal(
+                        conn,
+                        run_id,
+                        ticker="BBB",
+                        timestamp="2026-05-12T12:00:00+00:00",
+                        direction="Bearish",
+                        outcome="LOSS",
+                        return_5d=-3.0,
+                        return_20d=-6.0,
+                        score=72.0,
+                        sector="Healthcare",
+                        gates=[
+                            {"key": "sentinel", "passed": True},
+                            {"key": "pulse", "passed": True},
+                        ],
+                    )
+                    self.insert_completed_signal(
+                        conn,
+                        run_id,
+                        ticker="TST",
+                        timestamp="2026-05-13T12:00:00+00:00",
+                        direction="Bullish",
+                        outcome="WIN",
+                        return_5d=2.0,
+                        return_20d=2.0,
+                        score=90.0,
+                        sector="Technology",
+                        gates=[{"key": "sentinel", "passed": True}],
+                        is_test=1,
+                    )
+                    conn.commit()
+
+                result = be.run_backtest(
+                    name="Filtered Test",
+                    description="Actionable completed outcomes only",
+                    filters=be.BacktestFilters(
+                        start_date="2026-05-01",
+                        end_date="2026-05-31",
+                        cohort_class="actionable",
+                        min_score=70.0,
+                    ),
+                )
+
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["signalsSaved"], 2)
+                self.assertEqual(result["metrics"]["sample_size"], 2)
+                self.assertEqual(result["metrics"]["win_rate"], 50.0)
+                self.assertAlmostEqual(result["metrics"]["avg_return"], 7.0, places=2)
+                self.assertAlmostEqual(result["metrics"]["avg_stock_return"], 1.0, places=2)
+                self.assertAlmostEqual(result["metrics"]["expectancy"], 7.0, places=2)
+                self.assertEqual(len(result["analytics"]["sector_performance"]), 2)
+
+                with ms.connect() as conn:
+                    metrics_row = conn.execute(
+                        "SELECT * FROM backtest_metrics WHERE run_id = ?",
+                        (result["runId"],),
+                    ).fetchone()
+                    signal_count = conn.execute(
+                        "SELECT COUNT(*) FROM backtest_signals WHERE run_id = ?",
+                        (result["runId"],),
+                    ).fetchone()[0]
+                self.assertIsNotNone(metrics_row)
+                self.assertEqual(int(signal_count), 2)
+                self.assertEqual(metrics_row["best_trade"], 8.0)
+                self.assertEqual(metrics_row["worst_trade"], 6.0)
+
+    def test_preview_backtest_does_not_persist(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import backtest_engine as be
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "backtest_preview.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                preview = be.preview_backtest(be.BacktestFilters())
+                self.assertTrue(preview["ok"])
+                with ms.connect() as conn:
+                    run_count = conn.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0]
+                self.assertEqual(int(run_count), 0)
+
+    def test_gate_performance_groups_passed_gates(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "outcome_label": "WIN",
+                    "direction": "Bullish",
+                    "return_20d": 5.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"sentinel","passed":true}]}',
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "outcome_label": "LOSS",
+                    "direction": "Bearish",
+                    "return_20d": -4.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"sentinel","passed":true}]}',
+                }
+            ),
+        ]
+        gate_rows = be.compute_gate_performance(signals)
+        self.assertEqual(gate_rows[0]["label"], "SENTINEL")
+        self.assertEqual(gate_rows[0]["sample_size"], 2)
+        self.assertEqual(gate_rows[0]["win_rate"], 50.0)
+        self.assertAlmostEqual(gate_rows[0]["avg_return"], 4.5, places=2)
+        self.assertAlmostEqual(gate_rows[0]["avg_stock_return"], 0.5, places=2)
+
+    def test_directional_return_flips_bearish(self) -> None:
+        import backtest_engine as be
+
+        self.assertEqual(be.directional_return("Bullish", 10.0), 10.0)
+        self.assertEqual(be.directional_return("Bearish", 10.0), -10.0)
+        self.assertIsNone(be.directional_return("Bearish", None))
+
+    def test_bearish_loss_positive_stock_maps_to_negative_signal_return(self) -> None:
+        import backtest_engine as be
+
+        signal = be.attach_return_fields(
+            {
+                "direction": "Bearish",
+                "outcome_label": "LOSS",
+                "return_20d": 46.7222,
+            }
+        )
+        self.assertAlmostEqual(signal["stock_return"], 46.7222, places=4)
+        self.assertAlmostEqual(signal["signal_return"], -46.7222, places=4)
+
+    def test_expectancy_equals_mean_signal_return(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields({"direction": "Bearish", "outcome_label": "LOSS", "return_20d": 46.0}),
+            be.attach_return_fields({"direction": "Bearish", "outcome_label": "LOSS", "return_20d": 39.0}),
+        ]
+        metrics = be.compute_core_metrics(signals)
+        self.assertAlmostEqual(metrics["avg_return"], -42.5, places=2)
+        self.assertAlmostEqual(metrics["expectancy"], -42.5, places=2)
+        self.assertAlmostEqual(metrics["avg_stock_return"], 42.5, places=2)
+
+    def test_best_setups_rank_by_signal_return(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {"ticker": "AMD", "direction": "Bearish", "outcome_label": "LOSS", "return_20d": 46.0}
+            ),
+            be.attach_return_fields(
+                {"ticker": "NOW", "direction": "Bullish", "outcome_label": "WIN", "return_20d": 24.0}
+            ),
+        ]
+        best, worst = be.compute_setups(signals, limit=1)
+        self.assertEqual(best[0]["ticker"], "NOW")
+        self.assertEqual(worst[0]["ticker"], "AMD")
+        self.assertAlmostEqual(best[0]["signal_return"], 24.0, places=2)
+        self.assertAlmostEqual(worst[0]["signal_return"], -46.0, places=2)
+
+    def test_direction_breakdown_includes_bullish_and_bearish(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields({"direction": "Bullish", "outcome_label": "WIN", "return_20d": 8.0}),
+            be.attach_return_fields({"direction": "Bearish", "outcome_label": "LOSS", "return_20d": 10.0}),
+        ]
+        rows = be.compute_direction_breakdown(signals)
+        self.assertEqual([row["direction"] for row in rows], ["Bullish", "Bearish"])
+        bullish = rows[0]
+        bearish = rows[1]
+        self.assertEqual(bullish["signal_count"], 1)
+        self.assertEqual(bullish["win_rate"], 100.0)
+        self.assertAlmostEqual(bullish["avg_signal_return"], 8.0, places=2)
+        self.assertAlmostEqual(bullish["avg_stock_return"], 8.0, places=2)
+        self.assertEqual(bearish["signal_count"], 1)
+        self.assertEqual(bearish["win_rate"], 0.0)
+        self.assertAlmostEqual(bearish["avg_signal_return"], -10.0, places=2)
+        self.assertAlmostEqual(bearish["avg_stock_return"], 10.0, places=2)
+
+    def test_direction_breakdown_includes_neutral_when_present(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields({"direction": "Neutral", "outcome_label": "FLAT", "return_20d": 0.5}),
+        ]
+        rows = be.compute_direction_breakdown(signals)
+        self.assertEqual(len(rows), 3)
+        neutral = rows[2]
+        self.assertEqual(neutral["direction"], "Neutral")
+        self.assertEqual(neutral["signal_count"], 1)
+
+    def test_sector_audit_highlights_worst_sector_and_losers(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "AMD",
+                    "direction": "Bearish",
+                    "sector": "SEMICONDUCTORS",
+                    "outcome_label": "LOSS",
+                    "return_20d": 46.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "AMD",
+                    "direction": "Bearish",
+                    "sector": "SEMICONDUCTORS",
+                    "outcome_label": "LOSS",
+                    "return_20d": 39.0,
+                    "recommendation_id": 2,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "NOW",
+                    "direction": "Bullish",
+                    "sector": "TECHNOLOGY",
+                    "outcome_label": "WIN",
+                    "return_20d": 12.0,
+                    "recommendation_id": 3,
+                }
+            ),
+        ]
+        audit = be.compute_sector_audit(signals)
+        worst = audit["worst_sector"]
+        self.assertEqual(worst["sector"], "SEMICONDUCTORS")
+        self.assertEqual(worst["signal_count"], 2)
+        self.assertAlmostEqual(worst["avg_signal_return"], -42.5, places=2)
+        self.assertAlmostEqual(worst["avg_stock_return"], 42.5, places=2)
+        self.assertEqual(len(worst["top_losing_tickers"]), 2)
+        self.assertEqual(worst["top_losing_tickers"][0]["ticker"], "AMD")
+        self.assertAlmostEqual(worst["top_losing_tickers"][0]["signal_return"], -46.0, places=2)
+        self.assertEqual(worst["top_losing_tickers"][0]["outcome_label"], "LOSS")
+
+    def test_trade_audit_sorts_by_signal_return_ascending(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "WINR",
+                    "timestamp": "2026-05-10T12:00:00+00:00",
+                    "direction": "Bullish",
+                    "sector": "Technology",
+                    "outcome_label": "WIN",
+                    "return_20d": 12.0,
+                    "score": 90.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "LOSR",
+                    "timestamp": "2026-05-11T12:00:00+00:00",
+                    "direction": "Bearish",
+                    "sector": "Semiconductors",
+                    "outcome_label": "LOSS",
+                    "return_20d": 20.0,
+                    "score": 80.0,
+                    "recommendation_id": 2,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "FLATR",
+                    "timestamp": "2026-05-12T12:00:00+00:00",
+                    "direction": "Bullish",
+                    "sector": "Healthcare",
+                    "outcome_label": "FLAT",
+                    "return_20d": 0.0,
+                    "score": 75.0,
+                    "recommendation_id": 3,
+                }
+            ),
+        ]
+        rows = be.compute_trade_audit(signals)
+        self.assertEqual([row["ticker"] for row in rows], ["LOSR", "FLATR", "WINR"])
+        self.assertAlmostEqual(rows[0]["signal_return"], -20.0, places=2)
+        self.assertAlmostEqual(rows[2]["signal_return"], 12.0, places=2)
+
+    def test_trade_audit_row_includes_gate_combination_and_preset_cohort(self) -> None:
+        import backtest_engine as be
+
+        signal = be.attach_return_fields(
+            {
+                "ticker": "AMD",
+                "timestamp": "2026-05-10T12:00:00+00:00",
+                "direction": "Bearish",
+                "sector": "Semiconductors",
+                "outcome_label": "LOSS",
+                "return_20d": 46.0,
+                "score": 88.0,
+                "universe_preset_id": "mega_cap",
+                "cohort_class": "actionable",
+                "gate_snapshot_json": '{"gates": [{"key": "sentinel", "passed": true}, {"key": "compass", "passed": true}, {"key": "pulse", "passed": false}]}',
+                "recommendation_id": 99,
+            }
+        )
+        row = be.trade_audit_row(signal)
+        self.assertEqual(row["date"], "2026-05-10")
+        self.assertEqual(row["preset_cohort"], "mega_cap / actionable")
+        self.assertEqual(row["gate_combination"], "COMPASS+SENTINEL")
+        self.assertAlmostEqual(row["stock_return"], 46.0, places=2)
+        self.assertAlmostEqual(row["signal_return"], -46.0, places=2)
+
+    def test_new_backtest_run_is_not_legacy(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import backtest_engine as be
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "backtest_legacy_new.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                with ms.connect() as conn:
+                    run_id = conn.execute(
+                        """
+                        INSERT INTO scan_runs (
+                            timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("2026-05-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+                    ).lastrowid
+                    self.insert_completed_signal(
+                        conn,
+                        run_id,
+                        ticker="AAA",
+                        timestamp="2026-05-10T12:00:00+00:00",
+                        direction="Bearish",
+                        outcome="LOSS",
+                        return_5d=-3.0,
+                        return_20d=10.0,
+                        score=88.0,
+                        sector="Technology",
+                        gates=[{"key": "sentinel", "passed": True}],
+                    )
+                    conn.commit()
+
+                result = be.run_backtest(name="Modern Run", filters=be.BacktestFilters())
+                loaded = be.get_backtest_run(result["runId"])
+                self.assertIsNotNone(loaded)
+                assert loaded is not None
+                self.assertFalse(loaded["legacyMetricsWarning"])
+                self.assertEqual(loaded["run"]["backtestVersion"], be.BACKTEST_VERSION)
+
+                with ms.connect() as conn:
+                    signal_row = conn.execute(
+                        "SELECT signal_return FROM backtest_signals WHERE run_id = ?",
+                        (result["runId"],),
+                    ).fetchone()
+                self.assertIsNotNone(signal_row)
+                self.assertAlmostEqual(signal_row["signal_return"], -10.0, places=2)
+
+    def test_legacy_backtest_run_without_version_flags_warning(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import backtest_engine as be
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "backtest_legacy_old.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                with ms.connect() as conn:
+                    run_id = conn.execute(
+                        """
+                        INSERT INTO scan_runs (
+                            timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("2026-05-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+                    ).lastrowid
+                    recommendation_id = self.insert_completed_signal(
+                        conn,
+                        run_id,
+                        ticker="AMD",
+                        timestamp="2026-05-10T12:00:00+00:00",
+                        direction="Bearish",
+                        outcome="LOSS",
+                        return_5d=4.0,
+                        return_20d=46.0,
+                        score=88.0,
+                        sector="Semiconductors",
+                        gates=[{"key": "sentinel", "passed": True}],
+                    )
+                    legacy_run_id = conn.execute(
+                        """
+                        INSERT INTO backtest_runs (
+                            created_at, name, description, engine_version, start_date, end_date,
+                            filters_json, status
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')
+                        """,
+                        (
+                            "2026-05-01T12:00:00+00:00",
+                            "Legacy Run",
+                            "Pre-1.1",
+                            None,
+                            "2026-05-01",
+                            "2026-05-31",
+                            ms.json_dump({}),
+                        ),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO backtest_signals (
+                            run_id, recommendation_id, ticker, timestamp, direction, score,
+                            sector, outcome_label, return_5d, return_10d, return_20d
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            legacy_run_id,
+                            recommendation_id,
+                            "AMD",
+                            "2026-05-10T12:00:00+00:00",
+                            "Bearish",
+                            88.0,
+                            "Semiconductors",
+                            "LOSS",
+                            4.0,
+                            None,
+                            46.0,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO backtest_metrics (
+                            run_id, win_rate, loss_rate, avg_return, median_return, max_drawdown,
+                            best_trade, worst_trade, bullish_win_rate, bearish_win_rate, actionable_win_rate
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (legacy_run_id, 0.0, 100.0, 46.0, 46.0, 0.0, 46.0, 46.0, 0.0, 0.0, 0.0),
+                    )
+                    conn.commit()
+
+                loaded = be.get_backtest_run(int(legacy_run_id))
+                self.assertIsNotNone(loaded)
+                assert loaded is not None
+                self.assertTrue(loaded["legacyMetricsWarning"])
+                self.assertEqual(loaded["legacyMetricsMessage"], be.LEGACY_METRICS_WARNING)
+
+
 if __name__ == "__main__":
     unittest.main()

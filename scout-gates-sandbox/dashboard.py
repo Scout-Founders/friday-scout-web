@@ -70,6 +70,13 @@ from run_gates import (
     parse_ticker_list,
 )
 from universe_presets import list_preset_catalog, resolve_universe_from_request
+from backtest_engine import (
+    get_backtest_run,
+    list_backtest_runs,
+    parse_backtest_filters,
+    preview_backtest,
+    run_backtest,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -77,6 +84,7 @@ REPO_ROOT = SANDBOX_DIR.parent
 DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
 RESEARCH_HTML = SANDBOX_DIR / "research.html"
 CONTROL_HTML = SANDBOX_DIR / "control.html"
+BACKTEST_HTML = SANDBOX_DIR / "backtest.html"
 REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
@@ -330,6 +338,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/control", "/control.html"):
             self.send_file(CONTROL_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/backtest", "/backtest.html"):
+            self.send_file(BACKTEST_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})
             return
@@ -369,6 +380,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
                 return
             self.send_json(response)
+            return
+        if parsed.path == "/api/backtest/runs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 100)
+            except ValueError:
+                limit = 20
+            self.send_json({"ok": True, "runs": list_backtest_runs(limit=limit)})
+            return
+        if parsed.path.startswith("/api/backtest/runs/"):
+            run_id_text = parsed.path.rsplit("/", 1)[-1]
+            try:
+                run_id = int(run_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Backtest run id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            result = get_backtest_run(run_id)
+            if result is None:
+                self.send_json(
+                    {"ok": False, "message": "Backtest run was not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self.send_json(result)
             return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
@@ -536,6 +574,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Outcome test record error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/backtest/preview":
+            try:
+                payload = self.read_json()
+                filters = parse_backtest_filters(payload.get("filters") if isinstance(payload.get("filters"), dict) else payload)
+                self.send_json(preview_backtest(filters))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Backtest preview error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/backtest/run":
+            try:
+                payload = self.read_json()
+                filters_payload = payload.get("filters") if isinstance(payload.get("filters"), dict) else payload
+                response = run_backtest(
+                    name=str(payload.get("name") or "Research Backtest"),
+                    description=str(payload.get("description") or "").strip() or None,
+                    filters=parse_backtest_filters(filters_payload),
+                )
+                self.send_json(response)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Backtest run error: {exc}"},
                     status=HTTPStatus.BAD_REQUEST,
                 )
             return

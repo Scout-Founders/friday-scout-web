@@ -307,6 +307,9 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {column_type}")
         init_feature_store(conn)
         init_pattern_store(conn)
+        from backtest_engine import init_backtest_store
+
+        init_backtest_store(conn)
         ensure_performance_indexes(conn)
     _DB_INITIALIZED = True
 
