@@ -29,6 +29,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from cloud_research_worker import (
+    format_cloud_worker_validation_errors,
+    validate_cloud_worker_environment,
+)
 from memory_store import init_db
 from research_job_runner import create_default_research_jobs, run_enabled_research_jobs
 
@@ -184,11 +188,41 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run research jobs only; skip findings generation.",
     )
+    parser.add_argument(
+        "--cloud-worker",
+        action="store_true",
+        help=(
+            "Validate GitHub Actions cloud worker secrets before running. "
+            "Use from the Scout Cloud Research Worker workflow."
+        ),
+    )
     return parser
+
+
+def ensure_cloud_worker_ready() -> dict[str, Any]:
+    result = validate_cloud_worker_environment()
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "timestamp": utc_now_iso(),
+            "jobsRun": 0,
+            "completed": 0,
+            "failed": 0,
+            "findingsGenerated": 0,
+            "errors": list(result.get("errors") or []),
+        }
+    return {"ok": True}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cloud_worker:
+        cloud_result = ensure_cloud_worker_ready()
+        if not cloud_result.get("ok"):
+            print(format_cloud_worker_validation_errors(cloud_result), file=sys.stderr)
+            for error in cloud_result.get("errors") or []:
+                print(f"[scheduled-research] ERROR: {error}", file=sys.stderr)
+            return 2
     summary = run_scheduled_research(
         findings_limit=max(int(args.findings_limit), 1),
         generate_findings=not args.skip_findings,

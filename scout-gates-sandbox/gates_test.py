@@ -2947,5 +2947,95 @@ class ScheduledResearchRunnerTests(unittest.TestCase):
             self.assertEqual(srr.main(["--skip-findings"]), 1)
 
 
+class CloudResearchWorkerTests(unittest.TestCase):
+    def test_validate_cloud_worker_environment_success(self) -> None:
+        from unittest.mock import patch
+
+        import cloud_research_worker as crw
+
+        with patch.dict(
+            "os.environ",
+            {
+                "SCOUT_RESEARCH_WORKER_SECRET": "worker-token",
+                "SCOUT_CLOUD_RESEARCH_ENABLED": "true",
+            },
+            clear=True,
+        ):
+            result = crw.validate_cloud_worker_environment()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["errors"], [])
+
+    def test_validate_cloud_worker_environment_missing_secret(self) -> None:
+        from unittest.mock import patch
+
+        import cloud_research_worker as crw
+
+        with patch.dict(
+            "os.environ",
+            {"SCOUT_CLOUD_RESEARCH_ENABLED": "true"},
+            clear=True,
+        ):
+            result = crw.validate_cloud_worker_environment()
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("SCOUT_RESEARCH_WORKER_SECRET" in error for error in result["errors"])
+        )
+
+    def test_validate_cloud_worker_environment_disabled(self) -> None:
+        from unittest.mock import patch
+
+        import cloud_research_worker as crw
+
+        with patch.dict(
+            "os.environ",
+            {
+                "SCOUT_RESEARCH_WORKER_SECRET": "worker-token",
+                "SCOUT_CLOUD_RESEARCH_ENABLED": "false",
+            },
+            clear=True,
+        ):
+            result = crw.validate_cloud_worker_environment()
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("SCOUT_CLOUD_RESEARCH_ENABLED" in error for error in result["errors"])
+        )
+
+    def test_scheduled_runner_cloud_worker_requires_secrets(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch.dict("os.environ", {}, clear=True):
+            exit_code = srr.main(["--cloud-worker", "--skip-findings"])
+        self.assertEqual(exit_code, 2)
+
+    def test_scheduled_runner_cloud_worker_runs_when_configured(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch.dict(
+            "os.environ",
+            {
+                "SCOUT_RESEARCH_WORKER_SECRET": "worker-token",
+                "SCOUT_CLOUD_RESEARCH_ENABLED": "true",
+            },
+            clear=True,
+        ), patch(
+            "scheduled_research_runner.run_scheduled_research",
+            return_value={
+                "ok": True,
+                "timestamp": "2026-06-20T12:00:00+00:00",
+                "jobsRun": 1,
+                "completed": 1,
+                "failed": 0,
+                "findingsGenerated": 0,
+                "errors": [],
+            },
+        ):
+            exit_code = srr.main(["--cloud-worker", "--skip-findings"])
+        self.assertEqual(exit_code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
