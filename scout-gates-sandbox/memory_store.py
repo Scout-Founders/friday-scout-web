@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -35,6 +36,7 @@ from pattern_engine import (
 
 SANDBOX_DIR = Path(__file__).resolve().parent
 DB_PATH = SANDBOX_DIR / "scout_memory.db"
+RESEARCH_DB_PATH_ENV = "SCOUT_RESEARCH_DB_PATH"
 GATE_SNAPSHOT_SCHEMA_VERSION = 1
 MEMORY_COLUMNS = {
     "engine_version": "TEXT",
@@ -95,8 +97,15 @@ OUTCOME_COLUMNS = {
 }
 
 
+def get_db_path() -> Path:
+    override = os.environ.get(RESEARCH_DB_PATH_ENV, "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return DB_PATH
+
+
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -2948,8 +2957,8 @@ def get_gate_attribution_summary() -> dict[str, Any]:
 def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
     """Return Scout Horizon-1 sandbox control metrics without touching production systems."""
     init_db()
-    schema_integrity = validate_schema(DB_PATH)
-    db_size_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    schema_integrity = validate_schema(get_db_path())
+    db_size_bytes = get_db_path().stat().st_size if get_db_path().exists() else 0
     db_size_mb = round(db_size_bytes / 1024 / 1024, 3)
     now = datetime.now(timezone.utc)
 
@@ -3199,7 +3208,7 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
 
     system_health = [
         {"name": "FMP API", "status": health_status(fmp_key_present, not fmp_key_present)},
-        {"name": "SQLite", "status": health_status(DB_PATH.exists())},
+        {"name": "SQLite", "status": health_status(get_db_path().exists())},
         {"name": "Scheduler", "status": "WARNING", "detail": "Production scheduler not touched by sandbox."},
         {"name": "Sandbox Engine", "status": health_status(True)},
         {"name": "Memory Layer", "status": health_status(True, recommendations == 0)},
@@ -3224,7 +3233,7 @@ def get_control_summary(fmp_key_present: bool = False) -> dict[str, Any]:
         "ok": True,
         "generated_at": now.isoformat(),
         "database": {
-            "path": str(DB_PATH),
+            "path": str(get_db_path()),
             "size_bytes": db_size_bytes,
             "size_mb": db_size_mb,
             "size_label": f"{db_size_mb:.3f} MB" if db_size_mb < 1024 else f"{db_size_mb / 1024:.2f} GB",
@@ -3368,9 +3377,9 @@ def get_horizon_self_audit(
             audit_item(
                 "SYSTEM",
                 "SQLite database is reachable",
-                "PASS" if DB_PATH.exists() else "WARNING",
+                "PASS" if get_db_path().exists() else "WARNING",
                 "PASS - SQLite database is reachable."
-                if DB_PATH.exists()
+                if get_db_path().exists()
                 else "WARNING - SQLite database initialized but no prior memory existed.",
             ),
             audit_item(
@@ -4185,7 +4194,7 @@ def build_memory_history_payload(
     filter_label = normalized_filters.ticker or "ALL"
     print(
         "[memory-history] "
-        f"db={DB_PATH} total={total} filtered={filtered_total} "
+        f"db={get_db_path()} total={total} filtered={filtered_total} "
         f"returned={len(history)} limit={safe_limit} offset={safe_offset} "
         f"filters={json.dumps(_history_filters_debug(normalized_filters), sort_keys=True)}",
         file=sys.stderr,
@@ -4204,7 +4213,7 @@ def build_memory_history_payload(
         "offset": safe_offset,
         "timings": timings,
         "debug": {
-            "dbPath": str(DB_PATH),
+            "dbPath": str(get_db_path()),
             "total": total,
             "filteredTotal": filtered_total,
             "returned": len(history),

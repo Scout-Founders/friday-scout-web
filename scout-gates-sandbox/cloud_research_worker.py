@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 
@@ -12,9 +13,78 @@ REQUIRED_SECRET_ENV_VARS = (
     "SCOUT_CLOUD_RESEARCH_ENABLED",
 )
 
+RESEARCH_DB_PATH_ENV = "SCOUT_RESEARCH_DB_PATH"
+DEFAULT_CLOUD_RESEARCH_DB_NAME = "scout_research_cloud.db"
+
+# Tables the cloud worker may mutate during normal operation.
+CLOUD_RESEARCH_WRITE_TABLES = frozenset(
+    {
+        "research_jobs",
+        "research_job_runs",
+        "research_findings",
+    }
+)
+
+# Tables read by preview_backtest analytics during research runs.
+CLOUD_RESEARCH_PREVIEW_READ_TABLES = frozenset(
+    {
+        "scan_results",
+        "scan_runs",
+    }
+)
+
+# Shared sandbox tables that must not receive cloud-worker data writes.
+CLOUD_RESEARCH_PROTECTED_TABLES = frozenset(
+    {
+        "scan_runs",
+        "scan_results",
+        "outcome_update_audit",
+        "institutional_audit_log",
+        "gate_attributions",
+        "gate_alpha_metrics",
+        "regime_snapshots",
+        "gate_intelligence_metrics",
+        "feature_vectors",
+        "pattern_intelligence",
+        "backtest_runs",
+        "backtest_signals",
+        "backtest_metrics",
+    }
+)
+
 
 def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_cloud_research_db_path(*, sandbox_dir: Path | None = None) -> Path:
+    explicit = os.environ.get(RESEARCH_DB_PATH_ENV, "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    root = sandbox_dir or Path(__file__).resolve().parent
+    return (root / DEFAULT_CLOUD_RESEARCH_DB_NAME).resolve()
+
+
+def configure_cloud_research_database(*, sandbox_dir: Path | None = None) -> Path:
+    """Point Scout memory at a dedicated cloud research database file."""
+    db_path = resolve_cloud_research_db_path(sandbox_dir=sandbox_dir)
+    os.environ[RESEARCH_DB_PATH_ENV] = str(db_path)
+    import memory_store as ms
+
+    ms._DB_INITIALIZED = False
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return db_path
+
+
+def cloud_research_isolation_summary(db_path: Path | None = None) -> dict[str, Any]:
+    return {
+        "databasePath": str(db_path or resolve_cloud_research_db_path()),
+        "writeTables": sorted(CLOUD_RESEARCH_WRITE_TABLES),
+        "previewReadTables": sorted(CLOUD_RESEARCH_PREVIEW_READ_TABLES),
+        "protectedTables": sorted(CLOUD_RESEARCH_PROTECTED_TABLES),
+        "previewBacktestPersistsRuns": False,
+        "usesSeparateReportRegistry": True,
+    }
 
 
 def validate_cloud_worker_environment() -> dict[str, Any]:

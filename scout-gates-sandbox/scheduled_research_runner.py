@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from cloud_research_worker import (
+    configure_cloud_research_database,
     format_cloud_worker_validation_errors,
     validate_cloud_worker_environment,
 )
@@ -152,6 +153,9 @@ def format_scheduled_research_summary(summary: dict[str, Any]) -> str:
     defaults_created = int(summary.get("defaultsCreated") or 0)
     if defaults_created:
         lines.append(f"default jobs created: {defaults_created}")
+    database_path = summary.get("databasePath")
+    if database_path:
+        lines.append(f"database: {database_path}")
     findings_skipped = int(summary.get("findingsSkipped") or 0)
     if findings_skipped:
         lines.append(f"findings skipped (duplicates): {findings_skipped}")
@@ -211,7 +215,8 @@ def ensure_cloud_worker_ready() -> dict[str, Any]:
             "findingsGenerated": 0,
             "errors": list(result.get("errors") or []),
         }
-    return {"ok": True}
+    db_path = configure_cloud_research_database()
+    return {"ok": True, "databasePath": str(db_path)}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -223,10 +228,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             for error in cloud_result.get("errors") or []:
                 print(f"[scheduled-research] ERROR: {error}", file=sys.stderr)
             return 2
+        cloud_db_path = cloud_result.get("databasePath")
+    else:
+        cloud_db_path = None
     summary = run_scheduled_research(
         findings_limit=max(int(args.findings_limit), 1),
         generate_findings=not args.skip_findings,
     )
+    if cloud_db_path:
+        summary["databasePath"] = cloud_db_path
     if summary.get("errors"):
         log_errors(summary)
     print(format_scheduled_research_summary(summary))

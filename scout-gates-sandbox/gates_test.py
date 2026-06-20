@@ -3036,6 +3036,52 @@ class CloudResearchWorkerTests(unittest.TestCase):
             exit_code = srr.main(["--cloud-worker", "--skip-findings"])
         self.assertEqual(exit_code, 0)
 
+    def test_configure_cloud_research_database_uses_dedicated_path(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_worker as crw
+        import memory_store as ms
+
+        prior = os.environ.get(crw.RESEARCH_DB_PATH_ENV)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                sandbox_dir = Path(tmpdir) / "sandbox"
+                sandbox_dir.mkdir()
+                if crw.RESEARCH_DB_PATH_ENV in os.environ:
+                    del os.environ[crw.RESEARCH_DB_PATH_ENV]
+                db_path = crw.configure_cloud_research_database(sandbox_dir=sandbox_dir)
+                self.assertEqual(db_path.name, crw.DEFAULT_CLOUD_RESEARCH_DB_NAME)
+                self.assertEqual(os.environ.get(crw.RESEARCH_DB_PATH_ENV), str(db_path))
+                self.assertEqual(ms.get_db_path().resolve(), db_path.resolve())
+        finally:
+            if prior is None:
+                os.environ.pop(crw.RESEARCH_DB_PATH_ENV, None)
+            else:
+                os.environ[crw.RESEARCH_DB_PATH_ENV] = prior
+            ms._DB_INITIALIZED = False
+
+    def test_get_db_path_honors_research_db_env(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom_path = Path(tmpdir) / "custom_research.db"
+            with patch.dict("os.environ", {ms.RESEARCH_DB_PATH_ENV: str(custom_path)}, clear=True):
+                self.assertEqual(ms.get_db_path(), custom_path.resolve())
+
+    def test_cloud_research_isolation_summary(self) -> None:
+        import cloud_research_worker as crw
+
+        summary = crw.cloud_research_isolation_summary()
+        self.assertIn("research_jobs", summary["writeTables"])
+        self.assertIn("scan_results", summary["protectedTables"])
+        self.assertFalse(summary["previewBacktestPersistsRuns"])
+
 
 if __name__ == "__main__":
     unittest.main()
