@@ -98,6 +98,7 @@ RESEARCH_HTML = SANDBOX_DIR / "research.html"
 CONTROL_HTML = SANDBOX_DIR / "control.html"
 BACKTEST_HTML = SANDBOX_DIR / "backtest.html"
 RESEARCH_QUEUE_HTML = SANDBOX_DIR / "research_queue.html"
+RESEARCH_FINDINGS_HTML = SANDBOX_DIR / "research_findings.html"
 REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
@@ -356,6 +357,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path in ("/research-queue", "/research-queue.html"):
             self.send_file(RESEARCH_QUEUE_HTML, "text/html; charset=utf-8")
+            return
+        if parsed.path in ("/research-findings", "/research-findings.html"):
+            self.send_file(RESEARCH_FINDINGS_HTML, "text/html; charset=utf-8")
             return
         if parsed.path == "/api/default-candidates":
             self.send_json({"candidates": DEFAULT_CANDIDATES})

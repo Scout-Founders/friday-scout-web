@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Research Findings</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --accent: #00e5a0;
+      --accent-soft: #00e5a022;
+      --danger: #ff3b5c;
+      --warning: #ffb836;
+      --info: #5b9dff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #00e5a018, transparent 34rem),
+        radial-gradient(circle at top right, #6366f118, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .shell { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 8px; font-size: clamp(32px, 6vw, 56px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 28px; }
+    .top-nav a, .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    .top-nav a.active, .button.primary { color: var(--text); border-color: #2a3f66; background: var(--accent-soft); }
+    .card {
+      background: linear-gradient(180deg, var(--panel-soft), var(--panel));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .status { color: var(--muted); margin-bottom: 16px; min-height: 1.4em; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .metric {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0a101c;
+      color: var(--text);
+      font: inherit;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .pill.open { color: var(--accent); border-color: #1f5f49; background: #0d2018; }
+    .pill.reviewed { color: var(--info); border-color: #1f3f5f; background: #0d1820; }
+    .pill.dismissed { color: var(--muted); }
+    .pill.promoted_to_rule_candidate { color: var(--warning); border-color: #5f4a1f; background: #201a0d; }
+    .pill.info { color: var(--info); }
+    .pill.watch { color: var(--warning); }
+    .pill.warning { color: var(--warning); border-color: #5f4a1f; }
+    .pill.critical { color: var(--danger); border-color: #5f1f2f; background: #201018; }
+    .pill.low, .pill.medium, .pill.high { color: var(--muted); }
+    .finding-list { display: grid; gap: 14px; }
+    .finding-card {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .finding-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .finding-title { font-size: 18px; font-weight: 700; margin: 0 0 8px; }
+    .finding-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .finding-body { color: var(--muted); line-height: 1.55; font-size: 14px; }
+    .finding-section { margin-top: 12px; }
+    .finding-section strong {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag {
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: #111827;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text);
+    }
+    .metrics-block {
+      margin: 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #070b14;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .finding-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .button.small { padding: 7px 11px; font-size: 12px; }
+    .button:disabled { opacity: 0.55; cursor: wait; }
+    .empty-state { color: var(--muted); padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Research Intelligence</div>
+    <h1>Research Findings</h1>
+    <p class="lede">
+      Review structured findings generated from completed research job runs. Status updates are manual
+      review actions only. No trades, no gate changes, and no automatic promotion into live rules.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a href="/backtest">Backtesting</a>
+      <a href="/research-queue">Research Queue</a>
+      <a class="active" href="/research-findings">Research Findings</a>
+      <a href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Loading research findings...</div>
+
+    <section class="card">
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="metric">
+          <div class="metric-label">Open Findings</div>
+          <div class="metric-value" id="metric-open">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Warning / Critical</div>
+          <div class="metric-value" id="metric-alert">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Reviewed</div>
+          <div class="metric-value" id="metric-reviewed">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Dismissed</div>
+          <div class="metric-value" id="metric-dismissed">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Filters & Actions</h2>
+      <p class="hint">Filter stored findings or generate new findings from recent completed research runs.</p>
+      <div class="filters">
+        <div>
+          <label for="filter-status">Status</label>
+          <select id="filter-status">
+            <option value="">All statuses</option>
+            <option value="open">Open</option>
+            <option value="reviewed">Reviewed</option>
+            <option value="dismissed">Dismissed</option>
+            <option value="promoted_to_rule_candidate">Promoted to Rule Candidate</option>
+          </select>
+        </div>
+        <div>
+          <label for="filter-severity">Severity</label>
+          <select id="filter-severity">
+            <option value="">All severities</option>
+            <option value="info">Info</option>
+            <option value="watch">Watch</option>
+            <option value="warning">Warning</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>
+        <div>
+          <label for="filter-finding-type">Finding Type</label>
+          <select id="filter-finding-type">
+            <option value="">All finding types</option>
+            <option value="direction_failure">Direction Failure</option>
+            <option value="sector_failure">Sector Failure</option>
+            <option value="gate_strength">Gate Strength</option>
+            <option value="gate_weakness">Gate Weakness</option>
+            <option value="leadership_trend">Leadership Trend</option>
+            <option value="anomaly">Anomaly</option>
+            <option value="system_note">System Note</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="button primary" id="generate-button" type="button">Generate Recent Findings</button>
+        <button class="button" id="refresh-button" type="button">Refresh</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Findings</h2>
+      <div class="finding-list" id="findings-list">
+        <div class="empty-state">Loading findings...</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    let allFindings = [];
+
+    function formatDate(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function formatLabel(value) {
+      if (!value) return "—";
+      return String(value).replace(/_/g, " ");
+    }
+
+    function pill(value, extraClass) {
+      const normalized = String(value || "unknown").toLowerCase();
+      const cls = extraClass ? `${normalized} ${extraClass}` : normalized;
+      return `<span class="pill ${cls}">${formatLabel(value)}</span>`;
+    }
+
+    function renderTagList(items) {
+      const values = Array.isArray(items) ? items.filter(Boolean) : [];
+      if (!values.length) return `<span class="tag">—</span>`;
+      return values.map((item) => `<span class="tag">${item}</span>`).join("");
+    }
+
+    function renderMetrics(metrics) {
+      const payload = metrics && typeof metrics === "object" ? metrics : {};
+      const keys = Object.keys(payload);
+      if (!keys.length) return `<div class="metrics-block">—</div>`;
+      const lines = keys.map((key) => {
+        const value = payload[key];
+        const rendered = typeof value === "object" ? JSON.stringify(value) : String(value);
+        return `${key}: ${rendered}`;
+      });
+      return `<pre class="metrics-block">${lines.join("\n")}</pre>`;
+    }
+
+    function renderSummaryCards(findings) {
+      document.getElementById("metric-open").textContent = String(
+        findings.filter((finding) => finding.status === "open").length
+      );
+      document.getElementById("metric-alert").textContent = String(
+        findings.filter((finding) => ["warning", "critical"].includes(finding.severity)).length
+      );
+      document.getElementById("metric-reviewed").textContent = String(
+        findings.filter((finding) => finding.status === "reviewed").length
+      );
+      document.getElementById("metric-dismissed").textContent = String(
+        findings.filter((finding) => finding.status === "dismissed").length
+      );
+    }
+
+    function applyFilters(findings) {
+      const status = document.getElementById("filter-status").value;
+      const severity = document.getElementById("filter-severity").value;
+      const findingType = document.getElementById("filter-finding-type").value;
+      return findings.filter((finding) => {
+        if (status && finding.status !== status) return false;
+        if (severity && finding.severity !== severity) return false;
+        if (findingType && finding.findingType !== findingType) return false;
+        return true;
+      });
+    }
+
+    function buildFindingsQuery() {
+      const params = new URLSearchParams();
+      params.set("limit", "200");
+      return params.toString();
+    }
+
+    function renderFindingsList(findings) {
+      const listEl = document.getElementById("findings-list");
+      if (!findings.length) {
+        listEl.innerHTML = `<div class="empty-state">No findings match the current filters.</div>`;
+        return;
+      }
+
+      listEl.innerHTML = findings.map((finding) => {
+        const statusActions = [];
+        if (finding.status !== "reviewed") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="reviewed" data-finding-id="${finding.id}">
+              Mark Reviewed
+            </button>`);
+        }
+        if (finding.status !== "dismissed") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="dismissed" data-finding-id="${finding.id}">
+              Dismiss
+            </button>`);
+        }
+        if (finding.status !== "promoted_to_rule_candidate") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="promoted_to_rule_candidate" data-finding-id="${finding.id}">
+              Promote to Rule Candidate
+            </button>`);
+        }
+
+        return `
+          <article class="finding-card">
+            <div class="finding-header">
+              <div>
+                <h3 class="finding-title">${finding.title || "Untitled finding"}</h3>
+                <div class="finding-meta">
+                  ${pill(finding.findingType)}
+                  ${pill(finding.severity)}
+                  ${pill(finding.confidence)}
+                  ${pill(finding.status)}
+                </div>
+              </div>
+              <div class="finding-body">
+                <div>Created: ${formatDate(finding.createdAt)}</div>
+                <div>Source Run: ${finding.sourceJobRunId ?? "—"}</div>
+              </div>
+            </div>
+            <div class="finding-body">${finding.description || "—"}</div>
+            <div class="finding-section">
+              <strong>Supporting Metrics</strong>
+              ${renderMetrics(finding.supportingMetrics)}
+            </div>
+            <div class="finding-section">
+              <strong>Related Tickers</strong>
+              <div class="tag-list">${renderTagList(finding.relatedTickers)}</div>
+            </div>
+            <div class="finding-section">
+              <strong>Related Sectors</strong>
+              <div class="tag-list">${renderTagList(finding.relatedSectors)}</div>
+            </div>
+            <div class="finding-section">
+              <strong>Related Gates</strong>
+              <div class="tag-list">${renderTagList(finding.relatedGates)}</div>
+            </div>
+            <div class="finding-section">
+              <strong>Recommended Next Test</strong>
+              <div class="finding-body">${finding.recommendedNextTest || "—"}</div>
+            </div>
+            <div class="finding-actions">
+              ${statusActions.join("")}
+            </div>
+          </article>`;
+      }).join("");
+
+      document.querySelectorAll("[data-status-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const findingId = button.getAttribute("data-finding-id");
+          const nextStatus = button.getAttribute("data-status-action");
+          await updateFindingStatus(findingId, nextStatus, button);
+        });
+      });
+    }
+
+    async function loadFindings() {
+      statusEl.textContent = "Loading research findings...";
+      const query = buildFindingsQuery();
+      const response = await fetch(`/api/research-findings?${query}`);
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.message || "Could not load research findings.");
+      allFindings = data.findings || [];
+      const filteredFindings = applyFilters(allFindings);
+      renderSummaryCards(allFindings);
+      renderFindingsList(filteredFindings);
+      statusEl.textContent = `Loaded ${allFindings.length} finding(s); showing ${filteredFindings.length}.`;
+    }
+
+    async function updateFindingStatus(findingId, nextStatus, button) {
+      if (button) button.disabled = true;
+      statusEl.textContent = `Updating finding ${findingId} to ${formatLabel(nextStatus)}...`;
+      try {
+        const response = await fetch(`/api/research-findings/${encodeURIComponent(findingId)}/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: nextStatus }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Status update failed.");
+        statusEl.textContent = `Finding ${findingId} marked ${formatLabel(nextStatus)}.`;
+        await loadFindings();
+      } catch (error) {
+        statusEl.textContent = `Status update failed: ${error.message || error}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function generateRecentFindings(button) {
+      if (button) button.disabled = true;
+      statusEl.textContent = "Generating findings from recent research runs...";
+      try {
+        const response = await fetch("/api/research-findings/generate-recent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 20 }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Findings generation failed.");
+        statusEl.textContent = `Generated ${data.generated || 0} finding(s); skipped ${data.skippedDuplicates || 0} duplicate(s).`;
+        await loadFindings();
+      } catch (error) {
+        statusEl.textContent = `Findings generation failed: ${error.message || error}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    ["filter-status", "filter-severity", "filter-finding-type"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", () => {
+        const filteredFindings = applyFilters(allFindings);
+        renderFindingsList(filteredFindings);
+        statusEl.textContent = `Showing ${filteredFindings.length} of ${allFindings.length} finding(s).`;
+      });
+    });
+
+    document.getElementById("refresh-button").addEventListener("click", () => {
+      loadFindings().catch((error) => {
+        statusEl.textContent = `Refresh failed: ${error.message || error}`;
+      });
+    });
+
+    document.getElementById("generate-button").addEventListener("click", async () => {
+      await generateRecentFindings(document.getElementById("generate-button"));
+    });
+
+    loadFindings().catch((error) => {
+      statusEl.textContent = `Could not load research findings: ${error.message || error}`;
+    });
+  </script>
+</body>
+</html>
