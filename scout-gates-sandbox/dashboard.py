@@ -84,6 +84,11 @@ from research_job_runner import (
     run_enabled_research_jobs,
     run_research_job,
 )
+from research_findings_engine import (
+    generate_findings_from_recent_runs,
+    list_research_findings,
+    update_research_finding_status,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -430,6 +435,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 limit = 50
             self.send_json({"ok": True, "runs": list_research_job_runs(limit=limit)})
             return
+        if parsed.path == "/api/research-findings":
+            params = urllib.parse.parse_qs(parsed.query)
+            status = (params.get("status") or [None])[0]
+            severity = (params.get("severity") or [None])[0]
+            finding_type = (params.get("findingType") or params.get("finding_type") or [None])[0]
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), 500)
+            except ValueError:
+                limit = 100
+            self.send_json(
+                {
+                    "ok": True,
+                    "findings": list_research_findings(
+                        status=status,
+                        severity=severity,
+                        finding_type=finding_type,
+                        limit=limit,
+                    ),
+                }
+            )
+            return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
             return
@@ -597,6 +623,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": False, "message": f"Outcome test record error: {exc}"},
                     status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/research-findings/generate-recent":
+            try:
+                payload = self.read_json()
+                limit = int(payload.get("limit") or 20)
+                self.send_json(generate_findings_from_recent_runs(limit=limit))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research findings generation error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path.startswith("/api/research-findings/") and parsed.path.endswith("/status"):
+            finding_id_text = parsed.path.split("/")[-2]
+            try:
+                finding_id = int(finding_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Research finding id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                payload = self.read_json()
+                status = str(payload.get("status") or "").strip()
+                self.send_json(update_research_finding_status(finding_id, status))
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research finding status error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
 

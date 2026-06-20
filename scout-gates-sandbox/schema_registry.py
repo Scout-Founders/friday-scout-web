@@ -326,6 +326,26 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "error_message": "TEXT",
         },
     },
+    "research_findings": {
+        "table": "research_findings",
+        "columns": {
+            "id": "INTEGER",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+            "finding_type": "TEXT",
+            "severity": "TEXT",
+            "title": "TEXT",
+            "description": "TEXT",
+            "confidence": "TEXT",
+            "status": "TEXT",
+            "source_job_run_id": "INTEGER",
+            "supporting_metrics_json": "TEXT",
+            "related_tickers_json": "TEXT",
+            "related_sectors_json": "TEXT",
+            "related_gates_json": "TEXT",
+            "recommended_next_test": "TEXT",
+        },
+    },
 }
 
 

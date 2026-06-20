@@ -2568,5 +2568,384 @@ class ResearchJobRunnerTests(unittest.TestCase):
         self.assertTrue(runs[0]["jobName"])
 
 
+class ResearchFindingsEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "research_findings_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def insert_completed_run(
+        self,
+        job_name: str,
+        *,
+        signals_count: int,
+        summary: dict,
+    ) -> int:
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        with ms.connect() as conn:
+            job_row = conn.execute(
+                "SELECT id FROM research_jobs WHERE name = ?",
+                (job_name,),
+            ).fetchone()
+            self.assertIsNotNone(job_row)
+            cursor = conn.execute(
+                """
+                INSERT INTO research_job_runs (
+                    job_id, started_at, completed_at, status, signals_count, summary_json
+                ) VALUES (?, ?, ?, 'completed', ?, ?)
+                """,
+                (
+                    job_row["id"],
+                    rjr.utc_now_iso(),
+                    rjr.utc_now_iso(),
+                    signals_count,
+                    ms.json_dump(summary),
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+            conn.commit()
+            return run_id
+
+    def test_create_and_list_research_finding(self) -> None:
+        import research_findings_engine as rfe
+
+        created = rfe.create_research_finding(
+            finding_type="system_note",
+            severity="info",
+            title="Manual finding",
+            description="Test finding",
+            confidence="low",
+        )
+        self.assertTrue(created["created"])
+        findings = rfe.list_research_findings()
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["title"], "Manual finding")
+        self.assertEqual(findings[0]["status"], "open")
+
+    def test_update_research_finding_status(self) -> None:
+        import research_findings_engine as rfe
+
+        created = rfe.create_research_finding(
+            finding_type="anomaly",
+            severity="watch",
+            title="Status test",
+            description="Status update test",
+            confidence="medium",
+        )
+        finding_id = created["finding"]["id"]
+        updated = rfe.update_research_finding_status(finding_id, "reviewed")
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["finding"]["status"], "reviewed")
+
+    def test_bearish_failure_finding_generation(self) -> None:
+        import research_findings_engine as rfe
+
+        run_id = self.insert_completed_run(
+            "Bearish Failure Audit",
+            signals_count=12,
+            summary={
+                "jobName": "Bearish Failure Audit",
+                "signalsMatched": 12,
+                "audit": {
+                    "kind": "bearish_failure",
+                    "summary": {
+                        "signal_count": 12,
+                        "expectancy": -5.0,
+                        "win_rate": 8.0,
+                        "avg_signal_return": -5.0,
+                    },
+                },
+            },
+        )
+        result = rfe.generate_findings_from_job_run(run_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        finding = result["findings"][0]
+        self.assertEqual(finding["findingType"], "direction_failure")
+        self.assertEqual(finding["title"], "Bearish signals underperforming")
+        self.assertEqual(finding["confidence"], "medium")
+
+    def test_gate_strength_finding_generation(self) -> None:
+        import research_findings_engine as rfe
+
+        run_id = self.insert_completed_run(
+            "SPECTER Positive Audit",
+            signals_count=15,
+            summary={
+                "jobName": "SPECTER Positive Audit",
+                "signalsMatched": 15,
+                "audit": {
+                    "kind": "specter_positive",
+                    "gateCode": "SPECTER",
+                    "signalCount": 15,
+                    "expectancy": 4.5,
+                    "winRate": 62.0,
+                    "avgSignalReturn": 4.5,
+                },
+            },
+        )
+        result = rfe.generate_findings_from_job_run(run_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        finding = result["findings"][0]
+        self.assertEqual(finding["findingType"], "gate_strength")
+        self.assertEqual(finding["title"], "SPECTER showing positive expectancy")
+        self.assertEqual(finding["relatedGates"], ["SPECTER"])
+
+    def test_leadership_trend_finding_generation(self) -> None:
+        import research_findings_engine as rfe
+
+        run_id = self.insert_completed_run(
+            "AI Leadership Audit",
+            signals_count=20,
+            summary={
+                "jobName": "AI Leadership Audit",
+                "signalsMatched": 20,
+                "audit": {
+                    "kind": "trend_leadership",
+                    "groups": [
+                        {
+                            "id": "ai_infrastructure",
+                            "label": "AI Infrastructure Stocks",
+                            "signalCount": 20,
+                            "bullishExpectancy": 6.0,
+                            "bearishExpectancy": -4.0,
+                        }
+                    ],
+                },
+            },
+        )
+        result = rfe.generate_findings_from_job_run(run_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        finding = result["findings"][0]
+        self.assertEqual(finding["findingType"], "leadership_trend")
+        self.assertEqual(finding["title"], "Leadership cohort favors bullish exposure over bearish calls")
+
+    def test_empty_run_finding_generation(self) -> None:
+        import research_findings_engine as rfe
+
+        run_id = self.insert_completed_run(
+            "Mega Cap Tech Scan",
+            signals_count=0,
+            summary={"jobName": "Mega Cap Tech Scan", "signalsMatched": 0},
+        )
+        result = rfe.generate_findings_from_job_run(run_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        finding = result["findings"][0]
+        self.assertEqual(finding["findingType"], "system_note")
+        self.assertEqual(finding["title"], "Research job completed with no matched signals")
+
+    def test_duplicate_prevention(self) -> None:
+        import research_findings_engine as rfe
+
+        run_id = self.insert_completed_run(
+            "Mega Cap Tech Scan",
+            signals_count=0,
+            summary={"jobName": "Mega Cap Tech Scan", "signalsMatched": 0},
+        )
+        first = rfe.generate_findings_from_job_run(run_id)
+        second = rfe.generate_findings_from_job_run(run_id)
+        self.assertEqual(first["generated"], 1)
+        self.assertEqual(second["generated"], 0)
+        self.assertEqual(second["skippedDuplicates"], 1)
+        findings = rfe.list_research_findings(finding_type="system_note")
+        self.assertEqual(len(findings), 1)
+
+
+class ScheduledResearchRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "scheduled_research_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def test_format_scheduled_research_summary(self) -> None:
+        import scheduled_research_runner as srr
+
+        text = srr.format_scheduled_research_summary(
+            {
+                "ok": False,
+                "timestamp": "2026-06-20T12:00:00+00:00",
+                "jobsRun": 3,
+                "completed": 2,
+                "failed": 1,
+                "findingsGenerated": 4,
+                "findingsSkipped": 1,
+                "findingsAvailable": True,
+                "errors": ["Job failed (Bearish Failure Audit): preview failed"],
+            }
+        )
+        self.assertIn("jobs run: 3", text)
+        self.assertIn("completed: 2", text)
+        self.assertIn("failed: 1", text)
+        self.assertIn("findings generated: 4", text)
+        self.assertIn("status: failed", text)
+
+    def test_generate_findings_if_available(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch(
+            "scheduled_research_runner._load_findings_generator",
+            return_value=lambda limit=20: {
+                "ok": True,
+                "generated": 2,
+                "skippedDuplicates": 1,
+            },
+        ):
+            result = srr.generate_findings_if_available(limit=5)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["generated"], 2)
+        self.assertEqual(result["skippedDuplicates"], 1)
+
+    def test_generate_findings_when_engine_missing(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch("scheduled_research_runner._load_findings_generator", return_value=None):
+            result = srr.generate_findings_if_available()
+        self.assertFalse(result["available"])
+        self.assertEqual(result["generated"], 0)
+
+    def test_run_scheduled_research_success(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch(
+            "scheduled_research_runner.create_default_research_jobs",
+            return_value={"ok": True, "created": 7},
+        ), patch(
+            "scheduled_research_runner.run_enabled_research_jobs",
+            return_value={"ok": True, "ran": 2, "completed": 2, "failed": 0, "results": []},
+        ), patch(
+            "scheduled_research_runner.generate_findings_if_available",
+            return_value={
+                "ok": True,
+                "available": True,
+                "generated": 3,
+                "skippedDuplicates": 1,
+            },
+        ):
+            summary = srr.run_scheduled_research()
+
+        self.assertTrue(summary["ok"])
+        self.assertEqual(summary["defaultsCreated"], 7)
+        self.assertEqual(summary["jobsRun"], 2)
+        self.assertEqual(summary["completed"], 2)
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(summary["findingsGenerated"], 3)
+        self.assertEqual(summary["findingsSkipped"], 1)
+        self.assertTrue(summary["findingsAvailable"])
+
+    def test_run_scheduled_research_records_job_failures(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch(
+            "scheduled_research_runner.create_default_research_jobs",
+            return_value={"ok": True, "created": 0},
+        ), patch(
+            "scheduled_research_runner.run_enabled_research_jobs",
+            return_value={
+                "ok": False,
+                "ran": 1,
+                "completed": 0,
+                "failed": 1,
+                "results": [
+                    {
+                        "ok": False,
+                        "job": {"name": "Bearish Failure Audit"},
+                        "message": "preview failed",
+                    }
+                ],
+            },
+        ), patch(
+            "scheduled_research_runner.generate_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ):
+            summary = srr.run_scheduled_research()
+
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["failed"], 1)
+        self.assertTrue(any("Bearish Failure Audit" in error for error in summary["errors"]))
+
+    def test_main_exit_code(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch(
+            "scheduled_research_runner.run_scheduled_research",
+            return_value={
+                "ok": True,
+                "timestamp": "2026-06-20T12:00:00+00:00",
+                "jobsRun": 1,
+                "completed": 1,
+                "failed": 0,
+                "findingsGenerated": 0,
+                "errors": [],
+            },
+        ):
+            self.assertEqual(srr.main(["--skip-findings"]), 0)
+
+        with patch(
+            "scheduled_research_runner.run_scheduled_research",
+            return_value={
+                "ok": False,
+                "timestamp": "2026-06-20T12:00:00+00:00",
+                "jobsRun": 1,
+                "completed": 0,
+                "failed": 1,
+                "findingsGenerated": 0,
+                "errors": ["Job failed (Audit): boom"],
+            },
+        ):
+            self.assertEqual(srr.main(["--skip-findings"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
