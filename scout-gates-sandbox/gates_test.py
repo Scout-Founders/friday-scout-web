@@ -1725,6 +1725,35 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["signal_return"], -20.0, places=2)
         self.assertAlmostEqual(rows[2]["signal_return"], 12.0, places=2)
 
+    def test_trade_audit_rows_include_stock_and_signal_return(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "AAA",
+                    "direction": "Bullish",
+                    "return_20d": 8.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "BBB",
+                    "direction": "Bearish",
+                    "return_20d": 8.0,
+                    "recommendation_id": 2,
+                }
+            ),
+        ]
+        rows = be.compute_trade_audit(signals)
+        by_ticker = {row["ticker"]: row for row in rows}
+
+        self.assertAlmostEqual(by_ticker["AAA"]["stock_return"], 8.0, places=2)
+        self.assertAlmostEqual(by_ticker["AAA"]["signal_return"], 8.0, places=2)
+        self.assertAlmostEqual(by_ticker["BBB"]["stock_return"], 8.0, places=2)
+        self.assertAlmostEqual(by_ticker["BBB"]["signal_return"], -8.0, places=2)
+
     def test_trade_audit_row_includes_gate_combination_and_preset_cohort(self) -> None:
         import backtest_engine as be
 

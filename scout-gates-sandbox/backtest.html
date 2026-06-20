@@ -340,7 +340,11 @@
 
     <section class="card" id="trade-audit-section" hidden>
       <h2>Trade Audit</h2>
-      <p class="hint">Every signal in the loaded backtest sample, sorted by signal return (worst first).</p>
+      <p class="hint">
+        Every signal in the current preview, saved run, or newly created backtest sample.
+        Sorted by signal return (worst first). Signal return is direction-adjusted P&amp;L;
+        stock return is raw underlying movement.
+      </p>
       <div class="filter-grid">
         <div>
           <label for="trade-audit-ticker">Ticker</label>
@@ -362,20 +366,20 @@
           </select>
         </div>
         <div>
-          <label for="trade-audit-outcome">Outcome</label>
+          <label for="trade-audit-outcome">Outcome Label</label>
           <select id="trade-audit-outcome">
-            <option value="">All outcomes</option>
+            <option value="">All outcome labels</option>
             <option value="WIN">WIN</option>
             <option value="LOSS">LOSS</option>
             <option value="FLAT">FLAT</option>
           </select>
         </div>
         <div>
-          <label for="trade-audit-min-score">Min Score</label>
+          <label for="trade-audit-min-score">Minimum Score</label>
           <input id="trade-audit-min-score" type="number" step="0.1" placeholder="Any">
         </div>
         <div>
-          <label for="trade-audit-max-score">Max Score</label>
+          <label for="trade-audit-max-score">Maximum Score</label>
           <input id="trade-audit-max-score" type="number" step="0.1" placeholder="Any">
         </div>
       </div>
@@ -389,15 +393,15 @@
               <th>Preset / Cohort</th>
               <th>Sector</th>
               <th>Direction</th>
-              <th>Score</th>
+              <th>Total Score</th>
               <th>Stock Return</th>
               <th>Signal Return</th>
-              <th>Outcome</th>
+              <th>Outcome Label</th>
               <th>Gate Combination</th>
             </tr>
           </thead>
           <tbody id="trade-audit-body">
-            <tr><td colspan="10">Run a backtest to populate trade audit rows.</td></tr>
+            <tr><td colspan="10">Preview, run, or load a backtest to populate trade audit rows.</td></tr>
           </tbody>
         </table>
       </div>
@@ -604,14 +608,13 @@
     function renderTradeAudit(rows) {
       tradeAuditRows = rows || [];
       const section = document.getElementById("trade-audit-section");
+      section.hidden = false;
       if (!tradeAuditRows.length) {
-        section.hidden = true;
         document.getElementById("trade-audit-body").innerHTML =
-          `<tr><td colspan="10">No trade audit rows available.</td></tr>`;
-        document.getElementById("trade-audit-count").textContent = "—";
+          `<tr><td colspan="10">No signals in the current backtest sample.</td></tr>`;
+        document.getElementById("trade-audit-count").textContent = "Showing 0 of 0 signal(s)";
         return;
       }
-      section.hidden = false;
       populateTradeAuditFilterOptions();
       applyTradeAuditFilters();
     }

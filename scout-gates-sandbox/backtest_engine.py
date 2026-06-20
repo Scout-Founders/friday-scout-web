@@ -466,6 +466,7 @@ def trade_audit_row(signal: dict[str, Any]) -> dict[str, Any]:
         "sector": signal.get("sector"),
         "direction": signal.get("direction"),
         "score": signal.get("score"),
+        "total_score": signal.get("score"),
         "stock_return": signal.get("stock_return"),
         "signal_return": signal_return_value(signal),
         "outcome_label": signal.get("outcome_label"),
