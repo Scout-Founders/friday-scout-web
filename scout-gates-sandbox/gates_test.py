@@ -3636,5 +3636,59 @@ class ResearchSnapshotImporterTests(unittest.TestCase):
         self.assertEqual(before_scan_count, after_scan_count)
 
 
+class CloudResearchSnapshotWorkflowTests(unittest.TestCase):
+    def test_parse_use_snapshot_artifact(self) -> None:
+        import cloud_research_snapshot_workflow as crsw
+
+        self.assertTrue(crsw.parse_use_snapshot_artifact(True))
+        self.assertTrue(crsw.parse_use_snapshot_artifact("true"))
+        self.assertFalse(crsw.parse_use_snapshot_artifact(False))
+        self.assertFalse(crsw.parse_use_snapshot_artifact("false"))
+        self.assertFalse(crsw.parse_use_snapshot_artifact(None))
+
+    def test_resolve_snapshot_bundle_prefers_manifest_json_name(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_snapshot_workflow as crsw
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = Path(tmpdir)
+            (bundle / crsw.SNAPSHOT_DB_FILENAME).write_bytes(b"sqlite")
+            (bundle / "research_snapshot_manifest.json").write_text("{}", encoding="utf-8")
+            resolved = crsw.resolve_snapshot_bundle(bundle)
+            self.assertEqual(resolved["manifestPath"].name, "research_snapshot_manifest.json")
+
+    def test_resolve_snapshot_bundle_accepts_export_manifest_name(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_snapshot_workflow as crsw
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = Path(tmpdir)
+            (bundle / crsw.SNAPSHOT_DB_FILENAME).write_bytes(b"sqlite")
+            (bundle / "research_snapshot.manifest.json").write_text("{}", encoding="utf-8")
+            resolved = crsw.resolve_snapshot_bundle(bundle)
+            self.assertEqual(resolved["manifestPath"].name, "research_snapshot.manifest.json")
+
+    def test_build_import_command(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_snapshot_workflow as crsw
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = Path(tmpdir)
+            target = bundle / "scout_research_cloud.db"
+            (bundle / crsw.SNAPSHOT_DB_FILENAME).write_bytes(b"sqlite")
+            (bundle / "research_snapshot_manifest.json").write_text("{}", encoding="utf-8")
+            command = crsw.build_import_command(bundle_dir=bundle, target_db_path=target)
+            self.assertIn("import_research_snapshot.py", command[1])
+            self.assertIn("--snapshot", command)
+            self.assertIn("--manifest", command)
+            self.assertIn("--target", command)
+
+
 if __name__ == "__main__":
     unittest.main()
