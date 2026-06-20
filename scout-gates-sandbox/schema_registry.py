@@ -298,6 +298,34 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "actionable_win_rate": "REAL",
         },
     },
+    "research_jobs": {
+        "table": "research_jobs",
+        "columns": {
+            "id": "INTEGER",
+            "name": "TEXT",
+            "job_type": "TEXT",
+            "preset": "TEXT",
+            "cohort": "TEXT",
+            "filters_json": "TEXT",
+            "schedule_label": "TEXT",
+            "enabled": "INTEGER",
+            "last_run_at": "TEXT",
+            "created_at": "TEXT",
+        },
+    },
+    "research_job_runs": {
+        "table": "research_job_runs",
+        "columns": {
+            "id": "INTEGER",
+            "job_id": "INTEGER",
+            "started_at": "TEXT",
+            "completed_at": "TEXT",
+            "status": "TEXT",
+            "signals_count": "INTEGER",
+            "summary_json": "TEXT",
+            "error_message": "TEXT",
+        },
+    },
 }
 
 

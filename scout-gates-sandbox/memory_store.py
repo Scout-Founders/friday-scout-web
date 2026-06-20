@@ -310,6 +310,9 @@ def init_db() -> None:
         from backtest_engine import init_backtest_store
 
         init_backtest_store(conn)
+        from research_job_runner import init_research_job_store
+
+        init_research_job_store(conn)
         ensure_performance_indexes(conn)
     _DB_INITIALIZED = True
 

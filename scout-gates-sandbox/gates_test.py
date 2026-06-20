@@ -2435,5 +2435,126 @@ class BacktestEngineTests(unittest.TestCase):
                 self.assertEqual(loaded["legacyMetricsMessage"], be.LEGACY_METRICS_WARNING)
 
 
+class ResearchJobRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "research_jobs_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def test_create_default_research_jobs(self) -> None:
+        import research_job_runner as rjr
+
+        first = rjr.create_default_research_jobs()
+        second = rjr.create_default_research_jobs()
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["created"], len(rjr.DEFAULT_RESEARCH_JOB_SPECS))
+        self.assertEqual(second["created"], 0)
+        jobs = rjr.list_research_jobs()
+        self.assertEqual(len(jobs), len(rjr.DEFAULT_RESEARCH_JOB_SPECS))
+        names = {job["name"] for job in jobs}
+        self.assertIn("Mega Cap Tech Scan", names)
+        self.assertIn("AI Leadership Audit", names)
+
+    def test_list_research_jobs(self) -> None:
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        jobs = rjr.list_research_jobs(include_disabled=False)
+        self.assertEqual(len(jobs), len(rjr.DEFAULT_RESEARCH_JOB_SPECS))
+        self.assertTrue(all(job["enabled"] for job in jobs))
+
+    def test_run_research_job_executes_cohort_scan(self) -> None:
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class="actionable",
+            )
+            conn.commit()
+
+        jobs = rjr.list_research_jobs()
+        mega_job = next(job for job in jobs if job["name"] == "Mega Cap Tech Scan")
+        result = rjr.run_research_job(int(mega_job["id"]))
+        self.assertTrue(result["ok"])
+        run = result["run"]
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["signalsCount"], 1)
+        self.assertAlmostEqual(run["summary"]["expectancy"], 8.0, places=2)
+        self.assertIsNotNone(run["completedAt"])
+        refreshed = next(job for job in rjr.list_research_jobs() if job["id"] == mega_job["id"])
+        self.assertIsNotNone(refreshed["lastRunAt"])
+
+    def test_run_enabled_research_jobs(self) -> None:
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            conn.execute("UPDATE research_jobs SET enabled = 0")
+            conn.execute(
+                "UPDATE research_jobs SET enabled = 1 WHERE name IN (?, ?)",
+                ("Mega Cap Tech Scan", "Bearish Failure Audit"),
+            )
+            conn.commit()
+
+        batch = rjr.run_enabled_research_jobs()
+        self.assertEqual(batch["ran"], 2)
+        self.assertEqual(batch["completed"], 2)
+        self.assertEqual(batch["failed"], 0)
+        self.assertEqual(len(batch["results"]), 2)
+
+    def test_run_research_job_failure_handling(self) -> None:
+        from unittest.mock import patch
+
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        jobs = rjr.list_research_jobs()
+        audit_job = next(job for job in jobs if job["name"] == "Bearish Failure Audit")
+        with patch("research_job_runner.preview_backtest", side_effect=RuntimeError("preview failed")):
+            result = rjr.run_research_job(int(audit_job["id"]))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["run"]["status"], "failed")
+        self.assertIn("preview failed", result["run"]["errorMessage"] or "")
+
+
 if __name__ == "__main__":
     unittest.main()

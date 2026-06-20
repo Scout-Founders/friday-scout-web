@@ -77,6 +77,12 @@ from backtest_engine import (
     preview_backtest,
     run_backtest,
 )
+from research_job_runner import (
+    create_default_research_jobs,
+    list_research_jobs,
+    run_enabled_research_jobs,
+    run_research_job,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -408,6 +414,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(result)
             return
+        if parsed.path == "/api/research-jobs":
+            self.send_json({"ok": True, "jobs": list_research_jobs()})
+            return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
             return
@@ -575,6 +584,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": False, "message": f"Outcome test record error: {exc}"},
                     status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/research-jobs/defaults":
+            try:
+                self.send_json(create_default_research_jobs())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research job defaults error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/research-jobs/run-enabled":
+            try:
+                self.send_json(run_enabled_research_jobs())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Enabled research job run error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path.startswith("/api/research-jobs/") and parsed.path.endswith("/run"):
+            job_id_text = parsed.path.split("/")[-2]
+            try:
+                job_id = int(job_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Research job id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                self.send_json(run_research_job(job_id))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Research job run error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
 
