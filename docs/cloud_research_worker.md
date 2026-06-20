@@ -24,8 +24,9 @@ Each run:
 
 The workflow also:
 
-- Restores a cached `scout-gates-sandbox/scout_memory.db` between runs when available
-- Uploads the updated database as a workflow artifact for inspection or manual recovery
+- Restores a cached `scout-gates-sandbox/scout_research_cloud.db` between runs when available
+- Optionally imports a `scout-research-snapshot` artifact into the cloud DB before research runs
+- Uploads the updated cloud research database as a workflow artifact for inspection or manual recovery
 
 Workflow file: [`.github/workflows/scout-research-worker.yml`](../.github/workflows/scout-research-worker.yml)
 
@@ -76,6 +77,8 @@ Optional future secrets (not required for v1):
 5. Optional inputs:
    - **findings_limit** — number of recent completed runs to scan (default `20`)
    - **skip_findings** — run research jobs only
+   - **use_snapshot_artifact** — import `scout-research-snapshot` before running research (default `false`)
+   - **snapshot_artifact_run_id** — workflow run ID that uploaded the snapshot (leave empty to use the current run)
 6. Click **Run workflow**
 
 Review the job log for the summary block:
@@ -90,7 +93,101 @@ findings generated: ...
 status: ok
 ```
 
-Download the `scout-memory-db-<run_id>` artifact if you need the updated SQLite file.
+Download the `scout-research-cloud-db-<run_id>` artifact if you need the updated SQLite file.
+
+---
+
+## Research snapshot sync (v1)
+
+The cloud worker analyzes historical signals from `scout_research_cloud.db`. To import local sandbox signal history without touching `scout_memory.db`, use the snapshot export/import flow.
+
+### 1. Create a local snapshot (read-only export)
+
+From the repository root:
+
+```bash
+cd scout-gates-sandbox
+python3 export_research_snapshot.py
+```
+
+This reads `scout_memory.db` in **read-only mode** and writes:
+
+- `research_snapshot.db`
+- `research_snapshot.manifest.json`
+
+The source database is not modified.
+
+Optional copy for artifact naming used by GitHub Actions:
+
+```bash
+cp research_snapshot.manifest.json research_snapshot_manifest.json
+```
+
+### 2. Publish the snapshot artifact
+
+Copy the exported files into `scout-gates-sandbox/` in your workspace, then run the publish workflow:
+
+1. Go to **Actions → Scout Research Snapshot Publish**
+2. Click **Run workflow**
+
+This uploads artifact **`scout-research-snapshot`** containing:
+
+- `research_snapshot.db`
+- `research_snapshot_manifest.json` (copied automatically from `research_snapshot.manifest.json` when needed)
+
+Note the workflow **run ID** from the publish job. You will use it when importing into the cloud worker.
+
+### 3. Run the cloud worker with snapshot import enabled
+
+1. Go to **Actions → Scout Cloud Research Worker**
+2. Click **Run workflow**
+3. Set:
+   - **use_snapshot_artifact** = `true`
+   - **snapshot_artifact_run_id** = the publish workflow run ID
+4. Run the workflow
+
+The worker will:
+
+1. Restore `scout_research_cloud.db` cache
+2. Download artifact `scout-research-snapshot`
+3. Run:
+
+```bash
+python3 scout-gates-sandbox/import_research_snapshot.py \
+  --snapshot scout-gates-sandbox/snapshot-bundle/research_snapshot.db \
+  --manifest <resolved manifest path> \
+  --target scout-gates-sandbox/scout_research_cloud.db
+```
+
+4. Run `scheduled_research_runner.py --cloud-worker`
+5. Upload updated `scout_research_cloud.db`
+
+If snapshot import fails, the workflow stops **before** scheduled research runs.
+
+### 4. Smoke test without snapshot import
+
+For empty-db smoke tests or when no snapshot artifact is available:
+
+1. Run **Scout Cloud Research Worker**
+2. Leave **use_snapshot_artifact** = `false`
+
+The worker skips snapshot import and runs against the cached/empty cloud research DB only.
+
+Scheduled weekday runs also skip snapshot import unless you later enable it explicitly in workflow inputs (scheduled runs default to `false`).
+
+### Local import parity
+
+```bash
+cd scout-gates-sandbox
+python3 export_research_snapshot.py
+python3 import_research_snapshot.py \
+  --snapshot research_snapshot.db \
+  --target scout_research_cloud.db
+export SCOUT_RESEARCH_WORKER_SECRET='your-token'
+export SCOUT_CLOUD_RESEARCH_ENABLED=true
+export SCOUT_RESEARCH_DB_PATH="$(pwd)/scout_research_cloud.db"
+python3 scheduled_research_runner.py --cloud-worker
+```
 
 ---
 
