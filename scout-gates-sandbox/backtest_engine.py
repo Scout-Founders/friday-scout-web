@@ -706,6 +706,100 @@ def compute_sector_audit(signals: list[dict[str, Any]], losing_limit: int = 5) -
     }
 
 
+def bearish_only_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [signal for signal in signals if signal.get("direction") == "Bearish"]
+
+
+def bearish_loss_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        signal
+        for signal in bearish_only_signals(signals)
+        if signal.get("outcome_label") == "LOSS"
+    ]
+
+
+def empty_bearish_failure_summary() -> dict[str, Any]:
+    return {
+        "signal_count": 0,
+        "win_rate": None,
+        "avg_signal_return": None,
+        "avg_stock_return": None,
+        "expectancy": None,
+    }
+
+
+def count_ranked_labels(labels: list[str], *, limit: int = 10) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    ranked = sorted(counts.items(), key=lambda row: (-row[1], row[0]))
+    return [{"label": label, "count": count} for label, count in ranked[:limit]]
+
+
+def bearish_losing_trade_row(signal: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ticker": signal.get("ticker"),
+        "sector": signal.get("sector"),
+        "score": signal.get("score"),
+        "stock_return": signal.get("stock_return"),
+        "signal_return": signal_return_value(signal),
+        "gate_combination": gate_combination(signal),
+    }
+
+
+def compute_bearish_failure_audit(
+    signals: list[dict[str, Any]],
+    *,
+    losing_limit: int = 10,
+    common_limit: int = 10,
+) -> dict[str, Any]:
+    """Bearish-only failure patterns for the backtest UI."""
+    bearish = bearish_only_signals(signals)
+    if not bearish:
+        return {
+            "summary": empty_bearish_failure_summary(),
+            "top_losing_trades": [],
+            "common_loss_sectors": [],
+            "common_loss_gate_combinations": [],
+            "common_loss_gates": [],
+        }
+
+    metrics = compute_core_metrics(bearish)
+    summary = {
+        "signal_count": metrics["sample_size"],
+        "win_rate": win_rate_for_signals(bearish),
+        "avg_signal_return": metrics["avg_return"],
+        "avg_stock_return": metrics["avg_stock_return"],
+        "expectancy": metrics["expectancy"],
+    }
+    top_losing = sorted(
+        (signal for signal in bearish if signal_return_value(signal) is not None),
+        key=signal_return_value,
+    )[:losing_limit]
+
+    losses = bearish_loss_signals(signals)
+    common_loss_sectors = count_ranked_labels(
+        [str(signal.get("sector") or "Unknown") for signal in losses],
+        limit=common_limit,
+    )
+    common_loss_gate_combinations = count_ranked_labels(
+        [gate_combination(signal) or "Unknown" for signal in losses],
+        limit=common_limit,
+    )
+    loss_gate_labels: list[str] = []
+    for signal in losses:
+        loss_gate_labels.extend(passed_gate_keys(signal))
+    common_loss_gates = count_ranked_labels(loss_gate_labels, limit=common_limit)
+
+    return {
+        "summary": summary,
+        "top_losing_trades": [bearish_losing_trade_row(signal) for signal in top_losing],
+        "common_loss_sectors": common_loss_sectors,
+        "common_loss_gate_combinations": common_loss_gate_combinations,
+        "common_loss_gates": common_loss_gates,
+    }
+
+
 def compute_gate_performance(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for signal in signals:
@@ -914,6 +1008,7 @@ def compute_analytics(signals: list[dict[str, Any]]) -> dict[str, Any]:
         "direction_performance": compute_direction_performance(signals),
         "direction_breakdown": compute_direction_breakdown(signals),
         "sector_audit": compute_sector_audit(signals),
+        "bearish_failure_audit": compute_bearish_failure_audit(signals),
         "trade_audit": compute_trade_audit(signals),
         "gate_performance": compute_gate_performance(signals),
         "gate_contribution_audit": compute_gate_contribution_audit(signals),

@@ -350,6 +350,83 @@
       </div>
     </section>
 
+    <section class="card" id="bearish-failure-section" hidden>
+      <h2>Bearish Failure Audit</h2>
+      <p class="hint">
+        Bearish signals only from the current preview, saved run, or newly created backtest sample.
+        Signal return is direction-adjusted P&amp;L; stock return is raw underlying movement.
+      </p>
+      <div class="audit-panel">
+        <h2>Summary</h2>
+        <div class="audit-grid">
+          <div class="audit-metric">
+            <div class="metric-label">Signal Count</div>
+            <div class="metric-value" id="bearish-signal-count">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Win Rate</div>
+            <div class="metric-value" id="bearish-win-rate">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Avg Signal Return</div>
+            <div class="metric-value" id="bearish-signal-return">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Avg Stock Return</div>
+            <div class="metric-value" id="bearish-stock-return">—</div>
+          </div>
+          <div class="audit-metric">
+            <div class="metric-label">Expectancy</div>
+            <div class="metric-value" id="bearish-expectancy">—</div>
+          </div>
+        </div>
+
+        <h2>Top 10 Losing Bearish Trades</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Sector</th>
+              <th>Score</th>
+              <th>Stock Return</th>
+              <th>Signal Return</th>
+              <th>Gate Combination</th>
+            </tr>
+          </thead>
+          <tbody id="bearish-losing-trades-body">
+            <tr><td colspan="6">Preview, run, or load a backtest to populate bearish failure audit.</td></tr>
+          </tbody>
+        </table>
+
+        <div class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px;">
+          <div>
+            <h2>Loss Sectors</h2>
+            <p class="hint">Most common among bearish losses</p>
+            <table>
+              <thead><tr><th>Sector</th><th>Count</th></tr></thead>
+              <tbody id="bearish-loss-sectors-body"><tr><td colspan="2">—</td></tr></tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Loss Gate Combinations</h2>
+            <p class="hint">Most common among bearish losses</p>
+            <table>
+              <thead><tr><th>Combination</th><th>Count</th></tr></thead>
+              <tbody id="bearish-loss-combos-body"><tr><td colspan="2">—</td></tr></tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Loss Gates</h2>
+            <p class="hint">Most common individual gates among bearish losses</p>
+            <table>
+              <thead><tr><th>Gate</th><th>Count</th></tr></thead>
+              <tbody id="bearish-loss-gates-body"><tr><td colspan="2">—</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="card" id="trade-audit-section" hidden>
       <h2>Trade Audit</h2>
       <p class="hint">
@@ -675,6 +752,55 @@
         : `<tr><td colspan="6">No losing tickers available.</td></tr>`;
     }
 
+    function renderCountRows(rows, emptyMessage) {
+      return (rows || []).length
+        ? rows.map((row) => `
+            <tr>
+              <td>${row.label || "—"}</td>
+              <td>${row.count ?? 0}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="2">${emptyMessage}</td></tr>`;
+    }
+
+    function renderBearishFailureAudit(audit) {
+      const section = document.getElementById("bearish-failure-section");
+      section.hidden = false;
+      const summary = (audit && audit.summary) || {};
+      const bearishCount = summary.signal_count ?? 0;
+
+      document.getElementById("bearish-signal-count").textContent = String(bearishCount);
+      document.getElementById("bearish-win-rate").textContent = formatPct(summary.win_rate);
+      document.getElementById("bearish-signal-return").innerHTML = formatReturn(summary.avg_signal_return);
+      document.getElementById("bearish-stock-return").innerHTML = formatReturn(summary.avg_stock_return);
+      document.getElementById("bearish-expectancy").innerHTML = formatReturn(summary.expectancy);
+
+      const losers = (audit && audit.top_losing_trades) || [];
+      document.getElementById("bearish-losing-trades-body").innerHTML = losers.length
+        ? losers.map((row) => `
+            <tr>
+              <td>${row.ticker || "—"}</td>
+              <td>${row.sector || "—"}</td>
+              <td>${formatScore(row.score)}</td>
+              <td>${formatReturn(row.stock_return)}</td>
+              <td>${formatReturn(row.signal_return)}</td>
+              <td>${row.gate_combination || "—"}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="6">${bearishCount ? "No completed bearish returns available." : "No bearish signals in the current sample."}</td></tr>`;
+
+      document.getElementById("bearish-loss-sectors-body").innerHTML = renderCountRows(
+        audit && audit.common_loss_sectors,
+        "No bearish loss sectors recorded."
+      );
+      document.getElementById("bearish-loss-combos-body").innerHTML = renderCountRows(
+        audit && audit.common_loss_gate_combinations,
+        "No bearish loss gate combinations recorded."
+      );
+      document.getElementById("bearish-loss-gates-body").innerHTML = renderCountRows(
+        audit && audit.common_loss_gates,
+        "No bearish loss gates recorded."
+      );
+    }
+
     function formatScore(value) {
       if (value === null || value === undefined || Number.isNaN(value)) return "—";
       return Number(value).toFixed(1);
@@ -898,6 +1024,7 @@
       );
       renderDirectionDiagnostics(analytics.direction_breakdown);
       renderSectorAudit(analytics.sector_audit);
+      renderBearishFailureAudit(analytics.bearish_failure_audit);
       renderTradeAudit(analytics.trade_audit);
       renderGateContributionAudit(analytics.gate_contribution_audit);
       renderGateIntersectionMatrix(analytics.gate_intersection_matrix);

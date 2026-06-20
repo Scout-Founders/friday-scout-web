@@ -1726,6 +1726,142 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertAlmostEqual(matrix["bottom_pairs"][0]["expectancy"], 1.0, places=2)
         self.assertAlmostEqual(matrix["bottom_pairs"][-1]["expectancy"], 10.0, places=2)
 
+    def test_bearish_failure_audit_filters_bearish_only(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "BULL",
+                    "direction": "Bullish",
+                    "sector": "Technology",
+                    "outcome_label": "WIN",
+                    "return_20d": 12.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "BEAR",
+                    "direction": "Bearish",
+                    "sector": "Semiconductors",
+                    "outcome_label": "LOSS",
+                    "return_20d": 10.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"compass","passed":true}]}',
+                    "recommendation_id": 2,
+                }
+            ),
+        ]
+        audit = be.compute_bearish_failure_audit(signals)
+        summary = audit["summary"]
+        self.assertEqual(summary["signal_count"], 1)
+        self.assertEqual(summary["win_rate"], 0.0)
+        self.assertAlmostEqual(summary["avg_signal_return"], -10.0, places=2)
+        self.assertAlmostEqual(summary["avg_stock_return"], 10.0, places=2)
+        self.assertAlmostEqual(summary["expectancy"], -10.0, places=2)
+
+    def test_bearish_failure_audit_ranks_losing_trades(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "AMD",
+                    "direction": "Bearish",
+                    "sector": "Semiconductors",
+                    "outcome_label": "LOSS",
+                    "return_20d": 46.0,
+                    "score": 88.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"sentinel","passed":true}]}',
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "INTC",
+                    "direction": "Bearish",
+                    "sector": "Semiconductors",
+                    "outcome_label": "LOSS",
+                    "return_20d": 20.0,
+                    "score": 80.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"pulse","passed":true}]}',
+                    "recommendation_id": 2,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "WINB",
+                    "direction": "Bearish",
+                    "sector": "Healthcare",
+                    "outcome_label": "WIN",
+                    "return_20d": -8.0,
+                    "score": 75.0,
+                    "recommendation_id": 3,
+                }
+            ),
+        ]
+        audit = be.compute_bearish_failure_audit(signals)
+        losers = audit["top_losing_trades"]
+        self.assertEqual(len(losers), 3)
+        self.assertEqual(losers[0]["ticker"], "AMD")
+        self.assertAlmostEqual(losers[0]["stock_return"], 46.0, places=2)
+        self.assertAlmostEqual(losers[0]["signal_return"], -46.0, places=2)
+        self.assertEqual(losers[0]["gate_combination"], "SENTINEL")
+        self.assertEqual(losers[-1]["ticker"], "WINB")
+        self.assertAlmostEqual(losers[-1]["signal_return"], 8.0, places=2)
+
+    def test_bearish_failure_audit_common_loss_patterns(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "AMD",
+                    "direction": "Bearish",
+                    "sector": "Semiconductors",
+                    "outcome_label": "LOSS",
+                    "return_20d": 46.0,
+                    "gate_snapshot_json": (
+                        '{"gates":[{"key":"compass","passed":true},{"key":"pulse","passed":true}]}'
+                    ),
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "NVDA",
+                    "direction": "Bearish",
+                    "sector": "Semiconductors",
+                    "outcome_label": "LOSS",
+                    "return_20d": 30.0,
+                    "gate_snapshot_json": (
+                        '{"gates":[{"key":"compass","passed":true},{"key":"pulse","passed":true}]}'
+                    ),
+                    "recommendation_id": 2,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "JPM",
+                    "direction": "Bearish",
+                    "sector": "Financials",
+                    "outcome_label": "LOSS",
+                    "return_20d": 12.0,
+                    "gate_snapshot_json": '{"gates":[{"key":"sentinel","passed":true}]}',
+                    "recommendation_id": 3,
+                }
+            ),
+        ]
+        audit = be.compute_bearish_failure_audit(signals)
+        self.assertEqual(audit["common_loss_sectors"][0]["label"], "Semiconductors")
+        self.assertEqual(audit["common_loss_sectors"][0]["count"], 2)
+        self.assertEqual(audit["common_loss_gate_combinations"][0]["label"], "COMPASS+PULSE")
+        self.assertEqual(audit["common_loss_gate_combinations"][0]["count"], 2)
+        gate_counts = {row["label"]: row["count"] for row in audit["common_loss_gates"]}
+        self.assertEqual(gate_counts["COMPASS"], 2)
+        self.assertEqual(gate_counts["PULSE"], 2)
+        self.assertEqual(gate_counts["SENTINEL"], 1)
+
     def test_directional_return_flips_bearish(self) -> None:
         import backtest_engine as be
 
