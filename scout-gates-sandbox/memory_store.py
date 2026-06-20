@@ -325,6 +325,12 @@ def init_db() -> None:
         from research_findings_engine import init_research_findings_store
 
         init_research_findings_store(conn)
+        from rule_candidates_engine import init_rule_candidates_store
+
+        init_rule_candidates_store(conn)
+        from rule_validation_engine import init_rule_validations_store
+
+        init_rule_validations_store(conn)
         ensure_performance_indexes(conn)
     _DB_INITIALIZED = True
 

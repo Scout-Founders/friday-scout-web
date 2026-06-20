@@ -2567,6 +2567,225 @@ class ResearchJobRunnerTests(unittest.TestCase):
         self.assertEqual(runs[0]["jobId"], job_id)
         self.assertTrue(runs[0]["jobName"])
 
+    def _insert_null_cohort_signal(
+        self,
+        conn,
+        *,
+        ticker: str,
+        direction: str = "Bullish",
+        outcome: str = "WIN",
+    ) -> None:
+        import memory_store as ms
+
+        run_id = conn.execute(
+            """
+            INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+            VALUES (?, ?, ?)
+            """,
+            ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+        ).lastrowid
+        BacktestEngineTests().insert_completed_signal(
+            conn,
+            run_id,
+            ticker=ticker,
+            timestamp="2026-05-10T12:00:00+00:00",
+            direction=direction,
+            outcome=outcome,
+            return_5d=4.0,
+            return_20d=8.0,
+            score=88.0,
+            sector="Technology",
+            gates=[{"key": "sentinel", "passed": True}],
+            cohort_class=None,
+        )
+
+    def test_cohort_scan_uses_preset_tickers_with_null_metadata(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            self._insert_null_cohort_signal(conn, ticker="NVDA")
+            conn.commit()
+
+        with ms.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM research_jobs WHERE name = ?",
+                ("Mega Cap Tech Scan",),
+            ).fetchone()
+            filters = rjr.backtest_filters_for_job(job)
+
+        self.assertIsNotNone(filters.tickers)
+        self.assertIn("NVDA", filters.tickers)
+        self.assertIsNone(filters.cohort_class)
+        self.assertIsNone(filters.scan_purpose)
+
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_audit_jobs_do_not_auto_apply_cohort_filter(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            self._insert_null_cohort_signal(conn, ticker="ZZZZ")
+            conn.commit()
+
+        with ms.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM research_jobs WHERE name = ?",
+                ("Bearish Failure Audit",),
+            ).fetchone()
+            filters = rjr.backtest_filters_for_job(job)
+
+        self.assertIsNone(filters.cohort_class)
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_explicit_cohort_class_in_filters_json_is_honored(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        with ms.connect() as conn:
+            self._insert_null_cohort_signal(conn, ticker="NVDA")
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-05-02T12:00:00+00:00", "preset", "gate_runner", "research", "regime_probe"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-11T12:00:00+00:00",
+                direction="Bearish",
+                outcome="LOSS",
+                return_5d=-3.0,
+                return_20d=-6.0,
+                score=72.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class="research",
+            )
+            conn.execute(
+                """
+                UPDATE research_jobs
+                SET filters_json = ?
+                WHERE name = ?
+                """,
+                (
+                    ms.json_dump({"cohortClass": "research", "scanPurpose": "regime_probe"}),
+                    "Mega Cap Tech Scan",
+                ),
+            )
+            conn.commit()
+
+        with ms.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM research_jobs WHERE name = ?",
+                ("Mega Cap Tech Scan",),
+            ).fetchone()
+            filters = rjr.backtest_filters_for_job(job)
+
+        self.assertEqual(filters.cohort_class, "research")
+        self.assertEqual(filters.scan_purpose, "regime_probe")
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_tickers_filter_is_uppercase_normalized(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="nvda",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        filters = be.parse_backtest_filters({"tickers": ["nvda"]})
+        self.assertEqual(filters.tickers, ("NVDA",))
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 1)
+
+    def test_ticker_filter_keeps_completed_outcome_and_direction_filters(self) -> None:
+        import backtest_engine as be
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Neutral",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            pending_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-02T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                pending_id,
+                ticker="NVDA",
+                timestamp="2026-05-11T12:00:00+00:00",
+                direction="Bullish",
+                outcome="PENDING",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        filters = be.BacktestFilters(tickers=("NVDA",))
+        preview = be.preview_backtest(filters)
+        self.assertEqual(preview["signalsMatched"], 0)
+
 
 class ResearchFindingsEngineTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -2774,6 +2993,743 @@ class ResearchFindingsEngineTests(unittest.TestCase):
         self.assertEqual(second["skippedDuplicates"], 1)
         findings = rfe.list_research_findings(finding_type="system_note")
         self.assertEqual(len(findings), 1)
+
+
+class RuleCandidatesEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "rule_candidates_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def insert_finding(
+        self,
+        *,
+        finding_type: str,
+        title: str,
+        description: str = "Test finding description",
+        supporting_metrics: Optional[dict] = None,
+        related_sectors: Optional[list[str]] = None,
+        related_gates: Optional[list[str]] = None,
+    ) -> int:
+        import research_findings_engine as rfe
+
+        created = rfe.create_research_finding(
+            finding_type=finding_type,
+            severity="warning",
+            title=title,
+            description=description,
+            confidence="medium",
+            supporting_metrics=supporting_metrics or {},
+            related_sectors=related_sectors or [],
+            related_gates=related_gates or [],
+        )
+        return int(created["finding"]["id"])
+
+    def test_create_and_list_rule_candidate(self) -> None:
+        import rule_candidates_engine as rce
+
+        created = rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Manual candidate",
+            hypothesis="Manual hypothesis",
+            proposed_rule="Manual proposed rule",
+            rationale="Manual rationale",
+            validation_plan="Manual validation plan",
+        )
+        self.assertTrue(created["created"])
+        candidates = rce.list_rule_candidates()
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "Manual candidate")
+        self.assertEqual(candidates[0]["status"], "proposed")
+
+    def test_update_rule_candidate_status(self) -> None:
+        import rule_candidates_engine as rce
+
+        created = rce.create_rule_candidate(
+            candidate_type="risk_filter",
+            title="Status test",
+            hypothesis="Status hypothesis",
+            proposed_rule="Status proposed rule",
+            rationale="Status rationale",
+            validation_plan="Status validation plan",
+        )
+        candidate_id = created["candidate"]["id"]
+        updated = rce.update_rule_candidate_status(candidate_id, "testing")
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["candidate"]["status"], "testing")
+
+    def test_direction_failure_candidate_generation(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="direction_failure",
+            title="Bearish signals underperforming",
+            supporting_metrics={"bearishExpectancy": -5.0, "bearishSignalCount": 12},
+        )
+        result = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["candidateType"], "trend_override")
+        self.assertEqual(candidate["title"], "Test bearish trend override")
+
+    def test_leadership_trend_candidate_generation(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="leadership_trend",
+            title="Leadership cohort favors bullish exposure over bearish calls",
+            supporting_metrics={
+                "groupId": "ai_infrastructure",
+                "groupLabel": "AI Infrastructure Stocks",
+            },
+            related_sectors=["AI Infrastructure Stocks"],
+        )
+        result = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["candidateType"], "direction_filter")
+        self.assertEqual(candidate["title"], "Test leadership bearish suppression")
+
+    def test_gate_strength_candidate_generation(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="gate_strength",
+            title="SPECTER showing positive expectancy",
+            supporting_metrics={"gateCode": "SPECTER", "expectancy": 4.5, "signalCount": 15},
+            related_gates=["SPECTER"],
+        )
+        result = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["candidateType"], "gate_weight_candidate")
+        self.assertEqual(candidate["title"], "Test SPECTER emphasis")
+
+    def test_duplicate_prevention(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="gate_strength",
+            title="SPECTER showing positive expectancy",
+            related_gates=["SPECTER"],
+        )
+        first = rce.generate_rule_candidates_from_finding(finding_id)
+        second = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertEqual(first["generated"], 1)
+        self.assertEqual(second["generated"], 0)
+        self.assertEqual(second["skippedDuplicates"], 1)
+        candidates = rce.list_rule_candidates(candidate_type="gate_weight_candidate")
+        self.assertEqual(len(candidates), 1)
+
+
+class RuleValidationEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "rule_validations_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def insert_signal(
+        self,
+        *,
+        ticker: str,
+        direction: str,
+        outcome: str,
+        return_20d: float,
+        gates: list[dict] | None = None,
+    ) -> None:
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker=ticker,
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction=direction,
+                outcome=outcome,
+                return_5d=return_20d / 2,
+                return_20d=return_20d,
+                score=82.0,
+                sector="Technology",
+                gates=gates or [{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+    def create_testing_candidate(
+        self,
+        *,
+        candidate_type: str,
+        title: str,
+        affected_scope: dict | None = None,
+    ) -> int:
+        import rule_candidates_engine as rce
+
+        created = rce.create_rule_candidate(
+            candidate_type=candidate_type,
+            title=title,
+            hypothesis="Validation hypothesis",
+            proposed_rule="Validation proposed rule",
+            rationale="Validation rationale",
+            validation_plan="Validation plan",
+            status="testing",
+            affected_scope=affected_scope or {},
+        )
+        return int(created["candidate"]["id"])
+
+    def test_create_and_list_rule_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        candidate_id = self.create_testing_candidate(
+            candidate_type="system_note",
+            title="Validation creation test",
+        )
+        created = rve.create_rule_validation(candidate_id)
+        self.assertTrue(created["ok"])
+        self.assertTrue(created["created"])
+        self.assertEqual(created["validation"]["status"], "pending")
+
+        duplicate = rve.create_rule_validation(candidate_id)
+        self.assertTrue(duplicate["ok"])
+        self.assertFalse(duplicate["created"])
+
+        validations = rve.list_rule_validations(candidate_id=candidate_id)
+        self.assertEqual(len(validations), 1)
+        self.assertEqual(validations[0]["candidateTitle"], "Validation creation test")
+
+    def test_trend_override_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=8.0)
+        self.insert_signal(ticker="INTC", direction="Bearish", outcome="LOSS", return_20d=-6.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Test bearish trend override",
+            affected_scope={"direction": "Bearish", "scopeType": "direction_filter"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        validation = result["validation"]
+        self.assertEqual(validation["status"], "completed")
+        self.assertEqual(validation["baselineSignalCount"], 2)
+        self.assertEqual(validation["candidateSignalCount"], 1)
+        self.assertGreater(validation["expectancyDelta"], 0)
+
+    def test_direction_filter_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="NVDA", direction="Bearish", outcome="LOSS", return_20d=-5.0)
+        self.insert_signal(ticker="ZZZZ", direction="Bearish", outcome="LOSS", return_20d=-2.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="direction_filter",
+            title="Test leadership bearish suppression",
+            affected_scope={
+                "direction": "Bearish",
+                "scopeType": "leadership_cohort",
+                "groupId": "mega_cap_ai_leaders",
+            },
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        validation = result["validation"]
+        self.assertEqual(validation["baselineSignalCount"], 2)
+        self.assertEqual(validation["candidateSignalCount"], 1)
+        self.assertEqual(validation["candidateSignalCount"], validation["baselineSignalCount"] - 1)
+
+    def test_gate_weight_candidate_validation(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(
+            ticker="NVDA",
+            direction="Bullish",
+            outcome="WIN",
+            return_20d=6.0,
+            gates=[{"key": "SPECTER", "passed": True}, {"key": "sentinel", "passed": True}],
+        )
+        self.insert_signal(
+            ticker="AMD",
+            direction="Bullish",
+            outcome="LOSS",
+            return_20d=-4.0,
+            gates=[{"key": "sentinel", "passed": True}],
+        )
+        candidate_id = self.create_testing_candidate(
+            candidate_type="gate_weight_candidate",
+            title="Test SPECTER emphasis",
+            affected_scope={"gates": ["SPECTER"], "scopeType": "gate_weight"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        validation = result["validation"]
+        self.assertEqual(validation["baselineSignalCount"], 2)
+        self.assertEqual(validation["candidateSignalCount"], 1)
+        self.assertGreater(validation["candidateExpectancy"], validation["baselineExpectancy"])
+
+    def test_confidence_score_generation(self) -> None:
+        import rule_validation_engine as rve
+
+        for _ in range(6):
+            self.insert_signal(ticker="NVDA", direction="Bullish", outcome="WIN", return_20d=5.0)
+        self.insert_signal(ticker="INTC", direction="Bearish", outcome="LOSS", return_20d=-8.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Confidence score test",
+            affected_scope={"direction": "Bearish"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        score = result["validation"]["confidenceScore"]
+        self.assertIsNotNone(score)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 100.0)
+
+    def test_completed_validation_summary(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="NVDA", direction="Bearish", outcome="LOSS", return_20d=-4.0)
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=6.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Summary generation test",
+            affected_scope={"direction": "Bearish"},
+        )
+
+        result = rve.run_rule_validation(candidate_id)
+        self.assertTrue(result["ok"])
+        summary = result["validation"]["validationSummary"] or ""
+        self.assertIn("Summary generation test", summary)
+        self.assertIn("expectancy", summary.lower())
+
+    def test_generate_validations_from_testing_candidates(self) -> None:
+        import rule_candidates_engine as rce
+        import rule_validation_engine as rve
+
+        self.create_testing_candidate(candidate_type="system_note", title="Testing candidate A")
+        self.create_testing_candidate(candidate_type="system_note", title="Testing candidate B")
+        proposed = rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Proposed candidate",
+            hypothesis="Proposed hypothesis",
+            proposed_rule="Proposed rule",
+            rationale="Proposed rationale",
+            validation_plan="Proposed plan",
+            status="proposed",
+        )
+        blocked = rve.create_rule_validation(int(proposed["candidate"]["id"]))
+        self.assertFalse(blocked["ok"])
+
+        generated = rve.generate_validations_from_testing_candidates()
+        self.assertTrue(generated["ok"])
+        self.assertEqual(generated["created"], 2)
+        self.assertEqual(generated["skippedDuplicates"], 0)
+
+        second = rve.generate_validations_from_testing_candidates()
+        self.assertEqual(second["created"], 0)
+        self.assertEqual(second["skippedDuplicates"], 2)
+
+    def test_run_pending_validations(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=4.0)
+        candidate_id = self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Pending run test",
+            affected_scope={"direction": "Bearish"},
+        )
+        created = rve.create_rule_validation(candidate_id)
+        self.assertTrue(created["created"])
+
+        batch = rve.run_pending_validations()
+        self.assertEqual(batch["ran"], 1)
+        self.assertEqual(batch["completed"], 1)
+        self.assertEqual(batch["failed"], 0)
+        self.assertEqual(batch["results"][0]["validation"]["status"], "completed")
+
+    def test_generate_and_run_pending_validations(self) -> None:
+        import rule_validation_engine as rve
+
+        self.insert_signal(ticker="AMD", direction="Bullish", outcome="WIN", return_20d=4.0)
+        self.create_testing_candidate(
+            candidate_type="trend_override",
+            title="Generate and run test",
+            affected_scope={"direction": "Bearish"},
+        )
+
+        result = rve.generate_and_run_pending_validations(generate_limit=10, run_limit=10)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["failed"], 0)
+
+        validations = rve.list_rule_validations(status="completed")
+        self.assertEqual(len(validations), 1)
+
+
+class RuleValidationApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import json
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "rule_validations_api_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        self._port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def tearDown(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        import json
+        import urllib.request
+
+        data = None
+        headers = {}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self._port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def seed_testing_candidate(self) -> int:
+        import memory_store as ms
+        import rule_candidates_engine as rce
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="AMD",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=2.0,
+                return_20d=4.0,
+                score=80.0,
+                sector="Technology",
+                gates=[{"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        created = rce.create_rule_candidate(
+            candidate_type="trend_override",
+            title="API validation candidate",
+            hypothesis="API hypothesis",
+            proposed_rule="API proposed rule",
+            rationale="API rationale",
+            validation_plan="API validation plan",
+            status="testing",
+            affected_scope={"direction": "Bearish"},
+        )
+        return int(created["candidate"]["id"])
+
+    def test_get_rule_validations_api(self) -> None:
+        import rule_validation_engine as rve
+
+        candidate_id = self.seed_testing_candidate()
+        rve.create_rule_validation(candidate_id)
+        payload = self._request("GET", "/api/rule-validations?limit=10")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["validations"]), 1)
+        self.assertEqual(payload["validations"][0]["candidateId"], candidate_id)
+
+    def test_post_run_validation_api(self) -> None:
+        candidate_id = self.seed_testing_candidate()
+        payload = self._request("POST", f"/api/rule-validations/{candidate_id}/run", {})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["validation"]["status"], "completed")
+        self.assertGreaterEqual(payload["validation"]["baselineSignalCount"], 1)
+
+    def test_post_run_pending_validations_api(self) -> None:
+        candidate_id = self.seed_testing_candidate()
+        payload = self._request("POST", "/api/rule-validations/run-pending", {"generateLimit": 5, "runLimit": 5})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["created"], 1)
+        self.assertEqual(payload["completed"], 1)
+        self.assertEqual(payload["failed"], 0)
+
+    def test_mark_testing_creates_pending_validation(self) -> None:
+        import rule_candidates_engine as rce
+        import rule_validation_engine as rve
+
+        created = rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Status transition candidate",
+            hypothesis="Status hypothesis",
+            proposed_rule="Status proposed rule",
+            rationale="Status rationale",
+            validation_plan="Status validation plan",
+            status="proposed",
+        )
+        candidate_id = int(created["candidate"]["id"])
+        payload = self._request(
+            "POST",
+            f"/api/rule-candidates/{candidate_id}/status",
+            {"status": "testing"},
+        )
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload.get("validationCreated"))
+        validations = rve.list_rule_validations(candidate_id=candidate_id, status="pending")
+        self.assertEqual(len(validations), 1)
+
+
+class ResearchIntelligenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "research_intelligence_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def seed_research_stack(self) -> None:
+        import memory_store as ms
+        import research_findings_engine as rfe
+        import rule_candidates_engine as rce
+        import rule_validation_engine as rve
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-05-01T12:00:00+00:00", "manual", "gate_runner"),
+            ).lastrowid
+            BacktestEngineTests().insert_completed_signal(
+                conn,
+                run_id,
+                ticker="NVDA",
+                timestamp="2026-05-10T12:00:00+00:00",
+                direction="Bullish",
+                outcome="WIN",
+                return_5d=4.0,
+                return_20d=8.0,
+                score=88.0,
+                sector="Technology",
+                gates=[{"key": "SPECTER", "passed": True}, {"key": "sentinel", "passed": True}],
+                cohort_class=None,
+            )
+            conn.commit()
+
+        rfe.create_research_finding(
+            finding_type="gate_strength",
+            severity="info",
+            title="SPECTER showing positive expectancy",
+            description="SPECTER passed on historical signals.",
+            confidence="high",
+            supporting_metrics={"gateCode": "SPECTER", "signalCount": 12, "expectancy": 4.5},
+            related_gates=["SPECTER"],
+            recommended_next_test="Test SPECTER emphasis on mega-cap tech",
+        )
+        rfe.create_research_finding(
+            finding_type="direction_failure",
+            severity="warning",
+            title="Bearish signals underperforming",
+            description="Bearish calls underperformed in recent runs.",
+            confidence="medium",
+            recommended_next_test="Investigate trend override logic for bearish calls.",
+        )
+
+        candidate = rce.create_rule_candidate(
+            candidate_type="gate_weight_candidate",
+            title="Test SPECTER emphasis",
+            hypothesis="SPECTER may improve expectancy.",
+            proposed_rule="Evaluate SPECTER emphasis.",
+            rationale="Gate strength finding.",
+            validation_plan="Backtest SPECTER-positive setups.",
+            status="testing",
+            affected_scope={"gates": ["SPECTER"]},
+        )
+        rve.run_rule_validation(int(candidate["candidate"]["id"]))
+
+    def test_research_intelligence_summary(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        summary = ri.get_research_intelligence_summary()
+        self.assertEqual(summary["totalFindings"], 2)
+        self.assertEqual(summary["openFindings"], 2)
+        self.assertEqual(summary["ruleCandidates"], 1)
+        self.assertEqual(summary["completedValidations"], 1)
+        self.assertIsNotNone(summary["highestConfidenceValidation"])
+
+    def test_top_findings_and_validations(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        findings = ri.get_top_findings(limit=5)
+        validations = ri.get_top_validations(limit=5)
+        self.assertGreaterEqual(len(findings), 2)
+        self.assertEqual(len(validations), 1)
+        self.assertIn("recommendedNextTest", findings[0])
+        self.assertIn("expectancyDelta", validations[0])
+
+    def test_gate_rankings_and_patterns(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        strength = ri.get_gate_strength_rankings(limit=3)
+        weakness = ri.get_gate_weakness_rankings(limit=3)
+        success = ri.get_recurring_success_patterns(limit=5)
+        failure = ri.get_recurring_failure_patterns(limit=5)
+        self.assertTrue(strength)
+        self.assertTrue(failure["repeatedDirectionFailures"])
+        self.assertTrue(success["repeatedWinners"])
+
+    def test_recommended_next_experiments(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        experiments = ri.get_recommended_next_experiments(limit=5)
+        self.assertTrue(experiments)
+        titles = " ".join(item["title"].lower() for item in experiments)
+        self.assertTrue("specter" in titles or "bearish" in titles or "follow up" in titles)
+
+    def test_dashboard_payload(self) -> None:
+        import research_intelligence as ri
+
+        self.seed_research_stack()
+        payload = ri.get_research_intelligence_dashboard()
+        self.assertTrue(payload["ok"])
+        self.assertIn("summary", payload)
+        self.assertIn("strongestValidatedIdeas", payload)
+        self.assertIn("recommendedNextExperiments", payload)
+
+    def test_research_intelligence_api(self) -> None:
+        import json
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+        from unittest.mock import patch
+        import urllib.request
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "research_intelligence_api.db"
+            patchers = [
+                patch.object(ms, "DB_PATH", db_path),
+                patch.object(ms, "_DB_INITIALIZED", False),
+            ]
+            for patcher in patchers:
+                patcher.start()
+            try:
+                ms.init_db()
+                self.seed_research_stack()
+                server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+                port = server.server_address[1]
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/research-intelligence") as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    self.assertTrue(payload["ok"])
+                    self.assertEqual(payload["summary"]["totalFindings"], 2)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
 
 
 class ScheduledResearchRunnerTests(unittest.TestCase):
@@ -3081,6 +4037,466 @@ class CloudResearchWorkerTests(unittest.TestCase):
         self.assertIn("research_jobs", summary["writeTables"])
         self.assertIn("scan_results", summary["protectedTables"])
         self.assertFalse(summary["previewBacktestPersistsRuns"])
+
+
+class ResearchSnapshotExporterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._root = Path(self._tmpdir.name)
+        self._source_db = self._root / "scout_memory.db"
+        self._output_db = self._root / "research_snapshot.db"
+        self._manifest_path = self._root / "research_snapshot.manifest.json"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._source_db),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def seed_signal_history(self) -> None:
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-06-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+            ).lastrowid
+            recommendation_id = conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction,
+                    stock_outcome_label, return_5d, return_20d, engine_version, cohort_class
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    "2026-06-02T12:00:00+00:00",
+                    "NVDA",
+                    88.0,
+                    "Bullish",
+                    "WIN",
+                    4.0,
+                    8.0,
+                    "3.0.test",
+                    "actionable",
+                ),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO feature_vectors (
+                    recommendation_id, scan_id, ticker, sector_name, timestamp
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (recommendation_id, run_id, "NVDA", "Technology", "2026-06-02T12:00:00+00:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO research_jobs (
+                    name, job_type, filters_json, enabled, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("Excluded Job", "audit", "{}", 1, "2026-06-01T12:00:00+00:00"),
+            )
+            conn.commit()
+
+    def test_export_creates_snapshot_db_and_copies_core_tables(self) -> None:
+        import sqlite3
+
+        import export_research_snapshot as ers
+
+        self.seed_signal_history()
+        result = ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(self._output_db.exists())
+        self.assertEqual(result["rowCounts"]["scan_runs"], 1)
+        self.assertEqual(result["rowCounts"]["scan_results"], 1)
+        self.assertEqual(result["rowCounts"]["feature_vectors"], 1)
+
+        with sqlite3.connect(self._output_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        self.assertEqual(tables, {"scan_runs", "scan_results", "feature_vectors"})
+
+    def test_feature_vectors_optional_when_missing(self) -> None:
+        import sqlite3
+
+        import export_research_snapshot as ers
+
+        with sqlite3.connect(self._source_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-06-01T12:00:00+00:00", "preset", "gate_runner"),
+            )
+            run_id = conn.execute("SELECT id FROM scan_runs").fetchone()[0]
+            conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, "2026-06-02T12:00:00+00:00", "AAPL", 80.0, "Bullish"),
+            )
+            conn.execute("DROP TABLE IF EXISTS feature_vectors")
+            conn.commit()
+
+        result = ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("feature_vectors", " ".join(result["warnings"]))
+        self.assertNotIn("feature_vectors", result["exportedTables"])
+
+    def test_excluded_tables_not_exported(self) -> None:
+        import sqlite3
+
+        import export_research_snapshot as ers
+
+        self.seed_signal_history()
+        ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        with sqlite3.connect(self._output_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        for excluded in ("research_jobs", "research_job_runs", "backtest_runs", "rule_candidates"):
+            self.assertNotIn(excluded, tables)
+
+    def test_manifest_created_with_row_counts_and_checksum(self) -> None:
+        import json
+
+        import export_research_snapshot as ers
+
+        self.seed_signal_history()
+        result = ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(self._manifest_path.exists())
+        manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        self.assertTrue(manifest["read_only_export"])
+        self.assertEqual(manifest["schema_version"], ers.SNAPSHOT_SCHEMA_VERSION)
+        self.assertEqual(manifest["row_counts"], result["rowCounts"])
+        self.assertEqual(manifest["checksum_sha256"], ers.sha256_file(self._output_db))
+
+    def test_missing_source_db_failure(self) -> None:
+        import export_research_snapshot as ers
+
+        missing = self._root / "missing.db"
+        with self.assertRaises(FileNotFoundError):
+            ers.export_research_snapshot(
+                source_db_path=missing,
+                output_db_path=self._output_db,
+                manifest_file_path=self._manifest_path,
+            )
+
+
+class ResearchSnapshotImporterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import cloud_research_worker as crw
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._root = Path(self._tmpdir.name)
+        self._source_db = self._root / "scout_memory.db"
+        self._snapshot_db = self._root / "research_snapshot.db"
+        self._manifest_path = self._root / "research_snapshot.manifest.json"
+        self._target_db = self._root / "scout_research_cloud.db"
+        os.environ.pop(crw.RESEARCH_DB_PATH_ENV, None)
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._source_db),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        import os
+
+        import cloud_research_worker as crw
+
+        for patcher in self._patchers:
+            patcher.stop()
+        os.environ.pop(crw.RESEARCH_DB_PATH_ENV, None)
+        self._tmpdir.cleanup()
+
+    def build_snapshot(self, *, include_feature_vectors: bool = True) -> None:
+        import memory_store as ms
+
+        ms.init_db()
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-06-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+            ).lastrowid
+            recommendation_id = conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction,
+                    stock_outcome_label, return_5d, return_20d, engine_version, cohort_class
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    "2026-06-02T12:00:00+00:00",
+                    "NVDA",
+                    88.0,
+                    "Bullish",
+                    "WIN",
+                    4.0,
+                    8.0,
+                    "3.0.test",
+                    "actionable",
+                ),
+            ).lastrowid
+            if include_feature_vectors:
+                conn.execute(
+                    """
+                    INSERT INTO feature_vectors (
+                        recommendation_id, scan_id, ticker, sector_name, timestamp
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (recommendation_id, run_id, "NVDA", "Technology", "2026-06-02T12:00:00+00:00"),
+                )
+            conn.commit()
+
+        import export_research_snapshot as ers
+
+        ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._snapshot_db,
+            manifest_file_path=self._manifest_path,
+        )
+
+    def seed_target_research_rows(self) -> None:
+        import os
+
+        import cloud_research_worker as crw
+        import memory_store as ms
+        import research_findings_engine as rfe
+        import rule_candidates_engine as rce
+
+        ms._DB_INITIALIZED = False
+        os.environ[crw.RESEARCH_DB_PATH_ENV] = str(self._target_db)
+        ms.init_db()
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        rfe.create_research_finding(
+            finding_type="system_note",
+            severity="info",
+            title="Preserved finding",
+            description="Should remain after import",
+            confidence="low",
+        )
+        rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Preserved candidate",
+            hypothesis="Keep me",
+            proposed_rule="Keep me",
+            rationale="Keep me",
+            validation_plan="Keep me",
+        )
+
+    def test_imports_scan_tables_and_preserves_research_tables(self) -> None:
+        import sqlite3
+
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        self.seed_target_research_rows()
+        result = irs.import_research_snapshot(
+            snapshot_db_path=self._snapshot_db,
+            target_db_path=self._target_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rowCounts"]["scan_runs"], 1)
+        self.assertEqual(result["rowCounts"]["scan_results"], 1)
+        self.assertGreaterEqual(result["preservedTableCounts"]["research_jobs"], 1)
+        self.assertEqual(result["preservedTableCounts"]["research_findings"], 1)
+        self.assertEqual(result["preservedTableCounts"]["rule_candidates"], 1)
+
+        with sqlite3.connect(self._target_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        self.assertIn("research_jobs", tables)
+        self.assertIn("research_findings", tables)
+        self.assertIn("rule_candidates", tables)
+
+    def test_imports_feature_vectors_when_present(self) -> None:
+        import import_research_snapshot as irs
+
+        self.build_snapshot(include_feature_vectors=True)
+        self.seed_target_research_rows()
+        result = irs.import_research_snapshot(
+            snapshot_db_path=self._snapshot_db,
+            target_db_path=self._target_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertIn("feature_vectors", result["importedTables"])
+        self.assertEqual(result["rowCounts"]["feature_vectors"], 1)
+
+    def test_refuses_scout_memory_db_target(self) -> None:
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        with self.assertRaises(ValueError):
+            irs.import_research_snapshot(
+                snapshot_db_path=self._snapshot_db,
+                target_db_path=self._source_db,
+                manifest_file_path=self._manifest_path,
+            )
+
+    def test_refuses_missing_manifest(self) -> None:
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        with self.assertRaises(FileNotFoundError):
+            irs.import_research_snapshot(
+                snapshot_db_path=self._snapshot_db,
+                target_db_path=self._target_db,
+                manifest_file_path=self._root / "missing.manifest.json",
+            )
+
+    def test_refuses_checksum_mismatch(self) -> None:
+        import json
+
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        manifest["checksum_sha256"] = "0" * 64
+        self._manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            irs.import_research_snapshot(
+                snapshot_db_path=self._snapshot_db,
+                target_db_path=self._target_db,
+                manifest_file_path=self._manifest_path,
+            )
+
+    def test_dry_run_does_not_write(self) -> None:
+        import sqlite3
+
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        self.seed_target_research_rows()
+        with sqlite3.connect(self._target_db) as conn:
+            before_scan_count = conn.execute("SELECT COUNT(*) FROM scan_results").fetchone()[0]
+
+        result = irs.import_research_snapshot(
+            snapshot_db_path=self._snapshot_db,
+            target_db_path=self._target_db,
+            manifest_file_path=self._manifest_path,
+            dry_run=True,
+        )
+        self.assertTrue(result["dryRun"])
+        with sqlite3.connect(self._target_db) as conn:
+            after_scan_count = conn.execute("SELECT COUNT(*) FROM scan_results").fetchone()[0]
+        self.assertEqual(before_scan_count, after_scan_count)
+
+
+class CloudResearchSnapshotWorkflowTests(unittest.TestCase):
+    def test_parse_use_snapshot_artifact(self) -> None:
+        import cloud_research_snapshot_workflow as crsw
+
+        self.assertTrue(crsw.parse_use_snapshot_artifact(True))
+        self.assertTrue(crsw.parse_use_snapshot_artifact("true"))
+        self.assertFalse(crsw.parse_use_snapshot_artifact(False))
+        self.assertFalse(crsw.parse_use_snapshot_artifact("false"))
+        self.assertFalse(crsw.parse_use_snapshot_artifact(None))
+
+    def test_resolve_snapshot_bundle_prefers_manifest_json_name(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_snapshot_workflow as crsw
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = Path(tmpdir)
+            (bundle / crsw.SNAPSHOT_DB_FILENAME).write_bytes(b"sqlite")
+            (bundle / "research_snapshot_manifest.json").write_text("{}", encoding="utf-8")
+            resolved = crsw.resolve_snapshot_bundle(bundle)
+            self.assertEqual(resolved["manifestPath"].name, "research_snapshot_manifest.json")
+
+    def test_resolve_snapshot_bundle_accepts_export_manifest_name(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_snapshot_workflow as crsw
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = Path(tmpdir)
+            (bundle / crsw.SNAPSHOT_DB_FILENAME).write_bytes(b"sqlite")
+            (bundle / "research_snapshot.manifest.json").write_text("{}", encoding="utf-8")
+            resolved = crsw.resolve_snapshot_bundle(bundle)
+            self.assertEqual(resolved["manifestPath"].name, "research_snapshot.manifest.json")
+
+    def test_build_import_command(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_snapshot_workflow as crsw
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = Path(tmpdir)
+            target = bundle / "scout_research_cloud.db"
+            (bundle / crsw.SNAPSHOT_DB_FILENAME).write_bytes(b"sqlite")
+            (bundle / "research_snapshot_manifest.json").write_text("{}", encoding="utf-8")
+            command = crsw.build_import_command(bundle_dir=bundle, target_db_path=target)
+            self.assertIn("import_research_snapshot.py", command[1])
+            self.assertIn("--snapshot", command)
+            self.assertIn("--manifest", command)
+            self.assertIn("--target", command)
 
 
 if __name__ == "__main__":

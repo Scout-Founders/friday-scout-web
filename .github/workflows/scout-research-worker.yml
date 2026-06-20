@@ -12,12 +12,22 @@ on:
         required: false
         type: boolean
         default: false
+      use_snapshot_artifact:
+        description: Import scout-research-snapshot artifact before running research
+        required: false
+        type: boolean
+        default: false
+      snapshot_artifact_run_id:
+        description: Run ID containing scout-research-snapshot (defaults to current run)
+        required: false
+        default: ""
   schedule:
     # Weekday mornings at 14:00 UTC (~6 AM US Pacific during standard time).
     - cron: "0 14 * * 1-5"
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: scout-cloud-research-worker
@@ -30,6 +40,8 @@ jobs:
     env:
       SCOUT_RESEARCH_WORKER_SECRET: ${{ secrets.SCOUT_RESEARCH_WORKER_SECRET }}
       SCOUT_CLOUD_RESEARCH_ENABLED: ${{ secrets.SCOUT_CLOUD_RESEARCH_ENABLED }}
+      SCOUT_RESEARCH_DB_PATH: scout-gates-sandbox/scout_research_cloud.db
+      SNAPSHOT_BUNDLE_DIR: scout-gates-sandbox/snapshot-bundle
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,9 +60,33 @@ jobs:
           restore-keys: |
             scout-research-cloud-db-v1-${{ github.repository }}-
 
+      - name: Download research snapshot artifact from current run
+        if: inputs.use_snapshot_artifact == true && inputs.snapshot_artifact_run_id == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: scout-research-snapshot
+          path: ${{ env.SNAPSHOT_BUNDLE_DIR }}
+
+      - name: Download research snapshot artifact from run id
+        if: inputs.use_snapshot_artifact == true && inputs.snapshot_artifact_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: scout-research-snapshot
+          path: ${{ env.SNAPSHOT_BUNDLE_DIR }}
+          run-id: ${{ inputs.snapshot_artifact_run_id }}
+
+      - name: Import research snapshot into cloud DB
+        if: inputs.use_snapshot_artifact == true
+        run: |
+          set -euo pipefail
+          python3 scout-gates-sandbox/cloud_research_snapshot_workflow.py validate-bundle \
+            --bundle-dir "${SNAPSHOT_BUNDLE_DIR}"
+          python3 scout-gates-sandbox/import_research_snapshot.py \
+            --snapshot "${SNAPSHOT_BUNDLE_DIR}/research_snapshot.db" \
+            --manifest "$(python3 scout-gates-sandbox/cloud_research_snapshot_workflow.py manifest-path --bundle-dir "${SNAPSHOT_BUNDLE_DIR}")" \
+            --target "${SCOUT_RESEARCH_DB_PATH}"
+
       - name: Run scheduled research worker
-        env:
-          SCOUT_RESEARCH_DB_PATH: scout-gates-sandbox/scout_research_cloud.db
         run: |
           set -euo pipefail
           ARGS=(scout-gates-sandbox/scheduled_research_runner.py --cloud-worker)

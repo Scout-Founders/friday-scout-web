@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scout Rule Candidates</title>
+  <style>
+    :root {
+      --bg: #06080f;
+      --panel: #0d1220;
+      --panel-soft: #141c2e;
+      --border: #1a2540;
+      --text: #edf2fa;
+      --muted: #7b8ca8;
+      --accent: #a78bfa;
+      --accent-soft: #a78bfa22;
+      --danger: #ff3b5c;
+      --warning: #ffb836;
+      --info: #5b9dff;
+      --success: #00e5a0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #a78bfa18, transparent 34rem),
+        radial-gradient(circle at top right, #6366f118, transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .shell { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    .eyebrow {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 8px; font-size: clamp(32px, 6vw, 56px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 28px; }
+    .top-nav a, .button {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #070b14;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    .top-nav a.active, .button.primary { color: var(--text); border-color: #4c3f66; background: var(--accent-soft); }
+    .card {
+      background: linear-gradient(180deg, var(--panel-soft), var(--panel));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .status { color: var(--muted); margin-bottom: 16px; min-height: 1.4em; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .metric {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0a101c;
+      color: var(--text);
+      font: inherit;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .pill.proposed { color: var(--accent); border-color: #4c3f66; background: #15101f; }
+    .pill.testing { color: var(--warning); border-color: #5f4a1f; background: #201a0d; }
+    .pill.validated { color: var(--success); border-color: #1f5f49; background: #0d2018; }
+    .pill.rejected { color: var(--danger); border-color: #5f1f2f; background: #201018; }
+    .pill.archived { color: var(--muted); }
+    .pill.direction_filter, .pill.sector_filter, .pill.gate_weight_candidate,
+    .pill.trend_override, .pill.risk_filter, .pill.system_note { color: var(--info); }
+    .candidate-list { display: grid; gap: 14px; }
+    .candidate-card {
+      background: #0a101c;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .candidate-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .candidate-title { font-size: 18px; font-weight: 700; margin: 0 0 8px; }
+    .candidate-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .candidate-body { color: var(--muted); line-height: 1.55; font-size: 14px; }
+    .candidate-section { margin-top: 12px; }
+    .candidate-section strong {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .metrics-block {
+      margin: 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #070b14;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .candidate-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .button.small { padding: 7px 11px; font-size: 12px; }
+    .button:disabled { opacity: 0.55; cursor: wait; }
+    .empty-state { color: var(--muted); padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Research Hypothesis Layer</div>
+    <h1>Rule Candidates</h1>
+    <p class="lede">
+      Review rule-change hypotheses generated from research findings. Status updates are manual review
+      actions only. No live rule changes, no gate weight changes, and no automatic validation or
+      application.
+    </p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <a href="/">Scout Gate Sandbox</a>
+      <a href="/research">Research Memory</a>
+      <a href="/backtest">Backtesting</a>
+      <a href="/research-queue">Research Queue</a>
+      <a href="/research-findings">Research Findings</a>
+      <a class="active" href="/rule-candidates">Rule Candidates</a>
+      <a href="/rule-validations">Rule Validations</a>
+      <a href="/research-intelligence">Research Intelligence</a>
+      <a href="/control">Scout Horizon-1</a>
+    </nav>
+
+    <div class="status" id="status">Loading rule candidates...</div>
+
+    <section class="card">
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="metric">
+          <div class="metric-label">Proposed</div>
+          <div class="metric-value" id="metric-proposed">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Testing</div>
+          <div class="metric-value" id="metric-testing">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Validated</div>
+          <div class="metric-value" id="metric-validated">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Rejected</div>
+          <div class="metric-value" id="metric-rejected">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Filters & Actions</h2>
+      <p class="hint">Filter stored candidates or generate new hypotheses from open research findings.</p>
+      <div class="filters">
+        <div>
+          <label for="filter-status">Status</label>
+          <select id="filter-status">
+            <option value="">All statuses</option>
+            <option value="proposed">Proposed</option>
+            <option value="testing">Testing</option>
+            <option value="validated">Validated</option>
+            <option value="rejected">Rejected</option>
+            <option value="archived">Archived</option>
+          </select>
+        </div>
+        <div>
+          <label for="filter-candidate-type">Candidate Type</label>
+          <select id="filter-candidate-type">
+            <option value="">All candidate types</option>
+            <option value="direction_filter">Direction Filter</option>
+            <option value="sector_filter">Sector Filter</option>
+            <option value="gate_weight_candidate">Gate Weight Candidate</option>
+            <option value="trend_override">Trend Override</option>
+            <option value="risk_filter">Risk Filter</option>
+            <option value="system_note">System Note</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="button primary" id="generate-button" type="button">Generate From Open Findings</button>
+        <button class="button" id="refresh-button" type="button">Refresh</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Candidates</h2>
+      <div class="candidate-list" id="candidates-list">
+        <div class="empty-state">Loading candidates...</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    let allCandidates = [];
+
+    function formatDate(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function formatLabel(value) {
+      if (!value) return "—";
+      return String(value).replace(/_/g, " ");
+    }
+
+    function pill(value) {
+      const normalized = String(value || "unknown").toLowerCase();
+      return `<span class="pill ${normalized}">${formatLabel(value)}</span>`;
+    }
+
+    function renderJsonBlock(payload) {
+      const data = payload && typeof payload === "object" ? payload : {};
+      const keys = Object.keys(data);
+      if (!keys.length) return `<div class="metrics-block">—</div>`;
+      const lines = keys.map((key) => {
+        const value = data[key];
+        const rendered = typeof value === "object" ? JSON.stringify(value) : String(value);
+        return `${key}: ${rendered}`;
+      });
+      return `<pre class="metrics-block">${lines.join("\n")}</pre>`;
+    }
+
+    function renderSummaryCards(candidates) {
+      document.getElementById("metric-proposed").textContent = String(
+        candidates.filter((candidate) => candidate.status === "proposed").length
+      );
+      document.getElementById("metric-testing").textContent = String(
+        candidates.filter((candidate) => candidate.status === "testing").length
+      );
+      document.getElementById("metric-validated").textContent = String(
+        candidates.filter((candidate) => candidate.status === "validated").length
+      );
+      document.getElementById("metric-rejected").textContent = String(
+        candidates.filter((candidate) => candidate.status === "rejected").length
+      );
+    }
+
+    function applyFilters(candidates) {
+      const status = document.getElementById("filter-status").value;
+      const candidateType = document.getElementById("filter-candidate-type").value;
+      return candidates.filter((candidate) => {
+        if (status && candidate.status !== status) return false;
+        if (candidateType && candidate.candidateType !== candidateType) return false;
+        return true;
+      });
+    }
+
+    function renderCandidatesList(candidates) {
+      const listEl = document.getElementById("candidates-list");
+      if (!candidates.length) {
+        listEl.innerHTML = `<div class="empty-state">No candidates match the current filters.</div>`;
+        return;
+      }
+
+      listEl.innerHTML = candidates.map((candidate) => {
+        const statusActions = [];
+        if (candidate.status !== "testing") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="testing" data-candidate-id="${candidate.id}">
+              Mark Testing
+            </button>`);
+        }
+        if (candidate.status !== "validated") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="validated" data-candidate-id="${candidate.id}">
+              Mark Validated
+            </button>`);
+        }
+        if (candidate.status !== "rejected") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="rejected" data-candidate-id="${candidate.id}">
+              Reject
+            </button>`);
+        }
+        if (candidate.status !== "archived") {
+          statusActions.push(`
+            <button class="button small" type="button" data-status-action="archived" data-candidate-id="${candidate.id}">
+              Archive
+            </button>`);
+        }
+
+        return `
+          <article class="candidate-card">
+            <div class="candidate-header">
+              <div>
+                <h3 class="candidate-title">${candidate.title || "Untitled candidate"}</h3>
+                <div class="candidate-meta">
+                  ${pill(candidate.candidateType)}
+                  ${pill(candidate.status)}
+                </div>
+              </div>
+              <div class="candidate-body">
+                <div>Created: ${formatDate(candidate.createdAt)}</div>
+                <div>Source Finding: ${candidate.sourceFindingId ?? "—"}</div>
+              </div>
+            </div>
+            <div class="candidate-section">
+              <strong>Hypothesis</strong>
+              <div class="candidate-body">${candidate.hypothesis || "—"}</div>
+            </div>
+            <div class="candidate-section">
+              <strong>Proposed Rule</strong>
+              <div class="candidate-body">${candidate.proposedRule || "—"}</div>
+            </div>
+            <div class="candidate-section">
+              <strong>Rationale</strong>
+              <div class="candidate-body">${candidate.rationale || "—"}</div>
+            </div>
+            <div class="candidate-section">
+              <strong>Affected Scope</strong>
+              ${renderJsonBlock(candidate.affectedScope)}
+            </div>
+            <div class="candidate-section">
+              <strong>Supporting Metrics</strong>
+              ${renderJsonBlock(candidate.supportingMetrics)}
+            </div>
+            <div class="candidate-section">
+              <strong>Validation Plan</strong>
+              <div class="candidate-body">${candidate.validationPlan || "—"}</div>
+            </div>
+            <div class="candidate-section">
+              <strong>Validation Result</strong>
+              ${renderJsonBlock(candidate.validationResult)}
+            </div>
+            <div class="candidate-actions">
+              ${statusActions.join("")}
+            </div>
+          </article>`;
+      }).join("");
+
+      document.querySelectorAll("[data-status-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const candidateId = button.getAttribute("data-candidate-id");
+          const nextStatus = button.getAttribute("data-status-action");
+          await updateCandidateStatus(candidateId, nextStatus, button);
+        });
+      });
+    }
+
+    async function loadCandidates() {
+      statusEl.textContent = "Loading rule candidates...";
+      const response = await fetch("/api/rule-candidates?limit=200");
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.message || "Could not load rule candidates.");
+      allCandidates = data.candidates || [];
+      const filteredCandidates = applyFilters(allCandidates);
+      renderSummaryCards(allCandidates);
+      renderCandidatesList(filteredCandidates);
+      statusEl.textContent = `Loaded ${allCandidates.length} candidate(s); showing ${filteredCandidates.length}.`;
+    }
+
+    async function updateCandidateStatus(candidateId, nextStatus, button) {
+      if (button) button.disabled = true;
+      statusEl.textContent = `Updating candidate ${candidateId} to ${formatLabel(nextStatus)}...`;
+      try {
+        const response = await fetch(`/api/rule-candidates/${encodeURIComponent(candidateId)}/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: nextStatus }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Status update failed.");
+        statusEl.textContent = `Candidate ${candidateId} marked ${formatLabel(nextStatus)}.`;
+        await loadCandidates();
+      } catch (error) {
+        statusEl.textContent = `Status update failed: ${error.message || error}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function generateFromOpenFindings(button) {
+      if (button) button.disabled = true;
+      statusEl.textContent = "Generating rule candidates from open findings...";
+      try {
+        const response = await fetch("/api/rule-candidates/generate-open-findings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 20 }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || "Candidate generation failed.");
+        statusEl.textContent = `Generated ${data.generated || 0} candidate(s); skipped ${data.skippedDuplicates || 0} duplicate(s).`;
+        await loadCandidates();
+      } catch (error) {
+        statusEl.textContent = `Candidate generation failed: ${error.message || error}`;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    ["filter-status", "filter-candidate-type"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", () => {
+        const filteredCandidates = applyFilters(allCandidates);
+        renderCandidatesList(filteredCandidates);
+        statusEl.textContent = `Showing ${filteredCandidates.length} of ${allCandidates.length} candidate(s).`;
+      });
+    });
+
+    document.getElementById("refresh-button").addEventListener("click", () => {
+      loadCandidates().catch((error) => {
+        statusEl.textContent = `Refresh failed: ${error.message || error}`;
+      });
+    });
+
+    document.getElementById("generate-button").addEventListener("click", async () => {
+      await generateFromOpenFindings(document.getElementById("generate-button"));
+    });
+
+    loadCandidates().catch((error) => {
+      statusEl.textContent = `Could not load rule candidates: ${error.message || error}`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+name: Scout Research Snapshot Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-snapshot:
+    name: Publish scout-research-snapshot artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate snapshot database file
+        run: |
+          set -euo pipefail
+          test -f scout-gates-sandbox/research_snapshot.db
+
+      - name: Normalize snapshot manifest filename
+        run: |
+          set -euo pipefail
+          if [ -f scout-gates-sandbox/research_snapshot.manifest.json ] && [ ! -f scout-gates-sandbox/research_snapshot_manifest.json ]; then
+            cp scout-gates-sandbox/research_snapshot.manifest.json scout-gates-sandbox/research_snapshot_manifest.json
+          fi
+          test -f scout-gates-sandbox/research_snapshot_manifest.json
+
+      - name: Validate snapshot bundle
+        run: |
+          python3 scout-gates-sandbox/cloud_research_snapshot_workflow.py validate-bundle \
+            --bundle-dir scout-gates-sandbox
+
+      - name: Upload scout-research-snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scout-research-snapshot
+          path: |
+            scout-gates-sandbox/research_snapshot.db
+            scout-gates-sandbox/research_snapshot_manifest.json
+          if-no-files-found: error
+          retention-days: 14
