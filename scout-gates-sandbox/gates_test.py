@@ -3230,5 +3230,192 @@ class CloudResearchWorkerTests(unittest.TestCase):
         self.assertFalse(summary["previewBacktestPersistsRuns"])
 
 
+class ResearchSnapshotExporterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._root = Path(self._tmpdir.name)
+        self._source_db = self._root / "scout_memory.db"
+        self._output_db = self._root / "research_snapshot.db"
+        self._manifest_path = self._root / "research_snapshot.manifest.json"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._source_db),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def seed_signal_history(self) -> None:
+        import memory_store as ms
+
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-06-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+            ).lastrowid
+            recommendation_id = conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction,
+                    stock_outcome_label, return_5d, return_20d, engine_version, cohort_class
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    "2026-06-02T12:00:00+00:00",
+                    "NVDA",
+                    88.0,
+                    "Bullish",
+                    "WIN",
+                    4.0,
+                    8.0,
+                    "3.0.test",
+                    "actionable",
+                ),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO feature_vectors (
+                    recommendation_id, scan_id, ticker, sector_name, timestamp
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (recommendation_id, run_id, "NVDA", "Technology", "2026-06-02T12:00:00+00:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO research_jobs (
+                    name, job_type, filters_json, enabled, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("Excluded Job", "audit", "{}", 1, "2026-06-01T12:00:00+00:00"),
+            )
+            conn.commit()
+
+    def test_export_creates_snapshot_db_and_copies_core_tables(self) -> None:
+        import sqlite3
+
+        import export_research_snapshot as ers
+
+        self.seed_signal_history()
+        result = ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(self._output_db.exists())
+        self.assertEqual(result["rowCounts"]["scan_runs"], 1)
+        self.assertEqual(result["rowCounts"]["scan_results"], 1)
+        self.assertEqual(result["rowCounts"]["feature_vectors"], 1)
+
+        with sqlite3.connect(self._output_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        self.assertEqual(tables, {"scan_runs", "scan_results", "feature_vectors"})
+
+    def test_feature_vectors_optional_when_missing(self) -> None:
+        import sqlite3
+
+        import export_research_snapshot as ers
+
+        with sqlite3.connect(self._source_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_runs (timestamp, universe_mode, pick_mode)
+                VALUES (?, ?, ?)
+                """,
+                ("2026-06-01T12:00:00+00:00", "preset", "gate_runner"),
+            )
+            run_id = conn.execute("SELECT id FROM scan_runs").fetchone()[0]
+            conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, "2026-06-02T12:00:00+00:00", "AAPL", 80.0, "Bullish"),
+            )
+            conn.execute("DROP TABLE IF EXISTS feature_vectors")
+            conn.commit()
+
+        result = ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("feature_vectors", " ".join(result["warnings"]))
+        self.assertNotIn("feature_vectors", result["exportedTables"])
+
+    def test_excluded_tables_not_exported(self) -> None:
+        import sqlite3
+
+        import export_research_snapshot as ers
+
+        self.seed_signal_history()
+        ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        with sqlite3.connect(self._output_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        for excluded in ("research_jobs", "research_job_runs", "backtest_runs", "rule_candidates"):
+            self.assertNotIn(excluded, tables)
+
+    def test_manifest_created_with_row_counts_and_checksum(self) -> None:
+        import json
+
+        import export_research_snapshot as ers
+
+        self.seed_signal_history()
+        result = ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._output_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(self._manifest_path.exists())
+        manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        self.assertTrue(manifest["read_only_export"])
+        self.assertEqual(manifest["schema_version"], ers.SNAPSHOT_SCHEMA_VERSION)
+        self.assertEqual(manifest["row_counts"], result["rowCounts"])
+        self.assertEqual(manifest["checksum_sha256"], ers.sha256_file(self._output_db))
+
+    def test_missing_source_db_failure(self) -> None:
+        import export_research_snapshot as ers
+
+        missing = self._root / "missing.db"
+        with self.assertRaises(FileNotFoundError):
+            ers.export_research_snapshot(
+                source_db_path=missing,
+                output_db_path=self._output_db,
+                manifest_file_path=self._manifest_path,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
