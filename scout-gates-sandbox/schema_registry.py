@@ -346,6 +346,25 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "recommended_next_test": "TEXT",
         },
     },
+    "rule_candidates": {
+        "table": "rule_candidates",
+        "columns": {
+            "id": "INTEGER",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+            "source_finding_id": "INTEGER",
+            "candidate_type": "TEXT",
+            "status": "TEXT",
+            "title": "TEXT",
+            "hypothesis": "TEXT",
+            "proposed_rule": "TEXT",
+            "rationale": "TEXT",
+            "affected_scope_json": "TEXT",
+            "supporting_metrics_json": "TEXT",
+            "validation_plan": "TEXT",
+            "validation_result_json": "TEXT",
+        },
+    },
 }
 
 

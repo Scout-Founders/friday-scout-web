@@ -89,6 +89,11 @@ from research_findings_engine import (
     list_research_findings,
     update_research_finding_status,
 )
+from rule_candidates_engine import (
+    generate_rule_candidates_from_open_findings,
+    list_rule_candidates,
+    update_rule_candidate_status,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -460,6 +465,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if parsed.path == "/api/rule-candidates":
+            params = urllib.parse.parse_qs(parsed.query)
+            status = (params.get("status") or [None])[0]
+            candidate_type = (params.get("candidateType") or params.get("candidate_type") or [None])[0]
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), 500)
+            except ValueError:
+                limit = 100
+            self.send_json(
+                {
+                    "ok": True,
+                    "candidates": list_rule_candidates(
+                        status=status,
+                        candidate_type=candidate_type,
+                        limit=limit,
+                    ),
+                }
+            )
+            return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
             return
@@ -664,6 +688,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Research finding status error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/rule-candidates/generate-open-findings":
+            try:
+                payload = self.read_json()
+                limit = int(payload.get("limit") or 20)
+                self.send_json(generate_rule_candidates_from_open_findings(limit=limit))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Rule candidate generation error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path.startswith("/api/rule-candidates/") and parsed.path.endswith("/status"):
+            candidate_id_text = parsed.path.split("/")[-2]
+            try:
+                candidate_id = int(candidate_id_text)
+            except ValueError:
+                self.send_json(
+                    {"ok": False, "message": "Rule candidate id must be numeric."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                payload = self.read_json()
+                status = str(payload.get("status") or "").strip()
+                self.send_json(update_rule_candidate_status(candidate_id, status))
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Rule candidate status error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return

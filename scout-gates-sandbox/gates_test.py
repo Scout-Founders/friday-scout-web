@@ -2776,6 +2776,153 @@ class ResearchFindingsEngineTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
 
 
+class RuleCandidatesEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "rule_candidates_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def insert_finding(
+        self,
+        *,
+        finding_type: str,
+        title: str,
+        description: str = "Test finding description",
+        supporting_metrics: Optional[dict] = None,
+        related_sectors: Optional[list[str]] = None,
+        related_gates: Optional[list[str]] = None,
+    ) -> int:
+        import research_findings_engine as rfe
+
+        created = rfe.create_research_finding(
+            finding_type=finding_type,
+            severity="warning",
+            title=title,
+            description=description,
+            confidence="medium",
+            supporting_metrics=supporting_metrics or {},
+            related_sectors=related_sectors or [],
+            related_gates=related_gates or [],
+        )
+        return int(created["finding"]["id"])
+
+    def test_create_and_list_rule_candidate(self) -> None:
+        import rule_candidates_engine as rce
+
+        created = rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Manual candidate",
+            hypothesis="Manual hypothesis",
+            proposed_rule="Manual proposed rule",
+            rationale="Manual rationale",
+            validation_plan="Manual validation plan",
+        )
+        self.assertTrue(created["created"])
+        candidates = rce.list_rule_candidates()
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "Manual candidate")
+        self.assertEqual(candidates[0]["status"], "proposed")
+
+    def test_update_rule_candidate_status(self) -> None:
+        import rule_candidates_engine as rce
+
+        created = rce.create_rule_candidate(
+            candidate_type="risk_filter",
+            title="Status test",
+            hypothesis="Status hypothesis",
+            proposed_rule="Status proposed rule",
+            rationale="Status rationale",
+            validation_plan="Status validation plan",
+        )
+        candidate_id = created["candidate"]["id"]
+        updated = rce.update_rule_candidate_status(candidate_id, "testing")
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["candidate"]["status"], "testing")
+
+    def test_direction_failure_candidate_generation(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="direction_failure",
+            title="Bearish signals underperforming",
+            supporting_metrics={"bearishExpectancy": -5.0, "bearishSignalCount": 12},
+        )
+        result = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["candidateType"], "trend_override")
+        self.assertEqual(candidate["title"], "Test bearish trend override")
+
+    def test_leadership_trend_candidate_generation(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="leadership_trend",
+            title="Leadership cohort favors bullish exposure over bearish calls",
+            supporting_metrics={
+                "groupId": "ai_infrastructure",
+                "groupLabel": "AI Infrastructure Stocks",
+            },
+            related_sectors=["AI Infrastructure Stocks"],
+        )
+        result = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["candidateType"], "direction_filter")
+        self.assertEqual(candidate["title"], "Test leadership bearish suppression")
+
+    def test_gate_strength_candidate_generation(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="gate_strength",
+            title="SPECTER showing positive expectancy",
+            supporting_metrics={"gateCode": "SPECTER", "expectancy": 4.5, "signalCount": 15},
+            related_gates=["SPECTER"],
+        )
+        result = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generated"], 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["candidateType"], "gate_weight_candidate")
+        self.assertEqual(candidate["title"], "Test SPECTER emphasis")
+
+    def test_duplicate_prevention(self) -> None:
+        import rule_candidates_engine as rce
+
+        finding_id = self.insert_finding(
+            finding_type="gate_strength",
+            title="SPECTER showing positive expectancy",
+            related_gates=["SPECTER"],
+        )
+        first = rce.generate_rule_candidates_from_finding(finding_id)
+        second = rce.generate_rule_candidates_from_finding(finding_id)
+        self.assertEqual(first["generated"], 1)
+        self.assertEqual(second["generated"], 0)
+        self.assertEqual(second["skippedDuplicates"], 1)
+        candidates = rce.list_rule_candidates(candidate_type="gate_weight_candidate")
+        self.assertEqual(len(candidates), 1)
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile
