@@ -1633,6 +1633,47 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertAlmostEqual(neutral["avg_stock_return"], 0.5, places=2)
         self.assertAlmostEqual(neutral["expectancy"], 0.5, places=2)
 
+    def test_sector_audit_selects_worst_sector_by_avg_signal_return(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": "AAA",
+                    "direction": "Bullish",
+                    "sector": "TECHNOLOGY",
+                    "outcome_label": "WIN",
+                    "return_20d": 10.0,
+                    "recommendation_id": 1,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "BBB",
+                    "direction": "Bearish",
+                    "sector": "HEALTHCARE",
+                    "outcome_label": "LOSS",
+                    "return_20d": 5.0,
+                    "recommendation_id": 2,
+                }
+            ),
+            be.attach_return_fields(
+                {
+                    "ticker": "CCC",
+                    "direction": "Bearish",
+                    "sector": "SEMICONDUCTORS",
+                    "outcome_label": "LOSS",
+                    "return_20d": 20.0,
+                    "recommendation_id": 3,
+                }
+            ),
+        ]
+        audit = be.compute_sector_audit(signals)
+        worst = audit["worst_sector"]
+        self.assertEqual(worst["sector"], "SEMICONDUCTORS")
+        self.assertAlmostEqual(worst["avg_signal_return"], -20.0, places=2)
+        self.assertAlmostEqual(worst["avg_stock_return"], 20.0, places=2)
+
     def test_sector_audit_highlights_worst_sector_and_losers(self) -> None:
         import backtest_engine as be
 
@@ -1644,6 +1685,8 @@ class BacktestEngineTests(unittest.TestCase):
                     "sector": "SEMICONDUCTORS",
                     "outcome_label": "LOSS",
                     "return_20d": 46.0,
+                    "universe_preset_id": "mega_cap",
+                    "cohort_class": "actionable",
                     "recommendation_id": 1,
                 }
             ),
@@ -1654,6 +1697,8 @@ class BacktestEngineTests(unittest.TestCase):
                     "sector": "SEMICONDUCTORS",
                     "outcome_label": "LOSS",
                     "return_20d": 39.0,
+                    "universe_preset_id": "mega_cap",
+                    "cohort_class": "actionable",
                     "recommendation_id": 2,
                 }
             ),
@@ -1676,8 +1721,35 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertAlmostEqual(worst["avg_stock_return"], 42.5, places=2)
         self.assertEqual(len(worst["top_losing_tickers"]), 2)
         self.assertEqual(worst["top_losing_tickers"][0]["ticker"], "AMD")
+        self.assertAlmostEqual(worst["top_losing_tickers"][0]["stock_return"], 46.0, places=2)
         self.assertAlmostEqual(worst["top_losing_tickers"][0]["signal_return"], -46.0, places=2)
         self.assertEqual(worst["top_losing_tickers"][0]["outcome_label"], "LOSS")
+        self.assertEqual(worst["top_losing_tickers"][0]["preset_cohort"], "mega_cap / actionable")
+
+    def test_sector_audit_top_losing_tickers_limited_to_five(self) -> None:
+        import backtest_engine as be
+
+        signals = [
+            be.attach_return_fields(
+                {
+                    "ticker": f"T{i}",
+                    "direction": "Bearish",
+                    "sector": "SEMICONDUCTORS",
+                    "outcome_label": "LOSS",
+                    "return_20d": float(i),
+                    "recommendation_id": i,
+                }
+            )
+            for i in range(1, 7)
+        ]
+        audit = be.compute_sector_audit(signals)
+        worst = audit["worst_sector"]
+        self.assertEqual(worst["sector"], "SEMICONDUCTORS")
+        self.assertEqual(len(worst["top_losing_tickers"]), 5)
+        self.assertEqual(worst["top_losing_tickers"][0]["ticker"], "T6")
+        self.assertAlmostEqual(worst["top_losing_tickers"][0]["signal_return"], -6.0, places=2)
+        self.assertAlmostEqual(worst["top_losing_tickers"][0]["stock_return"], 6.0, places=2)
+        self.assertEqual(worst["top_losing_tickers"][4]["ticker"], "T2")
 
     def test_trade_audit_sorts_by_signal_return_ascending(self) -> None:
         import backtest_engine as be

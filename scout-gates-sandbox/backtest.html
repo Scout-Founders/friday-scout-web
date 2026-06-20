@@ -298,13 +298,17 @@
     </section>
 
     <section class="card" id="sector-audit-section" hidden>
-      <h2>Sector Audit</h2>
-      <p class="hint">Worst-performing sector in the current backtest sample, ranked by average signal return.</p>
+      <h2>Sector Failure Audit</h2>
+      <p class="hint">
+        Worst-performing sector in the current preview, saved run, or newly created backtest sample,
+        ranked by average signal return. Signal return is direction-adjusted P&amp;L; stock return is
+        raw underlying movement.
+      </p>
       <div class="audit-panel">
         <h3 id="audit-sector-name">—</h3>
         <div class="audit-grid">
           <div class="audit-metric">
-            <div class="metric-label">Signals</div>
+            <div class="metric-label">Signal Count</div>
             <div class="metric-value" id="audit-signal-count">—</div>
           </div>
           <div class="audit-metric">
@@ -326,13 +330,14 @@
             <tr>
               <th>Ticker</th>
               <th>Direction</th>
-              <th>Signal Return</th>
               <th>Stock Return</th>
-              <th>Outcome</th>
+              <th>Signal Return</th>
+              <th>Outcome Label</th>
+              <th>Preset / Cohort</th>
             </tr>
           </thead>
           <tbody id="audit-losing-tickers-body">
-            <tr><td colspan="5">No losing tickers available.</td></tr>
+            <tr><td colspan="6">Preview, run, or load a backtest to populate sector failure audit.</td></tr>
           </tbody>
         </table>
       </div>
@@ -508,12 +513,19 @@
 
     function renderSectorAudit(audit) {
       const section = document.getElementById("sector-audit-section");
+      section.hidden = false;
       const worst = audit && audit.worst_sector;
       if (!worst) {
-        section.hidden = true;
+        document.getElementById("audit-sector-name").textContent = "—";
+        document.getElementById("audit-signal-count").textContent = "—";
+        document.getElementById("audit-win-rate").textContent = "—";
+        document.getElementById("audit-signal-return").textContent = "—";
+        document.getElementById("audit-stock-return").textContent = "—";
+        document.getElementById("audit-losing-tickers-body").innerHTML =
+          `<tr><td colspan="6">No sector failure audit available for the current sample.</td></tr>`;
         return;
       }
-      section.hidden = false;
+
       document.getElementById("audit-sector-name").textContent = worst.sector || "Unknown";
       document.getElementById("audit-signal-count").textContent = String(worst.signal_count ?? 0);
       document.getElementById("audit-win-rate").textContent = formatPct(worst.win_rate);
@@ -526,11 +538,12 @@
             <tr>
               <td>${row.ticker || "—"}</td>
               <td>${row.direction || "—"}</td>
-              <td>${formatReturn(row.signal_return)}</td>
               <td>${formatReturn(row.stock_return)}</td>
+              <td>${formatReturn(row.signal_return)}</td>
               <td>${row.outcome_label || "—"}</td>
+              <td>${row.preset_cohort || "—"}</td>
             </tr>`).join("")
-        : `<tr><td colspan="5">No losing tickers available.</td></tr>`;
+        : `<tr><td colspan="6">No losing tickers available.</td></tr>`;
     }
 
     function formatScore(value) {

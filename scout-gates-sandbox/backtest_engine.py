@@ -646,6 +646,7 @@ def audit_ticker_row(signal: dict[str, Any]) -> dict[str, Any]:
         "stock_return": signal.get("stock_return"),
         "signal_return": signal_return_value(signal),
         "outcome_label": signal.get("outcome_label"),
+        "preset_cohort": preset_cohort_label(signal),
         "recommendation_id": signal.get("recommendation_id"),
         "timestamp": signal.get("timestamp"),
     }
