@@ -3417,5 +3417,224 @@ class ResearchSnapshotExporterTests(unittest.TestCase):
             )
 
 
+class ResearchSnapshotImporterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import cloud_research_worker as crw
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._root = Path(self._tmpdir.name)
+        self._source_db = self._root / "scout_memory.db"
+        self._snapshot_db = self._root / "research_snapshot.db"
+        self._manifest_path = self._root / "research_snapshot.manifest.json"
+        self._target_db = self._root / "scout_research_cloud.db"
+        os.environ.pop(crw.RESEARCH_DB_PATH_ENV, None)
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._source_db),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        import os
+
+        import cloud_research_worker as crw
+
+        for patcher in self._patchers:
+            patcher.stop()
+        os.environ.pop(crw.RESEARCH_DB_PATH_ENV, None)
+        self._tmpdir.cleanup()
+
+    def build_snapshot(self, *, include_feature_vectors: bool = True) -> None:
+        import memory_store as ms
+
+        ms.init_db()
+        with ms.connect() as conn:
+            run_id = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    timestamp, universe_mode, pick_mode, cohort_class, scan_purpose
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("2026-06-01T12:00:00+00:00", "preset", "gate_runner", "actionable", "cohort_baseline"),
+            ).lastrowid
+            recommendation_id = conn.execute(
+                """
+                INSERT INTO scan_results (
+                    run_id, timestamp, ticker, scout_score, final_direction,
+                    stock_outcome_label, return_5d, return_20d, engine_version, cohort_class
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    "2026-06-02T12:00:00+00:00",
+                    "NVDA",
+                    88.0,
+                    "Bullish",
+                    "WIN",
+                    4.0,
+                    8.0,
+                    "3.0.test",
+                    "actionable",
+                ),
+            ).lastrowid
+            if include_feature_vectors:
+                conn.execute(
+                    """
+                    INSERT INTO feature_vectors (
+                        recommendation_id, scan_id, ticker, sector_name, timestamp
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (recommendation_id, run_id, "NVDA", "Technology", "2026-06-02T12:00:00+00:00"),
+                )
+            conn.commit()
+
+        import export_research_snapshot as ers
+
+        ers.export_research_snapshot(
+            source_db_path=self._source_db,
+            output_db_path=self._snapshot_db,
+            manifest_file_path=self._manifest_path,
+        )
+
+    def seed_target_research_rows(self) -> None:
+        import os
+
+        import cloud_research_worker as crw
+        import memory_store as ms
+        import research_findings_engine as rfe
+        import rule_candidates_engine as rce
+
+        ms._DB_INITIALIZED = False
+        os.environ[crw.RESEARCH_DB_PATH_ENV] = str(self._target_db)
+        ms.init_db()
+        import research_job_runner as rjr
+
+        rjr.create_default_research_jobs()
+        rfe.create_research_finding(
+            finding_type="system_note",
+            severity="info",
+            title="Preserved finding",
+            description="Should remain after import",
+            confidence="low",
+        )
+        rce.create_rule_candidate(
+            candidate_type="system_note",
+            title="Preserved candidate",
+            hypothesis="Keep me",
+            proposed_rule="Keep me",
+            rationale="Keep me",
+            validation_plan="Keep me",
+        )
+
+    def test_imports_scan_tables_and_preserves_research_tables(self) -> None:
+        import sqlite3
+
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        self.seed_target_research_rows()
+        result = irs.import_research_snapshot(
+            snapshot_db_path=self._snapshot_db,
+            target_db_path=self._target_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rowCounts"]["scan_runs"], 1)
+        self.assertEqual(result["rowCounts"]["scan_results"], 1)
+        self.assertGreaterEqual(result["preservedTableCounts"]["research_jobs"], 1)
+        self.assertEqual(result["preservedTableCounts"]["research_findings"], 1)
+        self.assertEqual(result["preservedTableCounts"]["rule_candidates"], 1)
+
+        with sqlite3.connect(self._target_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        self.assertIn("research_jobs", tables)
+        self.assertIn("research_findings", tables)
+        self.assertIn("rule_candidates", tables)
+
+    def test_imports_feature_vectors_when_present(self) -> None:
+        import import_research_snapshot as irs
+
+        self.build_snapshot(include_feature_vectors=True)
+        self.seed_target_research_rows()
+        result = irs.import_research_snapshot(
+            snapshot_db_path=self._snapshot_db,
+            target_db_path=self._target_db,
+            manifest_file_path=self._manifest_path,
+        )
+        self.assertIn("feature_vectors", result["importedTables"])
+        self.assertEqual(result["rowCounts"]["feature_vectors"], 1)
+
+    def test_refuses_scout_memory_db_target(self) -> None:
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        with self.assertRaises(ValueError):
+            irs.import_research_snapshot(
+                snapshot_db_path=self._snapshot_db,
+                target_db_path=self._source_db,
+                manifest_file_path=self._manifest_path,
+            )
+
+    def test_refuses_missing_manifest(self) -> None:
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        with self.assertRaises(FileNotFoundError):
+            irs.import_research_snapshot(
+                snapshot_db_path=self._snapshot_db,
+                target_db_path=self._target_db,
+                manifest_file_path=self._root / "missing.manifest.json",
+            )
+
+    def test_refuses_checksum_mismatch(self) -> None:
+        import json
+
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        manifest["checksum_sha256"] = "0" * 64
+        self._manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            irs.import_research_snapshot(
+                snapshot_db_path=self._snapshot_db,
+                target_db_path=self._target_db,
+                manifest_file_path=self._manifest_path,
+            )
+
+    def test_dry_run_does_not_write(self) -> None:
+        import sqlite3
+
+        import import_research_snapshot as irs
+
+        self.build_snapshot()
+        self.seed_target_research_rows()
+        with sqlite3.connect(self._target_db) as conn:
+            before_scan_count = conn.execute("SELECT COUNT(*) FROM scan_results").fetchone()[0]
+
+        result = irs.import_research_snapshot(
+            snapshot_db_path=self._snapshot_db,
+            target_db_path=self._target_db,
+            manifest_file_path=self._manifest_path,
+            dry_run=True,
+        )
+        self.assertTrue(result["dryRun"])
+        with sqlite3.connect(self._target_db) as conn:
+            after_scan_count = conn.execute("SELECT COUNT(*) FROM scan_results").fetchone()[0]
+        self.assertEqual(before_scan_count, after_scan_count)
+
+
 if __name__ == "__main__":
     unittest.main()
