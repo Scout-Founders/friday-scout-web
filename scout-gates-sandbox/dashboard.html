@@ -674,6 +674,16 @@
       background: var(--danger-soft);
     }
 
+    .gate.caution {
+      border-color: #ffb02055;
+      background: rgba(255, 176, 32, 0.08);
+    }
+
+    .gate.info {
+      border-color: #6ea8fe55;
+      background: rgba(110, 168, 254, 0.08);
+    }
+
     .badge {
       display: grid;
       place-items: center;
@@ -697,6 +707,16 @@
       color: var(--danger);
     }
 
+    .caution .badge {
+      background: rgba(255, 176, 32, 0.16);
+      color: #ffb020;
+    }
+
+    .info .badge {
+      background: rgba(110, 168, 254, 0.16);
+      color: #6ea8fe;
+    }
+
     .code,
     .state {
       font-family: "SFMono-Regular", Consolas, monospace;
@@ -710,6 +730,51 @@
 
     .state.fail {
       color: var(--danger);
+    }
+
+    .state.caution {
+      color: #ffb020;
+    }
+
+    .state.info {
+      color: #6ea8fe;
+    }
+
+    .research-master-card {
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #070b14;
+    }
+
+    .research-master-card.approve {
+      border-color: #1fd89555;
+    }
+
+    .research-master-card.caution {
+      border-color: #ffb02055;
+    }
+
+    .research-master-card.insufficient {
+      border-color: #6ea8fe55;
+    }
+
+    .research-master-card h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+    }
+
+    .research-master-card p {
+      margin: 0 0 10px;
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .research-master-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
     }
 
     .name {
@@ -1639,19 +1704,81 @@
       return `Gate ${gate.index} ${gate.code} (${gate.name})`;
     }
 
+    function gateDisplayState(gate) {
+      if (gate.advisory) {
+        return gate.state || "info";
+      }
+      return gate.passed ? "pass" : "fail";
+    }
+
+    function gateDisplayLabel(gate) {
+      if (!gate.advisory) {
+        return gate.passed ? "PASS" : "FAIL";
+      }
+      const verdict = String(gate.verdict || "").toUpperCase();
+      if (verdict === "APPROVE") {
+        return "ADVISE OK";
+      }
+      if (verdict === "CAUTION") {
+        return "CAUTION";
+      }
+      return "LEARNING";
+    }
+
+    function gateDisplayIcon(gate) {
+      const state = gateDisplayState(gate);
+      if (state === "pass") {
+        return "OK";
+      }
+      if (state === "caution") {
+        return "!";
+      }
+      if (state === "info") {
+        return "...";
+      }
+      return "NO";
+    }
+
     function renderGates(gates) {
       return gates.map((gate) => {
-        const state = gate.passed ? "pass" : "fail";
-        const icon = gate.passed ? "OK" : "NO";
+        const state = gateDisplayState(gate);
+        const icon = gateDisplayIcon(gate);
+        const label = gateDisplayLabel(gate);
         return `
           <div class="gate ${state}">
             <div class="badge">${icon}</div>
             <div class="code">${escapeHtml(gate.code)}</div>
-            <div class="state ${state}">${gate.passed ? "PASS" : "FAIL"}</div>
+            <div class="state ${state}">${label}</div>
             <div class="name">${escapeHtml(gate.name)}</div>
           </div>
         `;
       }).join("");
+    }
+
+    function renderResearchMaster(pick) {
+      const advisory = pick.researchMaster;
+      if (!advisory || advisory.enabled === false) {
+        return "";
+      }
+      const verdict = String(advisory.verdict || "INSUFFICIENT_DATA").toLowerCase();
+      const cardClass = verdict.includes("approve")
+        ? "approve"
+        : (verdict.includes("caution") ? "caution" : "insufficient");
+      const reasons = Array.isArray(advisory.reasons) ? advisory.reasons : [];
+      const reasonList = reasons.length
+        ? `<ul>${reasons.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+        : "<p class=\"hint\">No memory flags yet. Save scans and refresh outcomes to strengthen advice.</p>";
+      return `
+        <section class="research-master-card ${cardClass}">
+          <div class="section-title">
+            <h3>Research Master — Gate 15 (Advisory)</h3>
+            <span class="pill">${escapeHtml(advisory.verdict || "N/A")} · ${escapeHtml(advisory.confidence || "low")} confidence</span>
+          </div>
+          <h4>How to handle this pick</h4>
+          <p>${escapeHtml(advisory.handlingAdvice || "No advisory available.")}</p>
+          ${reasonList}
+        </section>
+      `;
     }
 
     function reportButton(ticker) {
@@ -2296,10 +2423,11 @@
             </div>
           </section>
           ${renderEarningsIntelligence(pick)}
+          ${renderResearchMaster(pick)}
 
           <div class="section-title">
             <h3>Full Gate Breakdown</h3>
-            <span class="pill">${pick.gates.filter((gate) => gate.passed).length}/${pick.gates.length} passed</span>
+            <span class="pill">${pick.gates.filter((gate) => gate.passed && !gate.advisory).length}/${pick.gates.filter((gate) => !gate.advisory).length} Scout-Deploy gates passed · Gate 15 advisory</span>
           </div>
           <div class="gates">${renderGates(pick.gates)}</div>
 

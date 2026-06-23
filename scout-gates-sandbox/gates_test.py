@@ -4499,5 +4499,95 @@ class CloudResearchSnapshotWorkflowTests(unittest.TestCase):
             self.assertIn("--target", command)
 
 
+class ResearchMasterTests(unittest.TestCase):
+    def test_advisory_attaches_gate_15_without_changing_pick(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from dashboard import build_run_payload
+        from run_gates import CandidateResult, choose_final_pick
+
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        results = [
+            CandidateResult("NVDA", {"ticker": "NVDA", "scout_score": 91, "direction": "Bullish", "sector": "Technology", "gates": {key: True for key, _, _ in __import__("run_gates").GATES}}),
+            CandidateResult("MSFT", {"ticker": "MSFT", "scout_score": 84, "direction": "Bullish", "sector": "Technology", "gates": {key: True for key, _, _ in __import__("run_gates").GATES}}),
+        ]
+
+        def fake_fetch(_api: str, ticker: str, _timeout: float):
+            for item in results:
+                if item.ticker == ticker:
+                    return item
+            raise RuntimeError(f"missing mock {ticker}")
+
+        with patch.dict(os.environ, {"SCOUT_RESEARCH_MASTER": "1"}):
+            with patch("dashboard.fetch_gate_result", side_effect=fake_fetch):
+                with patch("dashboard.build_earnings_intelligence_for_result", return_value=inactive_ei):
+                    with patch("dashboard.choose_option_contract", return_value=None):
+                        payload = build_run_payload(
+                            {
+                                "universeMode": "custom",
+                                "tickers": "NVDA,MSFT",
+                                "pickMode": "gate_runner",
+                                "timeout": 25,
+                            }
+                        )
+
+        expected = choose_final_pick(results)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["finalPick"]["ticker"], expected.ticker)
+        self.assertEqual(payload["finalPick"]["score"], expected.score)
+        self.assertIn("researchMaster", payload["finalPick"])
+        self.assertEqual(payload["finalPick"]["researchMaster"]["mode"], "advisory")
+        gate_codes = [gate["code"] for gate in payload["finalPick"]["gates"]]
+        self.assertIn("RESEARCH", gate_codes)
+
+    def test_disabled_env_skips_research_master(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from dashboard import build_run_payload
+        from run_gates import CandidateResult
+
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        gate_map = {key: True for key, _, _ in __import__("run_gates").GATES}
+        results = [
+            CandidateResult("NVDA", {"ticker": "NVDA", "scout_score": 91, "direction": "Bullish", "sector": "Technology", "gates": gate_map}),
+        ]
+
+        with patch.dict(os.environ, {"SCOUT_RESEARCH_MASTER": "0"}):
+            with patch("dashboard.fetch_gate_result", side_effect=lambda *_args, **_kwargs: results[0]):
+                with patch("dashboard.build_earnings_intelligence_for_result", return_value=inactive_ei):
+                    with patch("dashboard.choose_option_contract", return_value=None):
+                        payload = build_run_payload(
+                            {
+                                "universeMode": "custom",
+                                "tickers": "NVDA",
+                                "pickMode": "gate_runner",
+                                "timeout": 25,
+                            }
+                        )
+
+        self.assertFalse(payload.get("researchMaster", {}).get("enabled", False))
+        self.assertNotIn("researchMaster", payload["finalPick"])
+
+    def test_evaluate_pick_advisory_returns_handling_advice(self) -> None:
+        from research_master import evaluate_pick_advisory
+
+        advisory = evaluate_pick_advisory(
+            {
+                "ticker": "NVDA",
+                "score": 90,
+                "direction": "Bullish",
+                "sector": "Technology",
+                "passedAllGates": True,
+                "gates": [{"code": "COMPASS", "passed": True}],
+            }
+        )
+        self.assertIn(advisory["verdict"], {"APPROVE", "CAUTION", "INSUFFICIENT_DATA"})
+        self.assertTrue(advisory["handlingAdvice"])
+        self.assertEqual(advisory["mode"], "advisory")
+        self.assertGreaterEqual(len(advisory["fundamentals"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

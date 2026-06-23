@@ -102,6 +102,7 @@ from rule_validation_engine import (
     run_rule_validation,
 )
 from research_intelligence import get_research_intelligence_dashboard
+from research_master import apply_research_master_to_run_payload
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -316,7 +317,7 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     )
     payload = apply_explainability_to_run_payload(payload, explain_context)
     attach_cohort_metadata(payload, request_payload)
-    return payload
+    return apply_research_master_to_run_payload(payload)
 
 
 def build_memory_summary() -> dict[str, Any]:
