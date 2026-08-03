@@ -3794,6 +3794,63 @@ class ScoutDeployBridgeTests(unittest.TestCase):
                 self.assertEqual(raw["price"], 244.12)
 
 
+class ScoutDeployEmailPolicyTests(unittest.TestCase):
+    def test_macro_news_send_days_are_tuesday_wednesday_thursday(self) -> None:
+        from scout_deploy_email_policy import is_macro_news_send_day
+
+        self.assertFalse(is_macro_news_send_day("monday"))
+        self.assertTrue(is_macro_news_send_day("tuesday"))
+        self.assertTrue(is_macro_news_send_day("wednesday"))
+        self.assertTrue(is_macro_news_send_day("thursday"))
+        self.assertFalse(is_macro_news_send_day("friday"))
+
+    def test_outbound_email_policy_blocks_mu_and_record_language(self) -> None:
+        from scout_deploy_email_policy import validate_outbound_email_content
+
+        result = validate_outbound_email_content(
+            subject="Scout note on MU",
+            body="Our trading record and past trades show why Micron matters.",
+        )
+
+        self.assertFalse(result["ok"])
+        names = {row["name"] for row in result["violations"]}
+        self.assertIn("MU ticker", names)
+        self.assertIn("Micron reference", names)
+        self.assertIn("trading record", names)
+        self.assertIn("past trades", names)
+
+    def test_build_macro_news_email_is_neutral_and_policy_safe(self) -> None:
+        from scout_deploy_email_policy import build_macro_news_email
+
+        email = build_macro_news_email(
+            [
+                {
+                    "headline": "Global yields edge higher before central bank remarks",
+                    "summary": "Investors are watching whether policymakers push back on easier financial conditions.",
+                    "marketRelevance": (
+                        "Higher yields can pressure long-duration equities while supporting the dollar."
+                    ),
+                }
+            ],
+            as_of="Wednesday, Aug 5, 2026",
+        )
+
+        self.assertIn("Scout Morning Macro Brief", email["subject"])
+        self.assertIn("Macro snapshot", email["body"])
+        self.assertIn("Market lens", email["body"])
+        self.assertIn("not a trade recommendation", email["body"])
+        self.assertNotIn("MU", email["body"])
+
+    def test_email_contract_exposes_blocked_content(self) -> None:
+        from scout_deploy_email_policy import email_contract
+
+        contract = email_contract()
+        self.assertEqual(contract["reportKind"], "macro_morning_news")
+        self.assertEqual(contract["sendDays"], ["Tuesday", "Wednesday", "Thursday"])
+        self.assertIn("MU ticker", contract["blockedContent"])
+        self.assertIn("win rate", contract["blockedContent"])
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile
