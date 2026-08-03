@@ -3731,6 +3731,68 @@ class ResearchIntelligenceTests(unittest.TestCase):
                 for patcher in patchers:
                     patcher.stop()
 
+class ScoutDeployBridgeTests(unittest.TestCase):
+    def test_build_tracking_payload_from_output_email(self) -> None:
+        from scout_deploy_bridge import build_tracking_payload
+
+        payload = build_tracking_payload(
+            {
+                "subject": "Scout output: Ticker: NVDA",
+                "body": "Direction: Bullish\nScout Score: 91\nEntry Price: $122.50",
+                "generatedAt": "2026-06-20T12:00:00Z",
+            },
+            source_name="output-email.json",
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["source"], "scout_deploy_output_email")
+        self.assertEqual(payload["candidates"], ["NVDA"])
+        self.assertEqual(payload["runTimestamp"], "2026-06-20T12:00:00+00:00")
+        result = payload["results"][0]
+        self.assertEqual(result["ticker"], "NVDA")
+        self.assertEqual(result["direction"], "Bullish")
+        self.assertEqual(result["score"], 91)
+        self.assertEqual(result["price"], 122.5)
+
+    def test_ingest_output_email_payload_saves_memory_row_once(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+        import scout_deploy_bridge as bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "deploy_bridge_test.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                output_email = {
+                    "ticker": "TSLA",
+                    "direction": "bearish",
+                    "score": 84,
+                    "entryPrice": 244.12,
+                    "generatedAt": "2026-06-20T12:00:00Z",
+                    "body": "Scout output email for TSLA.",
+                }
+
+                first = bridge.ingest_output_email_payload(output_email, source_name="scout-deploy")
+                second = bridge.ingest_output_email_payload(output_email, source_name="scout-deploy")
+
+                self.assertTrue(first["ok"])
+                self.assertFalse(first["alreadySaved"])
+                self.assertTrue(second["alreadySaved"])
+                with ms.connect() as conn:
+                    rows = conn.execute(
+                        "SELECT ticker, scout_score, final_direction, raw_result_json FROM scan_results"
+                    ).fetchall()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["ticker"], "TSLA")
+                self.assertEqual(rows[0]["scout_score"], 84)
+                self.assertEqual(rows[0]["final_direction"], "Bearish")
+                raw = ms.json_load(rows[0]["raw_result_json"])
+                self.assertEqual(raw["source"], "scout_deploy_output_email")
+                self.assertEqual(raw["price"], 244.12)
+
 
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
