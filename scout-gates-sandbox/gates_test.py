@@ -3731,6 +3731,125 @@ class ResearchIntelligenceTests(unittest.TestCase):
                 for patcher in patchers:
                     patcher.stop()
 
+class ScoutDeployBridgeTests(unittest.TestCase):
+    def test_build_tracking_payload_from_output_email(self) -> None:
+        from scout_deploy_bridge import build_tracking_payload
+
+        payload = build_tracking_payload(
+            {
+                "subject": "Scout output: Ticker: NVDA",
+                "body": "Direction: Bullish\nScout Score: 91\nEntry Price: $122.50",
+                "generatedAt": "2026-06-20T12:00:00Z",
+            },
+            source_name="output-email.json",
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["source"], "scout_deploy_output_email")
+        self.assertEqual(payload["candidates"], ["NVDA"])
+        self.assertEqual(payload["runTimestamp"], "2026-06-20T12:00:00+00:00")
+        result = payload["results"][0]
+        self.assertEqual(result["ticker"], "NVDA")
+        self.assertEqual(result["direction"], "Bullish")
+        self.assertEqual(result["score"], 91)
+        self.assertEqual(result["price"], 122.5)
+
+    def test_ingest_output_email_payload_saves_memory_row_once(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+        import scout_deploy_bridge as bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "deploy_bridge_test.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                output_email = {
+                    "ticker": "TSLA",
+                    "direction": "bearish",
+                    "score": 84,
+                    "entryPrice": 244.12,
+                    "generatedAt": "2026-06-20T12:00:00Z",
+                    "body": "Scout output email for TSLA.",
+                }
+
+                first = bridge.ingest_output_email_payload(output_email, source_name="scout-deploy")
+                second = bridge.ingest_output_email_payload(output_email, source_name="scout-deploy")
+
+                self.assertTrue(first["ok"])
+                self.assertFalse(first["alreadySaved"])
+                self.assertTrue(second["alreadySaved"])
+                with ms.connect() as conn:
+                    rows = conn.execute(
+                        "SELECT ticker, scout_score, final_direction, raw_result_json FROM scan_results"
+                    ).fetchall()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["ticker"], "TSLA")
+                self.assertEqual(rows[0]["scout_score"], 84)
+                self.assertEqual(rows[0]["final_direction"], "Bearish")
+                raw = ms.json_load(rows[0]["raw_result_json"])
+                self.assertEqual(raw["source"], "scout_deploy_output_email")
+                self.assertEqual(raw["price"], 244.12)
+
+
+class ScoutDeployEmailPolicyTests(unittest.TestCase):
+    def test_macro_news_send_days_are_tuesday_wednesday_thursday(self) -> None:
+        from scout_deploy_email_policy import is_macro_news_send_day
+
+        self.assertFalse(is_macro_news_send_day("monday"))
+        self.assertTrue(is_macro_news_send_day("tuesday"))
+        self.assertTrue(is_macro_news_send_day("wednesday"))
+        self.assertTrue(is_macro_news_send_day("thursday"))
+        self.assertFalse(is_macro_news_send_day("friday"))
+
+    def test_outbound_email_policy_blocks_mu_and_record_language(self) -> None:
+        from scout_deploy_email_policy import validate_outbound_email_content
+
+        result = validate_outbound_email_content(
+            subject="Scout note on MU",
+            body="Our trading record and past trades show why Micron matters.",
+        )
+
+        self.assertFalse(result["ok"])
+        names = {row["name"] for row in result["violations"]}
+        self.assertIn("MU ticker", names)
+        self.assertIn("Micron reference", names)
+        self.assertIn("trading record", names)
+        self.assertIn("past trades", names)
+
+    def test_build_macro_news_email_is_neutral_and_policy_safe(self) -> None:
+        from scout_deploy_email_policy import build_macro_news_email
+
+        email = build_macro_news_email(
+            [
+                {
+                    "headline": "Global yields edge higher before central bank remarks",
+                    "summary": "Investors are watching whether policymakers push back on easier financial conditions.",
+                    "marketRelevance": (
+                        "Higher yields can pressure long-duration equities while supporting the dollar."
+                    ),
+                }
+            ],
+            as_of="Wednesday, Aug 5, 2026",
+        )
+
+        self.assertIn("Scout Morning Macro Brief", email["subject"])
+        self.assertIn("Macro snapshot", email["body"])
+        self.assertIn("Market lens", email["body"])
+        self.assertIn("not a trade recommendation", email["body"])
+        self.assertNotIn("MU", email["body"])
+
+    def test_email_contract_exposes_blocked_content(self) -> None:
+        from scout_deploy_email_policy import email_contract
+
+        contract = email_contract()
+        self.assertEqual(contract["reportKind"], "macro_morning_news")
+        self.assertEqual(contract["sendDays"], ["Tuesday", "Wednesday", "Thursday"])
+        self.assertIn("MU ticker", contract["blockedContent"])
+        self.assertIn("win rate", contract["blockedContent"])
+
 
 class ScoutDailyReportIngestTests(unittest.TestCase):
     def setUp(self) -> None:

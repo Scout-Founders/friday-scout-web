@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -51,6 +52,7 @@ from stable_signal_explainability import (
 )
 from stable_signal_layers import build_and_attach_stable_signal
 from performance_tracker import update_outcomes
+from scout_deploy_bridge import ingest_output_email_payload
 from reporting import (
     DEFAULT_ASYNC_EXPORT,
     ReportConfig,
@@ -994,6 +996,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": False, "message": f"Save Results error: {exc}"},
                     status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/scout-deploy/output-email":
+            try:
+                payload = self.read_json()
+                expected_secret = os.environ.get("SCOUT_DEPLOY_INGEST_SECRET", "").strip()
+                provided_secret = str(
+                    self.headers.get("X-Scout-Deploy-Secret") or payload.get("secret") or ""
+                ).strip()
+                if expected_secret and provided_secret != expected_secret:
+                    self.send_json(
+                        {"ok": False, "message": "Scout-Deploy output email ingest is unauthorized."},
+                        status=HTTPStatus.UNAUTHORIZED,
+                    )
+                    return
+                if "outputEmail" in payload:
+                    output_email = payload["outputEmail"]
+                elif "output_email" in payload:
+                    output_email = payload["output_email"]
+                else:
+                    output_email = {key: value for key, value in payload.items() if key != "secret"}
+                source_name = str(payload.get("sourceName") or payload.get("source") or "").strip() or None
+                self.send_json(ingest_output_email_payload(output_email, source_name=source_name))
+            except ValueError as exc:
+                self.send_json({"ok": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Scout-Deploy output email ingest error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
 
