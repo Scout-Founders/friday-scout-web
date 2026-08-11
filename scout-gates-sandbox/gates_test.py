@@ -3732,6 +3732,239 @@ class ResearchIntelligenceTests(unittest.TestCase):
                     patcher.stop()
 
 
+class ScoutDailyReportIngestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "daily_report_ingest_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def sample_daily_scan_doc(self, report_id: str = "rep-v6-001") -> dict:
+        return {
+            "report_id": report_id,
+            "report_type": "scout_v6",
+            "report_version": "6.0",
+            "market_date": "2026-06-20",
+            "generated_at": "2026-06-20T12:00:00+00:00",
+            "status_prefix": "FINAL",
+            "email_subject": "Scout Daily Report",
+            "raw_report_text": "RAW REPORT TEXT PRESERVE ME",
+            "structured_report_json": {
+                "regime": "risk_on",
+                "leadingSectors": ["Semiconductors", "Technology"],
+                "laggingSectors": ["Healthcare"],
+                "directionalCaution": "Bearish setups under pressure during strong risk-on regime",
+                "tickers": ["NVDA", "MSFT"],
+            },
+            "source_scan_run_id": "scan-123",
+            "claude_model": "claude-test",
+            "email_attempted": True,
+            "email_sent": True,
+            "email_sent_at": "2026-06-20T12:05:00+00:00",
+        }
+
+    def sample_monday_coffee_doc(self, report_id: str = "rep-coffee-001") -> dict:
+        return {
+            "reportId": report_id,
+            "reportType": "Monday Coffee",
+            "marketDate": "2026-06-16",
+            "generatedAt": "2026-06-16T11:00:00+00:00",
+            "rawReportText": "Monday coffee raw text",
+            "structuredReport": {
+                "macroRisks": ["CPI surprise"],
+                "earningsConcentration": ["NVDA"],
+                "activeTradeConcerns": ["Gap risk into open"],
+            },
+        }
+
+    def test_normalize_report_types(self) -> None:
+        import ingest_scout_reports as isr
+
+        self.assertEqual(isr.normalize_report_type("scout_v6"), "daily_scan")
+        self.assertEqual(isr.normalize_report_type("daily_scan"), "daily_scan")
+        self.assertEqual(isr.normalize_report_type("Monday Coffee"), "monday_coffee")
+        self.assertEqual(isr.normalize_report_type("monday-coffee"), "monday_coffee")
+
+    def test_report_ingestion_and_idempotency(self) -> None:
+        import ingest_scout_reports as isr
+
+        first = isr.ingest_scout_report_document(self.sample_daily_scan_doc())
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["action"], "imported")
+        self.assertEqual(first["report"]["rawReportText"], "RAW REPORT TEXT PRESERVE ME")
+        self.assertEqual(first["report"]["reportType"], "daily_scan")
+        self.assertEqual(first["report"]["structuredReport"]["regime"], "risk_on")
+
+        second = isr.ingest_scout_report_document(self.sample_daily_scan_doc())
+        self.assertEqual(second["action"], "updated")
+        reports = isr.list_ingested_daily_reports()
+        self.assertEqual(len(reports), 1)
+
+        batch = isr.ingest_scout_reports(documents=[self.sample_daily_scan_doc()])
+        self.assertEqual(batch["updated"], 1)
+        self.assertEqual(batch["imported"], 0)
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 1)
+
+    def test_monday_coffee_normalization_and_list(self) -> None:
+        import ingest_scout_reports as isr
+
+        result = isr.ingest_scout_report_document(self.sample_monday_coffee_doc())
+        self.assertEqual(result["report"]["reportType"], "monday_coffee")
+        latest = isr.get_latest_ingested_report(report_type="monday_coffee")
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["reportId"], "rep-coffee-001")
+        self.assertEqual(latest["rawReportText"], "Monday coffee raw text")
+
+    def test_finding_generation_and_dedup(self) -> None:
+        import ingest_scout_reports as isr
+        import research_findings_engine as rfe
+
+        isr.ingest_scout_report_document(self.sample_daily_scan_doc())
+        first = isr.generate_findings_from_daily_reports(limit=10)
+        self.assertTrue(first["ok"])
+        self.assertGreater(first["generated"], 0)
+        findings = rfe.list_research_findings(finding_type="daily_report_observation")
+        self.assertGreaterEqual(len(findings), 1)
+        self.assertEqual(findings[0]["supportingMetrics"]["reportId"], "rep-v6-001")
+
+        second = isr.generate_findings_from_daily_reports(limit=10)
+        self.assertEqual(second["generated"], 0)
+        self.assertGreater(second["skippedDuplicates"], 0)
+        self.assertEqual(
+            len(rfe.list_research_findings(finding_type="daily_report_observation")),
+            len(findings),
+        )
+
+    def test_missing_structured_report_json_produces_no_findings(self) -> None:
+        import ingest_scout_reports as isr
+
+        doc = self.sample_daily_scan_doc("rep-empty")
+        doc["structured_report_json"] = {}
+        isr.ingest_scout_report_document(doc)
+        result = isr.generate_findings_from_daily_reports()
+        self.assertEqual(result["generated"], 0)
+
+    def test_firestore_unavailable_graceful_fallback(self) -> None:
+        from unittest.mock import patch
+
+        import ingest_scout_reports as isr
+
+        with patch.object(isr, "firestore_credentials_available", return_value=False):
+            result = isr.ingest_scout_reports(limit=5)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["available"])
+        self.assertIn("unavailable", (result.get("message") or "").lower())
+
+    def test_research_intelligence_daily_report_counts(self) -> None:
+        import ingest_scout_reports as isr
+        import research_intelligence as ri
+
+        isr.ingest_scout_report_document(self.sample_daily_scan_doc())
+        isr.ingest_scout_report_document(self.sample_monday_coffee_doc())
+        isr.generate_findings_from_daily_reports()
+        summary = ri.get_research_intelligence_summary()
+        self.assertEqual(summary["ingestedDailyReports"], 2)
+        self.assertEqual(summary["latestScoutV6ReportDate"], "2026-06-20")
+        self.assertEqual(summary["latestMondayCoffeeDate"], "2026-06-16")
+        self.assertGreater(summary["dailyReportFindingsCount"], 0)
+        dashboard = ri.get_research_intelligence_dashboard()
+        self.assertTrue(dashboard["dailyScoutIntelligence"])
+
+    def test_daily_report_api_endpoints(self) -> None:
+        import json
+        import threading
+        from http.server import ThreadingHTTPServer
+        from unittest.mock import patch
+        import urllib.request
+
+        import ingest_scout_reports as isr
+        from dashboard import DashboardHandler
+
+        isr.ingest_scout_report_document(self.sample_daily_scan_doc())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/research-daily-reports?limit=10") as response:
+                listed = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(listed["ok"])
+            self.assertEqual(len(listed["reports"]), 1)
+
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/research-daily-reports/generate-findings",
+                data=json.dumps({"limit": 10}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req) as response:
+                generated = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(generated["ok"])
+            self.assertGreater(generated["generated"], 0)
+
+            with patch.object(isr, "firestore_credentials_available", return_value=False):
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/research-daily-reports/ingest",
+                    data=json.dumps({"limit": 5}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req) as response:
+                    ingest_payload = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(ingest_payload["ok"])
+            self.assertFalse(ingest_payload["available"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_scheduled_runner_continues_when_ingest_unavailable(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch(
+            "scheduled_research_runner.ingest_daily_reports_if_available",
+            return_value={
+                "ok": True,
+                "available": False,
+                "imported": 0,
+                "updated": 0,
+                "message": "daily report ingest unavailable",
+            },
+        ), patch(
+            "scheduled_research_runner.create_default_research_jobs",
+            return_value={"ok": True, "created": 0},
+        ), patch(
+            "scheduled_research_runner.run_enabled_research_jobs",
+            return_value={"ok": True, "ran": 0, "completed": 0, "failed": 0, "results": []},
+        ), patch(
+            "scheduled_research_runner.generate_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ), patch(
+            "scheduled_research_runner.generate_daily_report_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ):
+            summary = srr.run_scheduled_research()
+        self.assertTrue(summary["ok"])
+        self.assertFalse(summary["dailyReportIngestAvailable"])
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile

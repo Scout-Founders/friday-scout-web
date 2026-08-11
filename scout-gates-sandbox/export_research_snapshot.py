@@ -28,6 +28,8 @@ EXCLUDED_TABLES = frozenset(
         "research_job_runs",
         "research_findings",
         "rule_candidates",
+        "rule_validations",
+        "research_daily_reports",
         "backtest_runs",
         "backtest_signals",
         "backtest_metrics",

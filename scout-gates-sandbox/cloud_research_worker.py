@@ -22,6 +22,9 @@ CLOUD_RESEARCH_WRITE_TABLES = frozenset(
         "research_jobs",
         "research_job_runs",
         "research_findings",
+        "rule_candidates",
+        "rule_validations",
+        "research_daily_reports",
     }
 )
 

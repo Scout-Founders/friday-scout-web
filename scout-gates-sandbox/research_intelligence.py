@@ -87,6 +87,9 @@ def get_research_intelligence_summary() -> dict[str, Any]:
     init_db()
     with connect() as conn:
         _init_stores(conn)
+        from ingest_scout_reports import init_research_daily_reports_store
+
+        init_research_daily_reports_store(conn)
         total_findings = conn.execute("SELECT COUNT(*) FROM research_findings").fetchone()[0]
         open_findings = conn.execute(
             "SELECT COUNT(*) FROM research_findings WHERE status = 'open'"
@@ -105,6 +108,32 @@ def get_research_intelligence_summary() -> dict[str, Any]:
             LIMIT 1
             """
         ).fetchone()
+        ingested_daily_reports = conn.execute(
+            "SELECT COUNT(*) FROM research_daily_reports"
+        ).fetchone()[0]
+        latest_daily_scan = conn.execute(
+            """
+            SELECT market_date FROM research_daily_reports
+            WHERE report_type = 'daily_scan'
+            ORDER BY COALESCE(market_date, generated_at, ingested_at) DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        latest_monday_coffee = conn.execute(
+            """
+            SELECT market_date FROM research_daily_reports
+            WHERE report_type = 'monday_coffee'
+            ORDER BY COALESCE(market_date, generated_at, ingested_at) DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        daily_report_findings = conn.execute(
+            """
+            SELECT COUNT(*) FROM research_findings
+            WHERE finding_type = 'daily_report_observation'
+               OR json_extract(supporting_metrics_json, '$.source') = 'daily_report'
+            """
+        ).fetchone()[0]
 
     highest_validation = None
     if highest is not None:
@@ -123,7 +152,41 @@ def get_research_intelligence_summary() -> dict[str, Any]:
         "ruleCandidates": int(rule_candidates or 0),
         "completedValidations": int(completed_validations or 0),
         "highestConfidenceValidation": highest_validation,
+        "ingestedDailyReports": int(ingested_daily_reports or 0),
+        "latestScoutV6ReportDate": latest_daily_scan["market_date"] if latest_daily_scan else None,
+        "latestMondayCoffeeDate": (
+            latest_monday_coffee["market_date"] if latest_monday_coffee else None
+        ),
+        "dailyReportFindingsCount": int(daily_report_findings or 0),
     }
+
+
+def get_daily_report_findings(limit: int = 10) -> list[dict[str, Any]]:
+    findings = list_research_findings(finding_type="daily_report_observation", limit=200)
+    # Also include any open findings tagged as daily_report source.
+    extras = [
+        finding
+        for finding in list_research_findings(limit=200)
+        if (finding.get("supportingMetrics") or {}).get("source") == "daily_report"
+        and finding.get("findingType") != "daily_report_observation"
+    ]
+    combined = findings + extras
+    ranked = sorted(combined, key=_finding_sort_key)
+    bounded = min(max(int(limit), 1), 50)
+    return [
+        {
+            "id": finding["id"],
+            "title": finding["title"],
+            "findingType": finding["findingType"],
+            "severity": finding["severity"],
+            "confidence": finding["confidence"],
+            "reportType": (finding.get("supportingMetrics") or {}).get("reportType"),
+            "marketDate": (finding.get("supportingMetrics") or {}).get("marketDate"),
+            "reportId": (finding.get("supportingMetrics") or {}).get("reportId"),
+            "recommendedNextTest": finding.get("recommendedNextTest"),
+        }
+        for finding in ranked[:bounded]
+    ]
 
 
 def get_top_findings(limit: int = 10) -> list[dict[str, Any]]:
@@ -494,4 +557,5 @@ def get_research_intelligence_dashboard() -> dict[str, Any]:
         "recurringSuccessPatterns": get_recurring_success_patterns(limit=10),
         "recurringFailurePatterns": get_recurring_failure_patterns(limit=10),
         "recommendedNextExperiments": get_recommended_next_experiments(limit=10),
+        "dailyScoutIntelligence": get_daily_report_findings(limit=10),
     }
