@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import Head from "next/head";
+import Footer from "../components/Footer";
 
 const API = "https://us-central1-scout-493918.cloudfunctions.net/friday-scout";
 
@@ -555,12 +556,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Disclaimer */}
-            <div style={{ textAlign: "center", padding: 20, borderRadius: 14, background: COLORS.surfaceLight, border: `1px solid ${COLORS.border}` }}>
-              <p style={{ fontSize: 11, color: COLORS.textDim, lineHeight: 1.8, margin: 0 }}>
-                Scout provides analysis for educational purposes only. This is not financial advice. All trading involves risk of loss. Past performance does not guarantee future results. You are solely responsible for your trading decisions.
-              </p>
-            </div>
+            <Footer colors={COLORS} />
           </div>
         )}
 
