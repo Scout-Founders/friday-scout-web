@@ -331,6 +331,9 @@ def init_db() -> None:
         from rule_validation_engine import init_rule_validations_store
 
         init_rule_validations_store(conn)
+        from ingest_scout_reports import init_research_daily_reports_store
+
+        init_research_daily_reports_store(conn)
         ensure_performance_indexes(conn)
     _DB_INITIALIZED = True
 

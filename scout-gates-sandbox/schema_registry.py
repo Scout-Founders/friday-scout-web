@@ -392,6 +392,30 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "validation_details_json": "TEXT",
         },
     },
+    "research_daily_reports": {
+        "table": "research_daily_reports",
+        "columns": {
+            "id": "INTEGER",
+            "report_id": "TEXT",
+            "report_type": "TEXT",
+            "report_version": "TEXT",
+            "market_date": "TEXT",
+            "generated_at": "TEXT",
+            "status_prefix": "TEXT",
+            "email_subject": "TEXT",
+            "raw_report_text": "TEXT",
+            "structured_report_json": "TEXT",
+            "source_scan_run_id": "TEXT",
+            "claude_model": "TEXT",
+            "underlying_data_timestamp": "TEXT",
+            "email_attempted": "INTEGER",
+            "email_sent": "INTEGER",
+            "email_sent_at": "TEXT",
+            "email_error": "TEXT",
+            "ingested_at": "TEXT",
+            "source_system": "TEXT",
+        },
+    },
 }
 
 

@@ -20,6 +20,7 @@ FINDING_TYPES = frozenset(
         "leadership_trend",
         "anomaly",
         "system_note",
+        "daily_report_observation",
     }
 )
 SEVERITIES = frozenset({"info", "watch", "warning", "critical"})

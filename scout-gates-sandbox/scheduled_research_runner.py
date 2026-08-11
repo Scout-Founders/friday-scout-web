@@ -2,8 +2,8 @@
 """Scheduled research runner for Scout Horizon.
 
 Read-only orchestration only. This script initializes Scout memory, ensures default
-research jobs exist, runs enabled research jobs, and optionally generates research
-findings from recent completed runs. It never places trades, changes scoring,
+research jobs exist, optionally ingests Firestore daily reports, runs enabled research
+jobs, and generates research findings. It never places trades, changes scoring,
 gate weights, Stable Signal behavior, or recommendation logic.
 
 Schedule this script from the command line without opening the dashboard UI.
@@ -76,10 +76,65 @@ def generate_findings_if_available(*, limit: int = 20) -> dict[str, Any]:
         }
 
 
+def ingest_daily_reports_if_available(*, limit: int = 50) -> dict[str, Any]:
+    try:
+        from ingest_scout_reports import ingest_scout_reports
+    except ImportError:
+        return {
+            "ok": True,
+            "available": False,
+            "imported": 0,
+            "updated": 0,
+            "skipped": 0,
+            "message": "daily report ingest unavailable",
+        }
+
+    try:
+        return ingest_scout_reports(limit=limit)
+    except Exception as exc:
+        return {
+            "ok": True,
+            "available": False,
+            "imported": 0,
+            "updated": 0,
+            "skipped": 0,
+            "message": f"daily report ingest unavailable: {exc}",
+            "errors": [str(exc)],
+        }
+
+
+def generate_daily_report_findings_if_available(*, limit: int = 20) -> dict[str, Any]:
+    try:
+        from ingest_scout_reports import generate_findings_from_daily_reports
+    except ImportError:
+        return {
+            "ok": True,
+            "available": False,
+            "generated": 0,
+            "skippedDuplicates": 0,
+            "message": "daily report findings adapter unavailable",
+        }
+
+    try:
+        result = generate_findings_from_daily_reports(limit=limit)
+        result["available"] = True
+        return result
+    except Exception as exc:
+        return {
+            "ok": False,
+            "available": True,
+            "generated": 0,
+            "skippedDuplicates": 0,
+            "message": str(exc),
+        }
+
+
 def run_scheduled_research(
     *,
     findings_limit: int = 20,
     generate_findings: bool = True,
+    ingest_reports: bool = True,
+    report_ingest_limit: int = 50,
 ) -> dict[str, Any]:
     """Run the scheduled research workflow and return a structured summary."""
     summary: dict[str, Any] = {
@@ -92,6 +147,10 @@ def run_scheduled_research(
         "findingsGenerated": 0,
         "findingsSkipped": 0,
         "findingsAvailable": False,
+        "dailyReportsImported": 0,
+        "dailyReportsUpdated": 0,
+        "dailyReportFindingsGenerated": 0,
+        "dailyReportIngestAvailable": False,
         "errors": [],
     }
 
@@ -101,6 +160,22 @@ def run_scheduled_research(
         summary["ok"] = False
         summary["errors"].append(f"Database initialization failed: {exc}")
         return summary
+
+    if ingest_reports:
+        ingest_result = ingest_daily_reports_if_available(limit=report_ingest_limit)
+        summary["dailyReportIngestAvailable"] = bool(ingest_result.get("available"))
+        summary["dailyReportsImported"] = int(ingest_result.get("imported") or 0)
+        summary["dailyReportsUpdated"] = int(ingest_result.get("updated") or 0)
+        if ingest_result.get("message") and not ingest_result.get("available"):
+            print(
+                f"[scheduled-research] {ingest_result.get('message')}",
+                file=sys.stderr,
+            )
+        if ingest_result.get("available") and not ingest_result.get("ok"):
+            summary["ok"] = False
+            summary["errors"].append(
+                f"Daily report ingest failed: {ingest_result.get('message') or 'unknown error'}"
+            )
 
     try:
         defaults = create_default_research_jobs()
@@ -138,6 +213,16 @@ def run_scheduled_research(
                 f"Research findings generation failed: {findings.get('message') or 'unknown error'}"
             )
 
+        report_findings = generate_daily_report_findings_if_available(limit=findings_limit)
+        summary["dailyReportFindingsGenerated"] = int(report_findings.get("generated") or 0)
+        summary["findingsGenerated"] += int(report_findings.get("generated") or 0)
+        summary["findingsSkipped"] += int(report_findings.get("skippedDuplicates") or 0)
+        if report_findings.get("available") and not report_findings.get("ok"):
+            summary["ok"] = False
+            summary["errors"].append(
+                f"Daily report findings generation failed: {report_findings.get('message') or 'unknown error'}"
+            )
+
     return summary
 
 
@@ -156,6 +241,16 @@ def format_scheduled_research_summary(summary: dict[str, Any]) -> str:
     database_path = summary.get("databasePath")
     if database_path:
         lines.append(f"database: {database_path}")
+    lines.append(
+        "daily reports imported: "
+        f"{summary.get('dailyReportsImported', 0)} "
+        f"(updated: {summary.get('dailyReportsUpdated', 0)})"
+    )
+    lines.append(
+        f"daily report findings generated: {summary.get('dailyReportFindingsGenerated', 0)}"
+    )
+    if not summary.get("dailyReportIngestAvailable"):
+        lines.append("daily report ingest: unavailable")
     findings_skipped = int(summary.get("findingsSkipped") or 0)
     if findings_skipped:
         lines.append(f"findings skipped (duplicates): {findings_skipped}")
@@ -191,6 +286,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-findings",
         action="store_true",
         help="Run research jobs only; skip findings generation.",
+    )
+    parser.add_argument(
+        "--skip-report-ingest",
+        action="store_true",
+        help="Skip Firestore daily report ingest.",
+    )
+    parser.add_argument(
+        "--report-ingest-limit",
+        type=int,
+        default=50,
+        help="Max Firestore scout_reports documents to ingest (default: 50).",
     )
     parser.add_argument(
         "--cloud-worker",
@@ -234,6 +340,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     summary = run_scheduled_research(
         findings_limit=max(int(args.findings_limit), 1),
         generate_findings=not args.skip_findings,
+        ingest_reports=not args.skip_report_ingest,
+        report_ingest_limit=max(int(args.report_ingest_limit), 1),
     )
     if cloud_db_path:
         summary["databasePath"] = cloud_db_path

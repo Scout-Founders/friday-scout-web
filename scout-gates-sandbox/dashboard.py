@@ -102,6 +102,11 @@ from rule_validation_engine import (
     run_rule_validation,
 )
 from research_intelligence import get_research_intelligence_dashboard
+from ingest_scout_reports import (
+    generate_findings_from_daily_reports,
+    ingest_scout_reports,
+    list_ingested_daily_reports,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -536,6 +541,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/research-intelligence":
             self.send_json(get_research_intelligence_dashboard())
             return
+        if parsed.path == "/api/research-daily-reports":
+            params = urllib.parse.parse_qs(parsed.query)
+            report_type = (params.get("reportType") or params.get("report_type") or [None])[0]
+            try:
+                limit = min(max(int((params.get("limit") or ["50"])[0]), 1), 500)
+            except ValueError:
+                limit = 50
+            self.send_json(
+                {
+                    "ok": True,
+                    "reports": list_ingested_daily_reports(
+                        report_type=report_type,
+                        limit=limit,
+                    ),
+                }
+            )
+            return
         if parsed.path == "/api/memory/summary":
             self.send_json(build_memory_summary())
             return
@@ -785,6 +807,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": False, "message": f"Rule candidate status error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/research-daily-reports/ingest":
+            try:
+                payload = self.read_json()
+                limit = int(payload.get("limit") or 50)
+                since = payload.get("since")
+                self.send_json(
+                    ingest_scout_reports(
+                        limit=limit,
+                        since=str(since).strip() if since else None,
+                    )
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Daily report ingest error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            return
+
+        if parsed.path == "/api/research-daily-reports/generate-findings":
+            try:
+                payload = self.read_json()
+                limit = int(payload.get("limit") or 20)
+                self.send_json(generate_findings_from_daily_reports(limit=limit))
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Daily report findings error: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
                 )
             return
 

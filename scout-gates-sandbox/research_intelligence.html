@@ -141,7 +141,20 @@
           <div class="metric-value" id="metric-top-confidence">—</div>
           <div class="metric-sub" id="metric-top-confidence-detail">—</div>
         </div>
+        <div class="metric"><div class="metric-label">Ingested Daily Reports</div><div class="metric-value" id="metric-daily-reports">—</div></div>
+        <div class="metric"><div class="metric-label">Daily-Report Findings</div><div class="metric-value" id="metric-daily-findings">—</div></div>
+        <div class="metric">
+          <div class="metric-label">Latest Scout v6 / Coffee</div>
+          <div class="metric-value" id="metric-latest-v6" style="font-size:18px;">—</div>
+          <div class="metric-sub" id="metric-latest-coffee">—</div>
+        </div>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Daily Scout Intelligence</h2>
+      <p class="hint">Research-only findings derived from ingested Scout v6 / Monday Coffee structured reports. Does not change scoring or recommendations.</p>
+      <div class="list" id="daily-intelligence-list"></div>
     </section>
 
     <section class="card">
@@ -226,6 +239,14 @@
       document.getElementById("metric-open-findings").textContent = String(summary.openFindings ?? 0);
       document.getElementById("metric-rule-candidates").textContent = String(summary.ruleCandidates ?? 0);
       document.getElementById("metric-completed-validations").textContent = String(summary.completedValidations ?? 0);
+      document.getElementById("metric-daily-reports").textContent = String(summary.ingestedDailyReports ?? 0);
+      document.getElementById("metric-daily-findings").textContent = String(summary.dailyReportFindingsCount ?? 0);
+      document.getElementById("metric-latest-v6").textContent =
+        summary.latestScoutV6ReportDate ? `v6 ${summary.latestScoutV6ReportDate}` : "v6 —";
+      document.getElementById("metric-latest-coffee").textContent =
+        summary.latestMondayCoffeeDate
+          ? `Monday Coffee ${summary.latestMondayCoffeeDate}`
+          : "Monday Coffee —";
 
       const top = summary.highestConfidenceValidation;
       if (top) {
@@ -236,6 +257,20 @@
         document.getElementById("metric-top-confidence").textContent = "—";
         document.getElementById("metric-top-confidence-detail").textContent = "No completed validations yet.";
       }
+
+      const dailyIntel = data.dailyScoutIntelligence || [];
+      document.getElementById("daily-intelligence-list").innerHTML = dailyIntel.length
+        ? dailyIntel.map((item) => `
+          <article class="item">
+            <div class="item-title">${item.title || "Untitled finding"}</div>
+            <div class="item-meta">
+              ${pill(item.reportType || "report", "warning")}
+              ${pill(item.marketDate || "no date", "info")}
+              ${pill(item.confidence || "medium", "success")}
+            </div>
+            <div class="item-meta">Next test: ${item.recommendedNextTest || "—"}</div>
+          </article>`).join("")
+        : renderEmpty("No daily-report findings yet. Ingest scout_reports to populate this section.");
 
       const validations = data.strongestValidatedIdeas || [];
       document.getElementById("validated-ideas-list").innerHTML = validations.length
