@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store">
   <title>Scout Gate Sandbox</title>
   <style>
     :root {
@@ -982,12 +983,13 @@
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Local beta testing only</div>
+    <div class="eyebrow">Local beta testing only · scanner build 2026.08.18-2</div>
     <h1>Scout Gate Sandbox</h1>
     <p class="lede">
       Enter a ticker universe, run the deployed Scout gate engine on demand, and inspect the final pick,
       per-gate outcomes, rejected candidates, and raw JSON output.
     </p>
+    <div id="gate-health" class="status">Checking gate API connection…</div>
     <nav class="top-nav" aria-label="Sandbox navigation">
       <a class="active" href="/">Scout Gate Sandbox</a>
       <a href="/research">Research Memory</a>
@@ -2816,9 +2818,20 @@
         const response = await fetch("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify(request),
         });
-        const payload = await response.json();
+        const raw = await response.text();
+        let payload;
+        try {
+          payload = JSON.parse(raw);
+        } catch (parseError) {
+          throw new Error(
+            `Dashboard did not return JSON (HTTP ${response.status}). `
+            + "Confirm python3 dashboard.py is serving http://127.0.0.1:8765. "
+            + `First bytes: ${raw.slice(0, 180)}`
+          );
+        }
         const clientRuntimeMs = performance.now() - scanStartedMs;
         if (!payload.ok) {
           if (payload.candidates || payload.errors) {
@@ -2875,7 +2888,26 @@
     });
     tickersEl.addEventListener("input", updateUniversePresetPanel);
     timeoutEl.addEventListener("input", updateUniversePresetPanel);
+    async function loadGateHealth() {
+      const healthEl = document.getElementById("gate-health");
+      if (!healthEl) {
+        return;
+      }
+      try {
+        const response = await fetch("/api/gate-health", { cache: "no-store" });
+        const payload = await response.json();
+        healthEl.textContent = payload.ok
+          ? `Gate API reachable: ${payload.apiUrl}`
+          : `Gate API unreachable: ${payload.message}`;
+        healthEl.classList.toggle("error", !payload.ok);
+      } catch (error) {
+        healthEl.textContent = "Dashboard is not responding. Confirm python3 dashboard.py is running on port 8765.";
+        healthEl.classList.add("error");
+      }
+    }
+
     loadUniversePresets();
+    loadGateHealth();
     saveButton.addEventListener("click", saveResultsToMemory);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);

@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.parse
 import webbrowser
 from datetime import datetime, timezone
@@ -69,6 +70,7 @@ from run_gates import (
     is_fatal_gate_error,
     load_env,
     parse_ticker_list,
+    probe_gate_api,
 )
 from universe_presets import list_preset_catalog, resolve_universe_from_request
 from backtest_engine import (
@@ -410,6 +412,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/universe-presets":
             self.send_json(list_preset_catalog())
+            return
+        if parsed.path == "/api/gate-health":
+            self.send_json(probe_gate_api())
             return
         if parsed.path == "/api/control/summary":
             self.send_json(build_control_summary())
@@ -1055,8 +1060,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             payload = self.read_json()
             response = build_run_payload(payload)
-            status = HTTPStatus.OK if response.get("ok") else HTTPStatus.BAD_GATEWAY
-            self.send_json(response, status=status)
+            # Keep HTTP 200 so browsers/proxies do not replace a 502 body with an HTML error page.
+            self.send_json(response)
         except ValueError as exc:
             self.send_json({"ok": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # Keep local beta dashboard from crashing the server.
@@ -1080,6 +1085,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1088,6 +1095,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1132,12 +1140,17 @@ def main() -> int:
     server = ThreadingHTTPServer(address, DashboardHandler)
     url = f"http://{args.host}:{args.port}"
 
+    api_url = gate_api_url()
+    probe = probe_gate_api(api_url)
+    page_url = f"{url}/?nocache={int(time.time())}"
     print("Scout gate sandbox dashboard")
-    print(f"Local URL: {url}")
+    print(f"Local URL: {page_url}")
+    print(f"Gate API: {api_url}")
+    print(f"API probe: {'OK' if probe.get('ok') else 'FAIL'} — {probe.get('message')}")
     print("Press Ctrl+C to stop.")
 
     if not args.no_open:
-        webbrowser.open(url)
+        webbrowser.open(page_url)
 
     try:
         server.serve_forever()

@@ -1387,6 +1387,32 @@ class SandboxRunFailureTests(unittest.TestCase):
         self.assertIn("could not reach gate API", payload["message"])
         self.assertTrue(any("Skipped 1 remaining ticker" in error for error in payload["errors"]))
 
+    def test_curl_fallback_when_urllib_cannot_connect(self) -> None:
+        import urllib.error
+        from unittest.mock import patch
+
+        from run_gates import fetch_gate_result
+
+        with patch(
+            "run_gates._read_via_urllib",
+            side_effect=urllib.error.URLError("connection refused"),
+        ):
+            with patch(
+                "run_gates._read_via_curl",
+                return_value='{"ticker":"AMD","scout_score":90,"gates":{}}',
+            ):
+                result = fetch_gate_result("https://example.test/gates", "AMD", 5)
+
+        self.assertEqual(result.ticker, "AMD")
+        self.assertEqual(result.score, 90.0)
+
+    def test_probe_gate_api_reports_missing_host(self) -> None:
+        from run_gates import probe_gate_api
+
+        probe = probe_gate_api("https://")
+        self.assertFalse(probe["ok"])
+        self.assertIn("host", probe["message"].lower())
+
 
 
 class BacktestEngineTests(unittest.TestCase):

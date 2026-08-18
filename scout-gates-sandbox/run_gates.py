@@ -12,6 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import socket
+import ssl
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -161,45 +165,139 @@ def is_fatal_gate_error(message: str) -> bool:
     return any(code in text for code in ("HTTP 401", "HTTP 403", "HTTP 404"))
 
 
-def fetch_gate_result(api_url: str, ticker: str, timeout: float) -> CandidateResult:
+def ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def gate_request_url(api_url: str, ticker: str) -> str:
     query = urllib.parse.urlencode(
         {"mode": "single", "ticker": ticker, "format": "json"}
     )
+    return f"{api_url}?{query}"
+
+
+def _read_via_urllib(url: str, timeout: float) -> str:
     request = urllib.request.Request(
-        f"{api_url}?{query}",
+        url,
         headers={"Accept": "application/json", "User-Agent": "scout-gates-sandbox/1.0"},
     )
+    with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
+        return response.read().decode("utf-8")
 
+
+def _read_via_curl(url: str, timeout: float) -> str:
+    curl = shutil.which("curl")
+    if not curl:
+        raise FileNotFoundError("curl is not installed")
+    completed = subprocess.run(
+        [
+            curl,
+            "-sS",
+            "--ipv4",
+            "--max-time",
+            str(max(1, int(round(timeout)))),
+            "-H",
+            "Accept: application/json",
+            "-H",
+            "User-Agent: scout-gates-sandbox/1.0",
+            "-w",
+            "\n__SCOUT_HTTP_CODE__:%{http_code}",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=max(float(timeout) + 2.0, 3.0),
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or f"curl exit {completed.returncode}").strip()
+        raise RuntimeError(detail)
+    raw = completed.stdout or ""
+    marker = "\n__SCOUT_HTTP_CODE__:"
+    if marker not in raw:
+        raise RuntimeError("curl returned an unexpected response")
+    body, code = raw.rsplit(marker, 1)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"{ticker}: HTTP {exc.code} from gate API ({api_url}): {body[:300]}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"{ticker}: could not reach gate API ({api_url}): {exc.reason}"
-        ) from exc
-    except TimeoutError as exc:
-        raise RuntimeError(f"{ticker}: gate API timed out ({api_url})") from exc
-    except OSError as exc:
-        raise RuntimeError(
-            f"{ticker}: could not reach gate API ({api_url}): {exc}"
-        ) from exc
+        status = int(code.strip() or "0")
+    except ValueError as exc:
+        raise RuntimeError("curl returned a malformed status code") from exc
+    if status >= 400:
+        raise RuntimeError(f"HTTP {status} from gate API: {body[:300]}")
+    return body
 
+
+def _parse_gate_payload(ticker: str, api_url: str, body: str) -> CandidateResult:
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             f"{ticker}: gate API returned non-JSON response ({api_url})"
         ) from exc
-
     if not isinstance(payload, dict):
         raise RuntimeError(f"{ticker}: gate API returned unexpected payload ({api_url})")
-
     return CandidateResult(ticker=ticker, data=payload)
+
+
+def probe_gate_api(api_url: Optional[str] = None, timeout: float = 5.0) -> dict[str, Any]:
+    """TCP/TLS reachability check for the gate host. Does not run a ticker scan."""
+    url = (api_url or gate_api_url()).rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return {"ok": False, "apiUrl": url, "host": host, "message": "Gate API URL is missing a host."}
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            if parsed.scheme == "https":
+                ssl_context().wrap_socket(sock, server_hostname=host)
+        return {
+            "ok": True,
+            "apiUrl": url,
+            "host": host,
+            "message": f"Reached {host}:{port}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "apiUrl": url,
+            "host": host,
+            "message": f"Cannot reach {host}:{port}: {exc}",
+        }
+
+
+def fetch_gate_result(api_url: str, ticker: str, timeout: float) -> CandidateResult:
+    url = gate_request_url(api_url, ticker)
+    urllib_error: Optional[BaseException] = None
+
+    try:
+        body = _read_via_urllib(url, timeout)
+        return _parse_gate_payload(ticker, api_url, body)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"{ticker}: HTTP {exc.code} from gate API ({api_url}): {body[:300]}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+        urllib_error = exc
+
+    try:
+        body = _read_via_curl(url, timeout)
+        return _parse_gate_payload(ticker, api_url, body)
+    except RuntimeError as exc:
+        if str(exc).startswith("HTTP "):
+            raise RuntimeError(f"{ticker}: {exc} ({api_url})") from exc
+        raise RuntimeError(
+            f"{ticker}: could not reach gate API ({api_url}): {urllib_error}; curl fallback: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"{ticker}: could not reach gate API ({api_url}): {urllib_error}; curl fallback: {exc}"
+        ) from exc
 
 
 def choose_final_pick(results: list[CandidateResult]) -> CandidateResult:
