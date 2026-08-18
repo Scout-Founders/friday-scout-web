@@ -146,6 +146,21 @@ def gate_api_url() -> str:
     ).rstrip("/")
 
 
+def is_fatal_gate_error(message: str) -> bool:
+    """Return True when remaining tickers would fail for the same API-wide reason."""
+    text = str(message or "")
+    lowered = text.lower()
+    if "could not reach gate api" in lowered:
+        return True
+    if "tls error reaching gate api" in lowered:
+        return True
+    if "gate api timed out" in lowered:
+        return True
+    if "gate api returned non-json" in lowered:
+        return True
+    return any(code in text for code in ("HTTP 401", "HTTP 403", "HTTP 404"))
+
+
 def fetch_gate_result(api_url: str, ticker: str, timeout: float) -> CandidateResult:
     query = urllib.parse.urlencode(
         {"mode": "single", "ticker": ticker, "format": "json"}
@@ -160,17 +175,29 @@ def fetch_gate_result(api_url: str, ticker: str, timeout: float) -> CandidateRes
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{ticker}: HTTP {exc.code} from gate API: {body[:300]}") from exc
+        raise RuntimeError(
+            f"{ticker}: HTTP {exc.code} from gate API ({api_url}): {body[:300]}"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"{ticker}: could not reach gate API: {exc.reason}") from exc
+        raise RuntimeError(
+            f"{ticker}: could not reach gate API ({api_url}): {exc.reason}"
+        ) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"{ticker}: gate API timed out ({api_url})") from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"{ticker}: could not reach gate API ({api_url}): {exc}"
+        ) from exc
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{ticker}: gate API returned non-JSON response") from exc
+        raise RuntimeError(
+            f"{ticker}: gate API returned non-JSON response ({api_url})"
+        ) from exc
 
     if not isinstance(payload, dict):
-        raise RuntimeError(f"{ticker}: gate API returned unexpected payload")
+        raise RuntimeError(f"{ticker}: gate API returned unexpected payload ({api_url})")
 
     return CandidateResult(ticker=ticker, data=payload)
 

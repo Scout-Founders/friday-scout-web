@@ -1267,6 +1267,25 @@ class UniversePresetsTests(unittest.TestCase):
             self.assertTrue(preset["tickers"])
             self.assertTrue(preset["cohortClass"])
             self.assertTrue(preset["scanPurpose"])
+        self.assertIn("fallbackTickers", catalog)
+        self.assertEqual(len(catalog["fallbackTickers"]), 15)
+
+    def test_typed_tickers_override_fallback_universe(self) -> None:
+        from universe_presets import resolve_universe_from_request
+
+        tickers, _cohort = resolve_universe_from_request(
+            {"universeMode": "fallback", "tickers": "AMD"}
+        )
+        self.assertEqual(tickers, ["AMD"])
+
+    def test_empty_fallback_uses_builtin_universe(self) -> None:
+        from run_gates import DEFAULT_CANDIDATES
+        from universe_presets import resolve_universe_from_request
+
+        tickers, _cohort = resolve_universe_from_request(
+            {"universeMode": "fallback", "tickers": "  "}
+        )
+        self.assertEqual(tickers, list(DEFAULT_CANDIDATES))
 
     def test_resolve_preset_etfs_is_research_cohort(self) -> None:
         from universe_presets import resolve_preset
@@ -1325,6 +1344,49 @@ class UniversePresetsTests(unittest.TestCase):
         self.assertEqual(run["scan_purpose"], "cohort_baseline")
         self.assertEqual(run["cohort_class"], "actionable")
         self.assertEqual(row["cohort_class"], "actionable")
+
+
+class SandboxRunFailureTests(unittest.TestCase):
+    def test_fatal_gate_errors_are_classified(self) -> None:
+        from run_gates import is_fatal_gate_error
+
+        self.assertTrue(
+            is_fatal_gate_error(
+                "AMD: could not reach gate API (https://example.test): timed out"
+            )
+        )
+        self.assertTrue(is_fatal_gate_error("AMD: HTTP 403 from gate API (https://example.test): denied"))
+        self.assertFalse(is_fatal_gate_error("AMD: HTTP 500 from gate API (https://example.test): boom"))
+
+    def test_run_payload_surfaces_and_fail_fasts_unreachable_api(self) -> None:
+        from unittest.mock import patch
+
+        from dashboard import build_run_payload
+
+        calls: list[str] = []
+
+        def fake_fetch(_api: str, ticker: str, _timeout: float):
+            calls.append(ticker)
+            raise RuntimeError(
+                f"{ticker}: could not reach gate API (https://example.test/gates): connection refused"
+            )
+
+        with patch("dashboard.fetch_gate_result", side_effect=fake_fetch):
+            payload = build_run_payload(
+                {
+                    "universeMode": "fallback",
+                    "tickers": "AMD,NVDA",
+                    "pickMode": "gate_runner",
+                    "timeout": 25,
+                }
+            )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["candidates"], ["AMD", "NVDA"])
+        self.assertEqual(calls, ["AMD"])
+        self.assertIn("could not reach gate API", payload["message"])
+        self.assertTrue(any("Skipped 1 remaining ticker" in error for error in payload["errors"]))
+
 
 
 class BacktestEngineTests(unittest.TestCase):

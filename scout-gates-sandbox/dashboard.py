@@ -66,6 +66,7 @@ from run_gates import (
     choose_final_pick,
     fetch_gate_result,
     gate_api_url,
+    is_fatal_gate_error,
     load_env,
     parse_ticker_list,
 )
@@ -223,13 +224,22 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     results: list[CandidateResult] = []
     errors: list[str] = []
 
-    for ticker in candidates:
+    for index, ticker in enumerate(candidates):
         try:
             results.append(fetch_gate_result(api_url, ticker, timeout))
         except RuntimeError as exc:
             errors.append(str(exc))
+            if is_fatal_gate_error(str(exc)):
+                skipped = len(candidates) - index - 1
+                if skipped:
+                    errors.append(
+                        f"Skipped {skipped} remaining ticker(s) after a gate API "
+                        f"connectivity/auth failure at {api_url}."
+                    )
+                break
 
     if not results:
+        first_error = errors[0] if errors else "No ticker scans completed successfully."
         failure_payload = {
             "ok": False,
             "apiUrl": api_url,
@@ -239,7 +249,11 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
             "timeout": timeout,
             "runTimestamp": run_timestamp,
             "errors": errors,
-            "message": "No ticker scans completed successfully.",
+            "message": (
+                first_error
+                if first_error.startswith("No ticker scans completed successfully.")
+                else f"No ticker scans completed successfully. {first_error}"
+            ),
         }
         attach_cohort_metadata(failure_payload, request_payload)
         return failure_payload
