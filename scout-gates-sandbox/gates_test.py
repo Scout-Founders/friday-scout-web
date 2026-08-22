@@ -3965,6 +3965,356 @@ class ScoutDailyReportIngestTests(unittest.TestCase):
         self.assertFalse(summary["dailyReportIngestAvailable"])
 
 
+class ScoutDailyReportArtifactIngestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "daily_report_artifact_test.db"
+        self._bundle_dir = Path(self._tmpdir.name) / "bundle"
+        self._bundle_dir.mkdir()
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def sample_report(self, report_id: str = "rep-artifact-001") -> dict:
+        return {
+            "report_id": report_id,
+            "report_type": "scout_v6",
+            "report_version": "6.0",
+            "market_date": "2026-06-20",
+            "generated_at": "2026-06-20T12:00:00+00:00",
+            "structured_report_json": {
+                "regime": "risk_on",
+                "leadingSectors": ["Semiconductors"],
+                "directionalCaution": "Bearish setups under pressure during strong risk-on regime",
+            },
+        }
+
+    def write_bundle(
+        self,
+        reports: list[dict],
+        *,
+        schema_version: int = 1,
+        checksum: str | None = None,
+        report_count: int | None = None,
+        write_manifest: bool = True,
+    ) -> Path:
+        import json
+
+        import ingest_scout_reports as isr
+
+        bundle_path = self._bundle_dir / isr.BUNDLE_FILENAME
+        payload = {
+            "schema_version": schema_version,
+            "generated_at": "2026-06-20T12:00:00+00:00",
+            "reports": reports,
+        }
+        bundle_path.write_text(json.dumps(payload), encoding="utf-8")
+        if write_manifest:
+            manifest = {
+                "schema_version": schema_version,
+                "generated_at": payload["generated_at"],
+                "report_count": report_count if report_count is not None else len(reports),
+                "bundle_filename": isr.BUNDLE_FILENAME,
+                "checksum_sha256": checksum or isr.sha256_file(bundle_path),
+            }
+            manifest_path = self._bundle_dir / isr.MANIFEST_FILENAME
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return bundle_path
+
+    def test_valid_file_bundle_import_without_firestore_credentials(self) -> None:
+        from unittest.mock import patch
+
+        import ingest_scout_reports as isr
+
+        self.write_bundle([self.sample_report()])
+        with patch.object(isr, "firestore_credentials_available", return_value=False):
+            result = isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ingestMode"], "artifact_file")
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["sourceSystem"], isr.SOURCE_SYSTEM_ARTIFACT)
+        reports = isr.list_ingested_daily_reports()
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["sourceSystem"], isr.SOURCE_SYSTEM_ARTIFACT)
+
+    def test_malformed_json_rejection(self) -> None:
+        import ingest_scout_reports as isr
+
+        bundle_path = self._bundle_dir / isr.BUNDLE_FILENAME
+        bundle_path.write_text("{not-json", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            isr.load_report_bundle_json(bundle_path)
+
+    def test_unsupported_schema_version(self) -> None:
+        import ingest_scout_reports as isr
+
+        self.write_bundle([self.sample_report()], schema_version=99)
+        with self.assertRaises(ValueError):
+            isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+
+    def test_missing_reports_array(self) -> None:
+        import json
+
+        import ingest_scout_reports as isr
+
+        bundle_path = self._bundle_dir / isr.BUNDLE_FILENAME
+        bundle_path.write_text(
+            json.dumps({"schema_version": 1, "generated_at": "2026-06-20T12:00:00+00:00"}),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            isr.load_report_bundle_json(bundle_path)
+
+    def test_missing_report_id(self) -> None:
+        import ingest_scout_reports as isr
+
+        bad_report = dict(self.sample_report())
+        bad_report.pop("report_id")
+        self.write_bundle([bad_report])
+        result = isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 0)
+
+    def test_missing_report_type(self) -> None:
+        import ingest_scout_reports as isr
+
+        bad_report = dict(self.sample_report())
+        bad_report.pop("report_type")
+        self.write_bundle([bad_report])
+        result = isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 0)
+
+    def test_malformed_report_does_not_corrupt_database(self) -> None:
+        import ingest_scout_reports as isr
+
+        good = self.sample_report("rep-good")
+        bad = {"report_id": "rep-bad"}
+        self.write_bundle([good, bad])
+        result = isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 1)
+
+    def test_duplicate_bundle_import_is_idempotent(self) -> None:
+        import ingest_scout_reports as isr
+
+        self.write_bundle([self.sample_report()])
+        first = isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        second = isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        self.assertEqual(first["imported"], 1)
+        self.assertEqual(second["updated"], 1)
+        self.assertEqual(second["imported"], 0)
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 1)
+
+    def test_finding_deduplication_after_duplicate_bundle_import(self) -> None:
+        import ingest_scout_reports as isr
+        import research_findings_engine as rfe
+
+        self.write_bundle([self.sample_report()])
+        isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        first = isr.generate_findings_from_daily_reports(limit=10)
+        isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+        second = isr.generate_findings_from_daily_reports(limit=10)
+        self.assertGreater(first["generated"], 0)
+        self.assertEqual(second["generated"], 0)
+        self.assertGreater(second["skippedDuplicates"], 0)
+        findings = rfe.list_research_findings(finding_type="daily_report_observation")
+        self.assertGreaterEqual(len(findings), 1)
+
+    def test_checksum_validation(self) -> None:
+        import ingest_scout_reports as isr
+
+        bundle_path = self.write_bundle([self.sample_report()])
+        manifest_info = isr.validate_report_bundle_manifest(
+            manifest_path=self._bundle_dir / isr.MANIFEST_FILENAME,
+            bundle_path=bundle_path,
+        )
+        self.assertEqual(manifest_info["reportCount"], 1)
+        self.assertEqual(len(manifest_info["checksumSha256"]), 64)
+
+    def test_checksum_mismatch_rejection(self) -> None:
+        import json
+
+        import ingest_scout_reports as isr
+
+        bundle_path = self.write_bundle([self.sample_report()], checksum="0" * 64)
+        with self.assertRaises(ValueError):
+            isr.validate_report_bundle_manifest(
+                manifest_path=self._bundle_dir / isr.MANIFEST_FILENAME,
+                bundle_path=bundle_path,
+            )
+
+    def test_manifest_report_count_mismatch_rejection(self) -> None:
+        import ingest_scout_reports as isr
+
+        self.write_bundle([self.sample_report()], report_count=99)
+        with self.assertRaises(ValueError):
+            isr.ingest_scout_reports_from_bundle_dir(self._bundle_dir)
+
+    def test_existing_firestore_ingest_still_supported(self) -> None:
+        from unittest.mock import patch
+
+        import ingest_scout_reports as isr
+
+        doc = self.sample_report("rep-firestore")
+        with patch.object(isr, "firestore_credentials_available", return_value=True), patch.object(
+            isr,
+            "fetch_scout_report_documents",
+            return_value=[doc],
+        ):
+            result = isr.ingest_scout_reports(limit=5)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ingestMode"], "firestore")
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(isr.list_ingested_daily_reports()[0]["sourceSystem"], isr.SOURCE_SYSTEM)
+
+    def test_cloud_worker_import_ordering_prefers_artifact_over_firestore(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        self.write_bundle([self.sample_report("rep-cloud-order")])
+        with patch.object(
+            srr,
+            "ingest_daily_reports_if_available",
+            side_effect=AssertionError("Firestore ingest should not run for cloud worker"),
+        ), patch(
+            "scheduled_research_runner.create_default_research_jobs",
+            return_value={"ok": True, "created": 0},
+        ), patch(
+            "scheduled_research_runner.run_enabled_research_jobs",
+            return_value={"ok": True, "ran": 0, "completed": 0, "failed": 0, "results": []},
+        ), patch(
+            "scheduled_research_runner.generate_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ), patch(
+            "scheduled_research_runner.generate_daily_report_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ):
+            summary = srr.run_scheduled_research(
+                report_bundle_dir=self._bundle_dir,
+                skip_firestore_ingest=True,
+            )
+        self.assertTrue(summary["ok"])
+        self.assertTrue(summary["dailyReportIngestAvailable"])
+        self.assertEqual(summary["dailyReportIngestMode"], "artifact_file")
+        self.assertEqual(summary["dailyReportsImported"], 1)
+
+    def test_cloud_worker_skips_firestore_when_no_bundle(self) -> None:
+        from unittest.mock import patch
+
+        import scheduled_research_runner as srr
+
+        with patch.object(
+            srr,
+            "ingest_daily_reports_if_available",
+            side_effect=AssertionError("Firestore ingest should not run for cloud worker"),
+        ), patch(
+            "scheduled_research_runner.create_default_research_jobs",
+            return_value={"ok": True, "created": 0},
+        ), patch(
+            "scheduled_research_runner.run_enabled_research_jobs",
+            return_value={"ok": True, "ran": 0, "completed": 0, "failed": 0, "results": []},
+        ), patch(
+            "scheduled_research_runner.generate_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ), patch(
+            "scheduled_research_runner.generate_daily_report_findings_if_available",
+            return_value={"ok": True, "available": True, "generated": 0, "skippedDuplicates": 0},
+        ):
+            summary = srr.run_scheduled_research(skip_firestore_ingest=True)
+        self.assertTrue(summary["ok"])
+        self.assertFalse(summary["dailyReportIngestAvailable"])
+
+
+class CloudResearchDailyReportsWorkflowTests(unittest.TestCase):
+    def test_build_import_command(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_daily_reports_workflow as crdrw
+        import ingest_scout_reports as isr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_dir = Path(tmpdir)
+            bundle_path = bundle_dir / isr.BUNDLE_FILENAME
+            bundle_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "generated_at": "2026-06-20T12:00:00+00:00",
+                        "reports": [
+                            {
+                                "report_id": "rep-cli",
+                                "report_type": "scout_v6",
+                                "structured_report_json": {"regime": "risk_on"},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = isr.build_report_bundle_manifest(bundle_path=bundle_path)
+            (bundle_dir / isr.MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            command = crdrw.build_import_command(bundle_dir=bundle_dir)
+            self.assertIn("ingest_scout_reports.py", command[1])
+            self.assertIn("--from-bundle-dir", command)
+            self.assertEqual(command[-1], str(bundle_dir.resolve()))
+
+    def test_validate_bundle_command(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import cloud_research_daily_reports_workflow as crdrw
+        import ingest_scout_reports as isr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_dir = Path(tmpdir)
+            bundle_path = bundle_dir / isr.BUNDLE_FILENAME
+            bundle_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "generated_at": "2026-06-20T12:00:00+00:00",
+                        "reports": [
+                            {
+                                "report_id": "rep-validate",
+                                "report_type": "scout_v6",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = isr.build_report_bundle_manifest(bundle_path=bundle_path)
+            (bundle_dir / isr.MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(
+                crdrw.main(["validate-bundle", "--bundle-dir", str(bundle_dir)]),
+                0,
+            )
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile
