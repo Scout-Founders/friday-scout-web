@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Local-only visual dashboard for the Scout gate sandbox runner."""
+"""Visual dashboard for the Scout gate sandbox runner (local and hosted modes)."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -13,7 +14,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from directionality import build_directional_breakdown
 from earnings_intelligence import attach_adjusted_scout_score, build_earnings_intelligence_for_result
@@ -107,6 +108,20 @@ from ingest_scout_reports import (
     ingest_scout_reports,
     list_ingested_daily_reports,
 )
+from hosted_config import (
+    HOSTED_MODE_ENV,
+    build_health_status,
+    hosted_maintenance_blocked,
+    hosted_maintenance_response,
+    log_startup_config,
+)
+from scan_job_runner import (
+    create_scan_job,
+    ensure_scan_worker,
+    get_scan_job,
+    list_scan_jobs,
+    recover_interrupted_scan_jobs,
+)
 
 
 SANDBOX_DIR = Path(__file__).resolve().parent
@@ -120,8 +135,12 @@ RESEARCH_FINDINGS_HTML = SANDBOX_DIR / "research_findings.html"
 RULE_CANDIDATES_HTML = SANDBOX_DIR / "rule_candidates.html"
 RULE_VALIDATIONS_HTML = SANDBOX_DIR / "rule_validations.html"
 RESEARCH_INTELLIGENCE_HTML = SANDBOX_DIR / "research_intelligence.html"
-REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
+
+
+def get_reports_dir() -> Path:
+    """Resolve PDF export directory (honors SCOUT_REPORTS_DIR)."""
+    return default_exports_dir()
 
 
 def first_failed_gate_payload(result: CandidateResult) -> Optional[dict[str, Any]]:
@@ -206,7 +225,12 @@ def attach_cohort_metadata(payload: dict[str, Any], request_payload: dict[str, A
     payload["scanTelemetry"] = telemetry
 
 
-def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
+def execute_scan_run(
+    request_payload: dict[str, Any],
+    *,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> dict[str, Any]:
+    """Run the gate scan engine (shared by /api/run and async scan jobs)."""
     universe_mode = str(request_payload.get("universeMode") or "custom")
     pick_mode = str(request_payload.get("pickMode") or "gate_runner")
     timeout = float(request_payload.get("timeout") or 25)
@@ -222,12 +246,17 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     api_url = gate_api_url()
     results: list[CandidateResult] = []
     errors: list[str] = []
+    total_tickers = len(candidates)
 
-    for ticker in candidates:
+    for index, ticker in enumerate(candidates):
+        if progress_callback is not None:
+            progress_callback(index, total_tickers, ticker)
         try:
             results.append(fetch_gate_result(api_url, ticker, timeout))
         except RuntimeError as exc:
             errors.append(str(exc))
+        if progress_callback is not None:
+            progress_callback(index + 1, total_tickers, ticker)
 
     if not results:
         failure_payload = {
@@ -324,6 +353,10 @@ def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def build_run_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
+    return execute_scan_run(request_payload)
+
+
 def build_memory_summary() -> dict[str, Any]:
     return build_memory_summary_payload()
 
@@ -362,8 +395,41 @@ def execute_regime_intelligence_rebuild() -> dict[str, Any]:
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "ScoutGateDashboard/1.0"
 
+    def reject_hosted_maintenance(self, path: str, method: str) -> bool:
+        if hosted_maintenance_blocked(path, method):
+            self.send_json(
+                hosted_maintenance_response(),
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return True
+        return False
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if self.reject_hosted_maintenance(parsed.path, "GET"):
+            return
+        if parsed.path == "/api/health":
+            self.send_json(build_health_status())
+            return
+        if parsed.path == "/api/scan-jobs":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["20"])[0]), 1), 100)
+            except ValueError:
+                limit = 20
+            self.send_json(list_scan_jobs(limit=limit))
+            return
+        if parsed.path.startswith("/api/scan-jobs/"):
+            job_id = parsed.path.rsplit("/", 1)[-1]
+            job = get_scan_job(job_id)
+            if job is None:
+                self.send_json(
+                    {"ok": False, "message": "Scan job was not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self.send_json(job)
+            return
         if parsed.path in ("/", "/dashboard.html"):
             self.send_file(DASHBOARD_HTML, "text/html; charset=utf-8")
             return
@@ -623,7 +689,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/reports/status":
-            self.send_json(get_reporting_status(REPORTS_DIR))
+            self.send_json(get_reporting_status(get_reports_dir()))
             return
         if parsed.path == "/api/reports/list":
             params = urllib.parse.parse_qs(parsed.query)
@@ -638,7 +704,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ticker = (params.get("ticker") or [""])[0].strip().upper() or None
             report_type = (params.get("reportType") or [""])[0].strip() or None
             session_id = (params.get("scanSessionId") or [""])[0].strip() or None
-            store = get_report_service(REPORTS_DIR).store
+            store = get_report_service(get_reports_dir()).store
             payload = store.list_reports(
                 limit=limit,
                 offset=offset,
@@ -660,7 +726,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 offset = 0
             status = (params.get("status") or [""])[0].strip() or None
             batch_id = (params.get("batchId") or [""])[0].strip() or None
-            store = get_report_service(REPORTS_DIR).store
+            store = get_report_service(get_reports_dir()).store
             self.send_json(
                 {
                     "ok": True,
@@ -681,15 +747,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
-            self.send_json(get_report_service(REPORTS_DIR).get_job(job_id))
+            self.send_json(get_report_service(get_reports_dir()).get_job(job_id))
             return
         if parsed.path.startswith("/api/reports/download/"):
             filename = parsed.path.rsplit("/", 1)[-1]
             if not SAFE_REPORT_NAME.match(filename):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid report filename")
                 return
-            report_path = (REPORTS_DIR / filename).resolve()
-            if report_path.parent != REPORTS_DIR.resolve() or not report_path.is_file():
+            reports_dir = get_reports_dir()
+            report_path = (reports_dir / filename).resolve()
+            if report_path.parent != reports_dir.resolve() or not report_path.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND, "Report not found")
                 return
             self.send_file(report_path, "application/pdf")
@@ -698,6 +765,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if self.reject_hosted_maintenance(parsed.path, "POST"):
+            return
         if parsed.path == "/api/memory/update-outcomes":
             try:
                 payload = self.read_json()
@@ -1007,7 +1076,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     async_mode = DEFAULT_ASYNC_EXPORT
                 else:
                     async_mode = async_mode in (True, "true", "1", 1)
-                service = get_report_service(REPORTS_DIR)
+                service = get_report_service(get_reports_dir())
                 batch_tickers = payload.get("tickers")
                 if isinstance(batch_tickers, list) and batch_tickers:
                     response = service.export_batch(
@@ -1030,6 +1099,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"PDF export error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/scan-jobs":
+            try:
+                payload = self.read_json()
+                self.send_json(create_scan_job(payload), status=HTTPStatus.ACCEPTED)
+            except ValueError as exc:
+                self.send_json({"ok": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Scan job error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
@@ -1098,31 +1180,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Scout's local beta gate dashboard.")
-    parser.add_argument("--host", default="127.0.0.1", help="Local bind host.")
-    parser.add_argument("--port", type=int, default=8765, help="Local dashboard port.")
+    parser = argparse.ArgumentParser(description="Run Scout's gate sandbox dashboard.")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host address.")
+    parser.add_argument("--port", type=int, default=8765, help="Dashboard port.")
     parser.add_argument(
         "--no-open",
         action="store_true",
         help="Do not open the dashboard in the default browser.",
     )
+    parser.add_argument(
+        "--hosted",
+        action="store_true",
+        help="Hosted production mode (sets SCOUT_HOSTED_MODE, implies --no-open).",
+    )
     return parser
+
+
+def apply_cli_hosted_mode(args: argparse.Namespace) -> None:
+    if args.hosted:
+        os.environ[HOSTED_MODE_ENV] = "1"
+        args.no_open = True
 
 
 def main() -> int:
     load_env()
     args = build_parser().parse_args()
-    default_exports_dir()
-    ensure_report_worker(ReportConfig(exports_dir=REPORTS_DIR))
+    apply_cli_hosted_mode(args)
+    reports_dir = get_reports_dir()
+    ensure_report_worker(ReportConfig(exports_dir=reports_dir))
+    recover_interrupted_scan_jobs()
+    ensure_scan_worker()
     address = (args.host, args.port)
     server = ThreadingHTTPServer(address, DashboardHandler)
-    url = f"http://{args.host}:{args.port}"
 
-    print("Scout gate sandbox dashboard")
-    print(f"Local URL: {url}")
-    print("Press Ctrl+C to stop.")
+    log_startup_config(args.host, args.port)
 
     if not args.no_open:
+        url = f"http://{args.host}:{args.port}"
         webbrowser.open(url)
 
     try:

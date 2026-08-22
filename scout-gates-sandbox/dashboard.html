@@ -1158,6 +1158,56 @@
     const scanTelemetryEl = document.getElementById("scan-telemetry");
     const LARGE_UNIVERSE_TICKER_THRESHOLD = 8;
     const NOT_INSTRUMENTED = "Not Instrumented Yet";
+    const SCAN_JOB_POLL_MS = 1500;
+    let activeScanPollTimer = null;
+
+    function clearActiveScanPoll() {
+      if (activeScanPollTimer !== null) {
+        clearTimeout(activeScanPollTimer);
+        activeScanPollTimer = null;
+      }
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    async function pollScanJobUntilDone(jobId) {
+      while (true) {
+        const response = await fetch(`/api/scan-jobs/${encodeURIComponent(jobId)}`);
+        const job = await response.json();
+        if (!response.ok || job.ok === false) {
+          throw new Error(job.message || "Scan job was not found.");
+        }
+        if (currentScanTelemetry && Number.isFinite(job.totalTickers)) {
+          currentScanTelemetry.tickersProcessedLabel = `${job.completedTickers || 0} / ${job.totalTickers}`;
+          if (job.currentTicker) {
+            currentScanTelemetry.currentTicker = job.currentTicker;
+          }
+          renderScanTelemetryCard(
+            currentScanTelemetry,
+            job.status === "running" || job.status === "queued" ? "running" : "",
+          );
+        }
+        if (job.status === "queued") {
+          setStatus("Scan queued. Waiting for worker...");
+        } else if (job.status === "running") {
+          const progress = job.totalTickers
+            ? ` (${job.completedTickers || 0}/${job.totalTickers})`
+            : "";
+          const ticker = job.currentTicker ? ` ${job.currentTicker}` : "";
+          setStatus(`Scan running${ticker}${progress}...`);
+        } else if (job.status === "completed") {
+          if (!job.result || typeof job.result !== "object") {
+            throw new Error("Scan completed without a result payload.");
+          }
+          return job.result;
+        } else if (job.status === "failed") {
+          throw new Error(job.error || "Scan job failed.");
+        }
+        await sleep(SCAN_JOB_POLL_MS);
+      }
+    }
 
     const UNIVERSE_PRESET_FALLBACK = {
       custom: {
@@ -2739,13 +2789,14 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      clearActiveScanPoll();
       runButton.disabled = true;
       currentPayload = null;
       currentRequest = null;
       currentScanSaved = false;
       currentSaveInFlight = false;
       updateSaveButton();
-      setStatus("Running gates. This can take a moment for larger universes...");
+      setStatus("Starting scan job...");
 
       const request = {
         tickers: document.getElementById("tickers").value,
@@ -2778,12 +2829,16 @@
       renderScanTelemetryCard(currentScanTelemetry, "running");
 
       try {
-        const response = await fetch("/api/run", {
+        const createResponse = await fetch("/api/scan-jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(request),
         });
-        const payload = await response.json();
+        const created = await createResponse.json();
+        if (!created.ok || !created.jobId) {
+          throw new Error(created.message || "Could not start scan job.");
+        }
+        const payload = await pollScanJobUntilDone(created.jobId);
         const clientRuntimeMs = performance.now() - scanStartedMs;
         if (!payload.ok) {
           if (payload.candidates || payload.errors) {
@@ -2820,6 +2875,7 @@
         outputEl.innerHTML = "<div><strong>Run failed.</strong><br>Check the status message for details.</div>";
         setStatus(error.message || String(error), true);
       } finally {
+        clearActiveScanPoll();
         runButton.disabled = false;
       }
     });

@@ -105,9 +105,12 @@ def get_db_path() -> Path:
 
 
 def connect() -> sqlite3.Connection:
+    from hosted_config import apply_sqlite_connection_pragmas
+
     conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    apply_sqlite_connection_pragmas(conn)
     return conn
 
 
@@ -334,6 +337,9 @@ def init_db() -> None:
         from ingest_scout_reports import init_research_daily_reports_store
 
         init_research_daily_reports_store(conn)
+        from scan_job_runner import init_scan_job_store
+
+        init_scan_job_store(conn)
         ensure_performance_indexes(conn)
     _DB_INITIALIZED = True
 

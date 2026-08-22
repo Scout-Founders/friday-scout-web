@@ -1,0 +1,5 @@
+# Example cron entry for scheduled research (artifact ingest, no Firestore).
+# Install: crontab -u scout -e
+#
+# Weekdays at 14:00 UTC (~6 AM US Pacific during standard time):
+0 14 * * 1-5 cd /opt/friday-scout-web/scout-gates-sandbox && /usr/bin/python3 scheduled_research_runner.py --skip-firestore-ingest >> /var/log/scout-scheduled-research.log 2>&1

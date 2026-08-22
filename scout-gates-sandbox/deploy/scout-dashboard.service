@@ -1,0 +1,30 @@
+[Unit]
+Description=Scout Gates Sandbox Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scout
+Group=scout
+WorkingDirectory=/opt/friday-scout-web/scout-gates-sandbox
+EnvironmentFile=/etc/scout/scout-dashboard.env
+ExecStart=/opt/friday-scout-web/.venv/bin/python3 dashboard.py --host 127.0.0.1 --port 8765 --hosted --no-open
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scout-dashboard
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data/scout /var/log/scout
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

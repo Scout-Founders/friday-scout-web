@@ -1,0 +1,10 @@
+# Scout Gates Sandbox — Hosted v1 Python dependencies
+#
+# The dashboard, async scan jobs, scheduled research runner, and SQLite stores
+# use CPython stdlib only for hosted operation.
+#
+# Do NOT pip install this file unless you add optional packages below.
+# google-cloud-firestore is intentionally omitted — hosted v1 uses artifact ingest only.
+#
+# Optional local-only (never install on hosted VPS):
+# google-cloud-firestore>=2.16.0

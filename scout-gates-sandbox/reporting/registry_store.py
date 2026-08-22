@@ -39,9 +39,12 @@ class ReportRegistryStore:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
+        from hosted_config import apply_sqlite_connection_pragmas
+
         with self._lock:
             conn = sqlite3.connect(self.db_path, timeout=30.0)
             conn.row_factory = sqlite3.Row
+            apply_sqlite_connection_pragmas(conn)
             try:
                 yield conn
                 conn.commit()
@@ -55,8 +58,6 @@ class ReportRegistryStore:
         with self.connect() as conn:
             conn.executescript(
                 """
-                PRAGMA journal_mode = WAL;
-
                 CREATE TABLE IF NOT EXISTS report_jobs (
                     id TEXT PRIMARY KEY,
                     idempotency_key TEXT NOT NULL,

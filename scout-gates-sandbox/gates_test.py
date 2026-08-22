@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import json
+import os
+import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from earnings_intelligence import (
     GUIDANCE_INLINE,
@@ -22,6 +27,10 @@ from earnings_intelligence import (
     score_revenue_surprise,
     secondary_gate_weight,
 )
+
+# Clear host deployment paths so tests use patched DB_PATH defaults.
+os.environ.pop("SCOUT_RESEARCH_DB_PATH", None)
+os.environ.pop("SCOUT_REPORTS_DIR", None)
 
 
 class EarningsIntelligenceTests(unittest.TestCase):
@@ -5080,6 +5089,717 @@ class CloudResearchSnapshotWorkflowTests(unittest.TestCase):
             self.assertIn("--snapshot", command)
             self.assertIn("--manifest", command)
             self.assertIn("--target", command)
+
+
+class ScanJobRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "scan_jobs_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        import scan_job_runner as sjr
+
+        worker = sjr.get_scan_worker()
+        worker.stop()
+        with sjr._WORKER_LOCK:
+            sjr._WORKER = None
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def _scan_request(self) -> dict:
+        return {
+            "universeMode": "custom",
+            "tickers": "NVDA,MSFT",
+            "pickMode": "gate_runner",
+            "timeout": 25,
+        }
+
+    def _mock_run_payload(self) -> dict:
+        return {
+            "ok": True,
+            "apiUrl": "https://example.test/gates",
+            "candidates": ["NVDA", "MSFT"],
+            "results": [{"ticker": "NVDA"}, {"ticker": "MSFT"}],
+            "errors": [],
+            "finalPick": {"ticker": "NVDA"},
+        }
+
+    def test_create_scan_job_returns_immediately(self) -> None:
+        import scan_job_runner as sjr
+
+        created = sjr.create_scan_job(self._scan_request())
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["status"], "queued")
+        self.assertTrue(created["jobId"])
+
+        job = sjr.get_scan_job(created["jobId"])
+        self.assertIsNotNone(job)
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["totalTickers"], 2)
+        self.assertNotIn("result", job)
+
+    def test_job_lifecycle_completed(self) -> None:
+        import scan_job_runner as sjr
+
+        created = sjr.create_scan_job(self._scan_request())
+        job_id = created["jobId"]
+        with patch("dashboard.execute_scan_run", return_value=self._mock_run_payload()):
+            worker = sjr.ensure_scan_worker()
+            deadline = time.time() + 5
+            job = None
+            while time.time() < deadline:
+                worker.notify()
+                job = sjr.get_scan_job(job_id)
+                if job and job["status"] == "completed":
+                    break
+                time.sleep(0.05)
+        self.assertIsNotNone(job)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["result"]["finalPick"]["ticker"], "NVDA")
+        self.assertNotIn("FMP_API_KEY", json.dumps(job))
+
+    def test_failed_job_on_engine_error(self) -> None:
+        import scan_job_runner as sjr
+
+        created = sjr.create_scan_job(self._scan_request())
+        job_id = created["jobId"]
+        with patch("dashboard.execute_scan_run", side_effect=RuntimeError("gate unavailable")):
+            worker = sjr.ensure_scan_worker()
+            deadline = time.time() + 5
+            job = None
+            while time.time() < deadline:
+                worker.notify()
+                job = sjr.get_scan_job(job_id)
+                if job and job["status"] == "failed":
+                    break
+                time.sleep(0.05)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("gate unavailable", job["error"])
+
+    def test_execute_scan_run_matches_build_run_payload(self) -> None:
+        from dashboard import build_run_payload, execute_scan_run
+
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        results = StableSignalExplainabilityS2bTests._mock_results()
+
+        def fake_fetch(_api: str, ticker: str, _timeout: float):
+            for item in results:
+                if item.ticker == ticker:
+                    return item
+            raise RuntimeError(f"missing mock {ticker}")
+
+        request = {
+            "universeMode": "custom",
+            "tickers": "NVDA,MSFT,AAPL",
+            "pickMode": "gate_runner",
+            "timeout": 25,
+        }
+        with patch("dashboard.fetch_gate_result", side_effect=fake_fetch):
+            with patch("dashboard.build_earnings_intelligence_for_result", return_value=inactive_ei):
+                with patch("dashboard.choose_option_contract", return_value=None):
+                    sync_payload = build_run_payload(request)
+                    async_payload = execute_scan_run(request)
+        self.assertEqual(sync_payload["finalPick"]["ticker"], async_payload["finalPick"]["ticker"])
+        self.assertEqual(
+            [row["ticker"] for row in sync_payload["results"]],
+            [row["ticker"] for row in async_payload["results"]],
+        )
+
+    def test_progress_updates_during_scan(self) -> None:
+        import scan_job_runner as sjr
+        from dashboard import execute_scan_run
+
+        inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+        results = StableSignalExplainabilityS2bTests._mock_results()
+        progress_events: list[tuple[int, int, str | None]] = []
+
+        def fake_fetch(_api: str, ticker: str, _timeout: float):
+            for item in results:
+                if item.ticker == ticker:
+                    return item
+            raise RuntimeError(f"missing mock {ticker}")
+
+        def track_progress(completed: int, total: int, current: str | None) -> None:
+            progress_events.append((completed, total, current))
+
+        request = {"universeMode": "custom", "tickers": "NVDA,MSFT", "pickMode": "gate_runner", "timeout": 25}
+        with patch("dashboard.fetch_gate_result", side_effect=fake_fetch):
+            with patch("dashboard.build_earnings_intelligence_for_result", return_value=inactive_ei):
+                with patch("dashboard.choose_option_contract", return_value=None):
+                    execute_scan_run(request, progress_callback=track_progress)
+        self.assertGreaterEqual(len(progress_events), 4)
+        self.assertEqual(progress_events[-1][0], 2)
+        self.assertEqual(progress_events[-1][1], 2)
+
+    def test_sequential_queue_execution(self) -> None:
+        import scan_job_runner as sjr
+
+        order: list[str] = []
+
+        def slow_run(request_payload, progress_callback=None):
+            tickers = request_payload.get("tickers", "")
+            order.append(str(tickers))
+            time.sleep(0.05)
+            return {
+                "ok": True,
+                "candidates": str(tickers).split(","),
+                "results": [],
+                "errors": [],
+                "finalPick": {"ticker": "NVDA"},
+            }
+
+        first = sjr.create_scan_job({"universeMode": "custom", "tickers": "NVDA", "pickMode": "gate_runner"})
+        second = sjr.create_scan_job({"universeMode": "custom", "tickers": "MSFT", "pickMode": "gate_runner"})
+        with patch("dashboard.execute_scan_run", side_effect=slow_run):
+            worker = sjr.ensure_scan_worker()
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                worker.notify()
+                job_one = sjr.get_scan_job(first["jobId"])
+                job_two = sjr.get_scan_job(second["jobId"])
+                if (
+                    job_one["status"] == "completed"
+                    and job_two["status"] == "completed"
+                ):
+                    break
+                time.sleep(0.05)
+        self.assertEqual(order, ["NVDA", "MSFT"])
+
+    def test_unknown_job_id(self) -> None:
+        import scan_job_runner as sjr
+
+        self.assertIsNone(sjr.get_scan_job("missing-job-id"))
+
+    def test_recover_interrupted_jobs_on_restart(self) -> None:
+        import scan_job_runner as sjr
+        import memory_store as ms
+
+        created = sjr.create_scan_job(self._scan_request())
+        with ms.connect() as conn:
+            conn.execute(
+                "UPDATE scan_jobs SET status = 'running' WHERE id = ?",
+                (created["jobId"],),
+            )
+            conn.commit()
+        count = sjr.recover_interrupted_scan_jobs()
+        self.assertGreaterEqual(count, 1)
+        job = sjr.get_scan_job(created["jobId"])
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], sjr.INTERRUPTED_ERROR)
+
+    def test_scan_jobs_api_hosted_mode_allowed(self) -> None:
+        from hosted_config import hosted_maintenance_blocked
+
+        with patch.dict(os.environ, {"SCOUT_HOSTED_MODE": "1"}, clear=False):
+            self.assertFalse(hosted_maintenance_blocked("/api/scan-jobs", "POST"))
+            self.assertFalse(hosted_maintenance_blocked("/api/scan-jobs/abc123", "GET"))
+
+    def test_sync_api_run_still_available(self) -> None:
+        import json
+        import tempfile
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "sync_run_api.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+                port = server.server_address[1]
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    payload = {
+                        "universeMode": "custom",
+                        "tickers": "NVDA",
+                        "pickMode": "gate_runner",
+                        "timeout": 25,
+                    }
+                    inactive_ei = {"active": False, "conviction_adjustment": 0, "mode": "unavailable"}
+                    results = StableSignalExplainabilityS2bTests._mock_results()
+
+                    def fake_fetch(_api: str, ticker: str, _timeout: float):
+                        for item in results:
+                            if item.ticker == ticker:
+                                return item
+                        raise RuntimeError("missing")
+
+                    with patch("dashboard.fetch_gate_result", side_effect=fake_fetch):
+                        with patch(
+                            "dashboard.build_earnings_intelligence_for_result",
+                            return_value=inactive_ei,
+                        ):
+                            with patch("dashboard.choose_option_contract", return_value=None):
+                                request = urllib.request.Request(
+                                    f"http://127.0.0.1:{port}/api/run",
+                                    data=json.dumps(payload).encode("utf-8"),
+                                    headers={"Content-Type": "application/json"},
+                                    method="POST",
+                                )
+                                with urllib.request.urlopen(request) as response:
+                                    body = json.loads(response.read().decode("utf-8"))
+                    self.assertTrue(body.get("ok"))
+                finally:
+                    server.shutdown()
+                    server.server_close()
+
+
+class DeployPackageTests(unittest.TestCase):
+    DEPLOY_DIR = Path(__file__).resolve().parent / "deploy"
+
+    REQUIRED_ENV_VARS = (
+        "SCOUT_HOSTED_MODE",
+        "SCOUT_MAINTENANCE_MODE",
+        "SCOUT_RESEARCH_DB_PATH",
+        "SCOUT_REPORTS_DIR",
+        "SCOUT_SQLITE_BUSY_TIMEOUT_MS",
+        "FMP_API_KEY",
+        "SCOUT_GATE_API_URL",
+        "SCOUT_REPORTS_ASYNC",
+    )
+
+    REQUIRED_SCRIPTS = (
+        "install_host.sh",
+        "migrate_local_data.sh",
+        "scout-backup.sh",
+        "verify_host.sh",
+    )
+
+    def test_requirements_hosted_documents_stdlib_only(self) -> None:
+        path = self.DEPLOY_DIR / "requirements-hosted.txt"
+        self.assertTrue(path.is_file())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("stdlib", text.lower())
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            self.assertNotIn("==", stripped, f"Unexpected pip package line: {stripped}")
+
+    def test_env_example_contains_required_variable_names(self) -> None:
+        path = self.DEPLOY_DIR / "scout-dashboard.env.example"
+        text = path.read_text(encoding="utf-8")
+        for name in self.REQUIRED_ENV_VARS:
+            self.assertIn(name, text)
+
+    def test_deploy_scripts_exist_and_executable(self) -> None:
+        for name in self.REQUIRED_SCRIPTS:
+            path = self.DEPLOY_DIR / name
+            self.assertTrue(path.is_file(), name)
+            self.assertTrue(os.access(path, os.X_OK), f"{name} should be executable")
+
+    def test_systemd_dashboard_binds_localhost_hosted_no_open(self) -> None:
+        text = (self.DEPLOY_DIR / "scout-dashboard.service").read_text(encoding="utf-8")
+        self.assertIn("127.0.0.1", text)
+        self.assertIn("--hosted", text)
+        self.assertIn("--no-open", text)
+        self.assertIn("User=scout", text)
+        self.assertIn("EnvironmentFile=/etc/scout/scout-dashboard.env", text)
+        self.assertIn("journal", text.lower())
+
+    def test_backup_script_uses_sqlite_backup(self) -> None:
+        text = (self.DEPLOY_DIR / "scout-backup.sh").read_text(encoding="utf-8")
+        self.assertIn(".backup", text)
+        self.assertNotIn("cp ", text)
+
+    def test_no_secrets_embedded_in_deploy_files(self) -> None:
+        suspicious_patterns = (
+            r"FMP_API_KEY=[A-Za-z0-9]{12,}",
+            r"sk-[A-Za-z0-9]{20,}",
+            r"BEGIN PRIVATE KEY",
+        )
+        for path in self.DEPLOY_DIR.rglob("*"):
+            if path.suffix in {".sh", ".example", ".service", ".md", ".txt"}:
+                text = path.read_text(encoding="utf-8")
+                for pattern in suspicious_patterns:
+                    self.assertIsNone(
+                        __import__("re").search(pattern, text),
+                        f"Suspicious secret pattern in {path.name}",
+                    )
+
+    def test_migrate_prepare_and_install_roundtrip(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "repo"
+            sandbox = root / "scout-gates-sandbox"
+            sandbox.mkdir(parents=True)
+            db_path = sandbox / "scout_memory.db"
+            reports = root / "exports" / "reports"
+            reports.mkdir(parents=True)
+            (reports / "sample.pdf").write_bytes(b"%PDF-sample")
+
+            import sqlite3
+
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE t (id INTEGER)")
+                conn.commit()
+
+            bundle = Path(tmpdir) / "bundle"
+            script = self.DEPLOY_DIR / "migrate_local_data.sh"
+            subprocess.run(
+                [str(script), "prepare", "--repo-root", str(root), "--output", str(bundle)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue((bundle / "scout_memory.db").is_file())
+            self.assertTrue((bundle / "reports" / "sample.pdf").is_file())
+
+            dest_db = Path(tmpdir) / "data" / "scout_memory.db"
+            dest_reports = Path(tmpdir) / "data" / "reports"
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+                "USER": os.environ.get("USER", ""),
+                "TMPDIR": os.environ.get("TMPDIR", ""),
+                "SCOUT_RESEARCH_DB_PATH": str(dest_db),
+                "SCOUT_REPORTS_DIR": str(dest_reports),
+                "SCOUT_USER": os.environ.get("USER", "scout"),
+            }
+            subprocess.run(
+                [str(script), "install", "--bundle", str(bundle)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertTrue(dest_db.is_file())
+            self.assertTrue((dest_reports / "sample.pdf").is_file())
+            with sqlite3.connect(dest_db) as conn:
+                row = conn.execute("PRAGMA integrity_check").fetchone()
+                self.assertEqual(row[0], "ok")
+
+    def test_backup_script_creates_timestamped_backup(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scout_memory.db"
+            reports = Path(tmpdir) / "reports"
+            backup_root = Path(tmpdir) / "backups"
+            reports.mkdir()
+            (reports / "a.pdf").write_bytes(b"pdf")
+
+            import sqlite3
+
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE t (id INTEGER)")
+                conn.commit()
+
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+                "USER": os.environ.get("USER", ""),
+                "TMPDIR": os.environ.get("TMPDIR", ""),
+                "SCOUT_RESEARCH_DB_PATH": str(db_path),
+                "SCOUT_REPORTS_DIR": str(reports),
+                "BACKUP_ROOT": str(backup_root),
+                "RETENTION_DAYS": "14",
+                "SCOUT_USER": os.environ.get("USER", "scout"),
+            }
+            subprocess.run(
+                [str(self.DEPLOY_DIR / "scout-backup.sh")],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            db_backups = list(backup_root.glob("scout_memory-*.db"))
+            report_archives = list(backup_root.glob("reports-*.tar.gz"))
+            self.assertEqual(len(db_backups), 1)
+            self.assertEqual(len(report_archives), 1)
+
+
+class HostedModeTests(unittest.TestCase):
+    def test_build_parser_hosted_flag(self) -> None:
+        from dashboard import apply_cli_hosted_mode, build_parser
+        from hosted_config import HOSTED_MODE_ENV
+
+        parser = build_parser()
+        args = parser.parse_args(["--hosted"])
+        prior = os.environ.pop(HOSTED_MODE_ENV, None)
+        try:
+            apply_cli_hosted_mode(args)
+            self.assertTrue(args.no_open)
+            self.assertEqual(os.environ.get(HOSTED_MODE_ENV), "1")
+        finally:
+            os.environ.pop(HOSTED_MODE_ENV, None)
+            if prior is not None:
+                os.environ[HOSTED_MODE_ENV] = prior
+
+    def test_get_db_path_honors_env_override(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = Path(tmpdir) / "custom_hosted.db"
+            with patch.dict(os.environ, {ms.RESEARCH_DB_PATH_ENV: str(custom)}, clear=False):
+                self.assertEqual(ms.get_db_path(), custom.resolve())
+
+    def test_reports_dir_honors_env_override(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from reporting.config import default_exports_dir, registry_db_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = Path(tmpdir) / "hosted_reports"
+            with patch.dict(os.environ, {"SCOUT_REPORTS_DIR": str(custom)}, clear=False):
+                resolved = default_exports_dir()
+                self.assertEqual(resolved.resolve(), custom.resolve())
+                self.assertEqual(registry_db_path(resolved).parent.resolve(), custom.resolve())
+
+    def test_sqlite_connection_applies_wal_and_busy_timeout(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import memory_store as ms
+        from hosted_config import DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "sqlite_hosted.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                ms.init_db()
+                with ms.connect() as conn:
+                    journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                    busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                self.assertEqual(journal_mode.lower(), "wal")
+                self.assertEqual(busy_timeout, DEFAULT_SQLITE_BUSY_TIMEOUT_MS)
+
+    def test_sqlite_busy_timeout_env_override(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import memory_store as ms
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "sqlite_busy.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                with patch.dict(os.environ, {"SCOUT_SQLITE_BUSY_TIMEOUT_MS": "12000"}, clear=False):
+                    ms.init_db()
+                    with ms.connect() as conn:
+                        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                    self.assertEqual(busy_timeout, 12000)
+
+    def test_resolve_chrome_binary_linux_path(self) -> None:
+        from reporting.pdf_renderer import resolve_chrome_binary
+
+        with patch("pathlib.Path.is_file", return_value=False):
+            with patch("shutil.which", return_value="/usr/bin/chromium-browser"):
+                self.assertEqual(
+                    resolve_chrome_binary(["/usr/bin/chromium", "chromium-browser"]),
+                    "/usr/bin/chromium-browser",
+                )
+
+    def test_discover_chrome_candidates_includes_linux_paths(self) -> None:
+        from reporting.pdf_renderer import discover_chrome_candidates
+
+        candidates = discover_chrome_candidates()
+        self.assertIn("/usr/bin/chromium", candidates)
+        self.assertIn("/usr/bin/chromium-browser", candidates)
+        self.assertIn("chromium-browser", candidates)
+
+    def test_hosted_maintenance_blocked_paths(self) -> None:
+        from hosted_config import hosted_maintenance_blocked
+
+        with patch.dict(os.environ, {"SCOUT_HOSTED_MODE": "1"}, clear=False):
+            self.assertTrue(
+                hosted_maintenance_blocked("/api/control/backfill", "POST")
+            )
+            self.assertTrue(
+                hosted_maintenance_blocked("/api/control/patterns", "GET")
+            )
+            self.assertFalse(hosted_maintenance_blocked("/api/run", "POST"))
+            self.assertFalse(hosted_maintenance_blocked("/api/research-jobs", "GET"))
+
+    def test_maintenance_mode_allows_hosted_endpoints(self) -> None:
+        from hosted_config import hosted_maintenance_blocked
+
+        with patch.dict(
+            os.environ,
+            {"SCOUT_HOSTED_MODE": "1", "SCOUT_MAINTENANCE_MODE": "1"},
+            clear=False,
+        ):
+            self.assertFalse(
+                hosted_maintenance_blocked("/api/control/backfill", "POST")
+            )
+
+    def test_firestore_ingest_blocked_in_hosted_mode(self) -> None:
+        import ingest_scout_reports as isr
+
+        with patch.dict(os.environ, {"SCOUT_HOSTED_MODE": "1"}, clear=False):
+            with patch.object(isr, "firestore_credentials_available", return_value=True):
+                result = isr.ingest_scout_reports(limit=5)
+                self.assertFalse(result.get("available"))
+                self.assertIn("hosted mode", result.get("message", ""))
+
+    def test_artifact_ingest_works_in_hosted_mode(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import ingest_scout_reports as isr
+        import memory_store as ms
+
+        report = ScoutDailyReportArtifactIngestTests().sample_report("hosted-artifact-1")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "artifact_hosted.db"
+            bundle = Path(tmpdir) / isr.BUNDLE_FILENAME
+            bundle.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "generated_at": "2026-06-20T12:00:00+00:00",
+                        "reports": [report],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                with patch.dict(os.environ, {"SCOUT_HOSTED_MODE": "1"}, clear=False):
+                    result = isr.ingest_scout_reports_from_file(bundle, validate_checksum=False)
+                    self.assertTrue(result.get("ok"))
+                    self.assertEqual(result.get("ingestMode"), "artifact_file")
+                    self.assertGreaterEqual(result.get("imported", 0), 1)
+
+    def test_health_endpoint(self) -> None:
+        import json
+        import tempfile
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "health_test.db"
+            reports_dir = Path(tmpdir) / "reports"
+            reports_dir.mkdir()
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                with patch.dict(
+                    os.environ,
+                    {"SCOUT_REPORTS_DIR": str(reports_dir)},
+                    clear=False,
+                ):
+                    ms.init_db()
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+                    port = server.server_address[1]
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health") as response:
+                            payload = json.loads(response.read().decode("utf-8"))
+                        self.assertTrue(payload.get("ok"))
+                        self.assertEqual(payload.get("service"), "scout-gates-sandbox")
+                        self.assertTrue(payload.get("databaseAvailable"))
+                        self.assertTrue(payload.get("reportsDirectoryAvailable"))
+                        self.assertNotIn("FMP_API_KEY", json.dumps(payload))
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+
+    def test_hosted_api_blocks_maintenance_post(self) -> None:
+        import json
+        import tempfile
+        import threading
+        import urllib.error
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "hosted_api.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                with patch.dict(os.environ, {"SCOUT_HOSTED_MODE": "1"}, clear=False):
+                    ms.init_db()
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+                    port = server.server_address[1]
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        request = urllib.request.Request(
+                            f"http://127.0.0.1:{port}/api/control/backfill",
+                            data=b"{}",
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with self.assertRaises(urllib.error.HTTPError) as ctx:
+                            urllib.request.urlopen(request)
+                        self.assertEqual(ctx.exception.code, 403)
+                        body = json.loads(ctx.exception.read().decode("utf-8"))
+                        self.assertFalse(body.get("ok"))
+                        self.assertTrue(body.get("hostedMode"))
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+
+    def test_hosted_research_endpoints_remain_available(self) -> None:
+        import json
+        import tempfile
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+
+        import memory_store as ms
+        from dashboard import DashboardHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "hosted_research.db"
+            with patch.object(ms, "DB_PATH", db_path), patch.object(ms, "_DB_INITIALIZED", False):
+                with patch.dict(os.environ, {"SCOUT_HOSTED_MODE": "1"}, clear=False):
+                    ms.init_db()
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+                    port = server.server_address[1]
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/api/research-intelligence"
+                        ) as response:
+                            payload = json.loads(response.read().decode("utf-8"))
+                        self.assertTrue(payload.get("ok"))
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/api/research-jobs"
+                        ) as response:
+                            jobs_payload = json.loads(response.read().decode("utf-8"))
+                        self.assertTrue(jobs_payload.get("ok"))
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+
+    def test_local_mode_maintenance_not_blocked(self) -> None:
+        from hosted_config import hosted_maintenance_blocked
+
+        os.environ.pop("SCOUT_HOSTED_MODE", None)
+        self.assertFalse(hosted_maintenance_blocked("/api/control/backfill", "POST"))
 
 
 if __name__ == "__main__":

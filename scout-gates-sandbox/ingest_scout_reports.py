@@ -623,6 +623,20 @@ def ingest_scout_reports(
 
     docs = documents
     if docs is None:
+        from hosted_config import firestore_direct_ingest_blocked
+
+        if firestore_direct_ingest_blocked():
+            return {
+                "ok": True,
+                "available": False,
+                "imported": 0,
+                "updated": 0,
+                "skipped": 0,
+                "errors": [],
+                "message": "direct Firestore ingest disabled in hosted mode",
+                "databasePath": str(get_db_path()),
+                "ingestMode": "firestore",
+            }
         if not firestore_credentials_available():
             return {
                 "ok": True,
