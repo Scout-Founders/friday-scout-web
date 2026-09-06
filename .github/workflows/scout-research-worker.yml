@@ -21,9 +21,23 @@ on:
         description: Run ID containing scout-research-snapshot (defaults to current run)
         required: false
         default: ""
+      use_daily_reports_artifact:
+        description: Import scout-daily-reports artifact before running research
+        required: false
+        type: boolean
+        default: false
+      daily_reports_artifact_run_id:
+        description: Run ID containing scout-daily-reports (defaults to current run)
+        required: false
+        default: ""
   schedule:
     # Weekday mornings at 14:00 UTC (~6 AM US Pacific during standard time).
     - cron: "0 14 * * 1-5"
+  workflow_run:
+    workflows:
+      - Scout Daily Reports Publish
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -36,12 +50,17 @@ concurrency:
 jobs:
   research-worker:
     name: Run scheduled research and findings
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       SCOUT_RESEARCH_WORKER_SECRET: ${{ secrets.SCOUT_RESEARCH_WORKER_SECRET }}
       SCOUT_CLOUD_RESEARCH_ENABLED: ${{ secrets.SCOUT_CLOUD_RESEARCH_ENABLED }}
       SCOUT_RESEARCH_DB_PATH: scout-gates-sandbox/scout_research_cloud.db
       SNAPSHOT_BUNDLE_DIR: scout-gates-sandbox/snapshot-bundle
+      DAILY_REPORTS_BUNDLE_DIR: scout-gates-sandbox/daily-reports-bundle
+      # When chained from Scout Daily Reports Publish, import that run's artifact.
+      USE_DAILY_REPORTS_ARTIFACT: ${{ github.event_name == 'workflow_run' && 'true' || (inputs.use_daily_reports_artifact == true && 'true' || 'false') }}
+      DAILY_REPORTS_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.daily_reports_artifact_run_id || '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -86,14 +105,42 @@ jobs:
             --manifest "$(python3 scout-gates-sandbox/cloud_research_snapshot_workflow.py manifest-path --bundle-dir "${SNAPSHOT_BUNDLE_DIR}")" \
             --target "${SCOUT_RESEARCH_DB_PATH}"
 
+      - name: Download scout daily reports artifact from current run
+        id: download-daily-reports-current
+        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && env.DAILY_REPORTS_ARTIFACT_RUN_ID == ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scout-daily-reports
+          path: ${{ env.DAILY_REPORTS_BUNDLE_DIR }}
+
+      - name: Download scout daily reports artifact from run id
+        id: download-daily-reports-run-id
+        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && env.DAILY_REPORTS_ARTIFACT_RUN_ID != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scout-daily-reports
+          path: ${{ env.DAILY_REPORTS_BUNDLE_DIR }}
+          run-id: ${{ env.DAILY_REPORTS_ARTIFACT_RUN_ID }}
+
+      - name: Import scout daily reports bundle into cloud DB
+        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && (steps.download-daily-reports-current.outcome == 'success' || steps.download-daily-reports-run-id.outcome == 'success')
+        run: |
+          set -euo pipefail
+          python3 scout-gates-sandbox/cloud_research_daily_reports_workflow.py validate-bundle \
+            --bundle-dir "${DAILY_REPORTS_BUNDLE_DIR}"
+          python3 scout-gates-sandbox/ingest_scout_reports.py \
+            --from-bundle-dir "${DAILY_REPORTS_BUNDLE_DIR}"
+
       - name: Run scheduled research worker
         run: |
           set -euo pipefail
-          ARGS=(scout-gates-sandbox/scheduled_research_runner.py --cloud-worker)
-          if [ "${{ inputs.skip_findings }}" = "true" ]; then
+          ARGS=(scout-gates-sandbox/scheduled_research_runner.py --cloud-worker --skip-report-ingest)
+          if [ "${{ github.event_name == 'workflow_run' && 'false' || inputs.skip_findings }}" = "true" ]; then
             ARGS+=(--skip-findings)
           fi
-          FINDINGS_LIMIT="${{ inputs.findings_limit }}"
+          FINDINGS_LIMIT="${{ github.event_name == 'workflow_run' && '20' || inputs.findings_limit }}"
           if [ -n "${FINDINGS_LIMIT}" ]; then
             ARGS+=(--findings-limit "${FINDINGS_LIMIT}")
           fi

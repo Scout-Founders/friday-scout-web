@@ -106,6 +106,9 @@ from ingest_scout_reports import (
     generate_findings_from_daily_reports,
     ingest_scout_reports,
     list_ingested_daily_reports,
+    list_scan_candidates_for_report,
+    list_sent_picks,
+    list_sent_picks_for_report,
 )
 
 
@@ -555,6 +558,93 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         report_type=report_type,
                         limit=limit,
                     ),
+                }
+            )
+            return
+        if parsed.path == "/api/research-sent-picks":
+            params = urllib.parse.parse_qs(parsed.query)
+            ticker = (params.get("ticker") or [None])[0]
+            direction = (params.get("direction") or [None])[0]
+            report_type = (params.get("reportType") or params.get("report_type") or [None])[0]
+            start_date = (params.get("startDate") or params.get("start_date") or [None])[0]
+            end_date = (params.get("endDate") or params.get("end_date") or [None])[0]
+            report_id = (params.get("reportId") or params.get("report_id") or [None])[0]
+            email_classification = (
+                params.get("emailClassification")
+                or params.get("email_classification")
+                or params.get("classification")
+                or [None]
+            )[0]
+            try:
+                limit = min(max(int((params.get("limit") or ["100"])[0]), 1), 1000)
+            except ValueError:
+                limit = 100
+            picks = list_sent_picks(
+                ticker=ticker,
+                direction=direction,
+                report_type=report_type,
+                start_date=start_date,
+                end_date=end_date,
+                report_id=report_id,
+                email_classification=email_classification,
+                limit=limit,
+            )
+            scan_candidates: list[dict] = []
+            if report_id:
+                reports = [
+                    report
+                    for report in list_ingested_daily_reports(limit=500)
+                    if report.get("reportId") == report_id
+                ]
+                if reports:
+                    scan_candidates = list_scan_candidates_for_report(reports[0])
+            self.send_json(
+                {
+                    "ok": True,
+                    "picks": picks,
+                    "emailedPicks": picks,
+                    "scanCandidates": scan_candidates,
+                    "note": (
+                        "emailedPicks come from raw_report_text (TOP/SECONDARY/WATCH). "
+                        "scanCandidates come from structured_report_json.picks (passed[:6])."
+                    ),
+                }
+            )
+            return
+        if parsed.path == "/api/research-sent-picks/recent":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int((params.get("limit") or ["50"])[0]), 1), 500)
+            except ValueError:
+                limit = 50
+            self.send_json(
+                {
+                    "ok": True,
+                    "picks": list_sent_picks(limit=limit),
+                }
+            )
+            return
+        if parsed.path == "/api/research-daily-reports/detail":
+            params = urllib.parse.parse_qs(parsed.query)
+            report_id = (params.get("reportId") or params.get("report_id") or [None])[0]
+            if not report_id:
+                self.send_json({"ok": False, "message": "reportId is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            reports = [
+                report
+                for report in list_ingested_daily_reports(limit=500)
+                if report.get("reportId") == report_id
+            ]
+            if not reports:
+                self.send_json({"ok": False, "message": "report not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            report = reports[0]
+            self.send_json(
+                {
+                    "ok": True,
+                    "report": report,
+                    "emailedPicks": list_sent_picks_for_report(report_id),
+                    "scanCandidates": list_scan_candidates_for_report(report),
                 }
             )
             return
