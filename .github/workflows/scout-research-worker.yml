@@ -107,25 +107,39 @@ jobs:
 
       - name: Download scout daily reports artifact from current run
         id: download-daily-reports-current
-        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && env.DAILY_REPORTS_ARTIFACT_RUN_ID == ''
+        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && github.event_name != 'workflow_run' && env.DAILY_REPORTS_ARTIFACT_RUN_ID == ''
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: scout-daily-reports
           path: ${{ env.DAILY_REPORTS_BUNDLE_DIR }}
+
+      # Cross-workflow download requires github-token; without it, run-id is ignored and
+      # download-artifact only searches the current (worker) run.
+      - name: Download scout daily reports artifact from upstream publisher run
+        id: download-daily-reports-workflow-run
+        if: github.event_name == 'workflow_run' && env.USE_DAILY_REPORTS_ARTIFACT == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scout-daily-reports
+          path: ${{ env.DAILY_REPORTS_BUNDLE_DIR }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
 
       - name: Download scout daily reports artifact from run id
         id: download-daily-reports-run-id
-        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && env.DAILY_REPORTS_ARTIFACT_RUN_ID != ''
+        if: github.event_name != 'workflow_run' && env.USE_DAILY_REPORTS_ARTIFACT == 'true' && env.DAILY_REPORTS_ARTIFACT_RUN_ID != ''
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: scout-daily-reports
           path: ${{ env.DAILY_REPORTS_BUNDLE_DIR }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.DAILY_REPORTS_ARTIFACT_RUN_ID }}
 
       - name: Import scout daily reports bundle into cloud DB
-        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && (steps.download-daily-reports-current.outcome == 'success' || steps.download-daily-reports-run-id.outcome == 'success')
+        if: env.USE_DAILY_REPORTS_ARTIFACT == 'true' && (steps.download-daily-reports-current.outcome == 'success' || steps.download-daily-reports-workflow-run.outcome == 'success' || steps.download-daily-reports-run-id.outcome == 'success')
         run: |
           set -euo pipefail
           python3 scout-gates-sandbox/cloud_research_daily_reports_workflow.py validate-bundle \

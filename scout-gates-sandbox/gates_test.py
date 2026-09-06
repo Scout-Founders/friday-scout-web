@@ -5800,6 +5800,52 @@ class ScoutDailyReportsPublisherTests(unittest.TestCase):
         self.assertIn("workflow_run", worker)
         self.assertIn("name: scout-daily-reports", worker)
 
+    def test_workflow_run_downloads_daily_reports_from_publisher_run_id(self) -> None:
+        """Regression: cross-run artifact download needs github-token + upstream run-id."""
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        worker = (root / ".github/workflows/scout-research-worker.yml").read_text(
+            encoding="utf-8"
+        )
+        publish = (root / ".github/workflows/scout-daily-reports-publish.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("name: scout-daily-reports", publish)
+        self.assertRegex(
+            worker,
+            r"download-daily-reports-workflow-run",
+        )
+        # Explicit upstream publisher run id (not the worker's own github.run_id).
+        self.assertRegex(
+            worker,
+            r"run-id:\s*\$\{\{\s*github\.event\.workflow_run\.id\s*\}\}",
+        )
+        # download-artifact ignores run-id unless github-token is provided.
+        workflow_run_download = re.search(
+            r"id:\s*download-daily-reports-workflow-run[\s\S]*?(?=\n      - name:|\n      - id:|\Z)",
+            worker,
+        )
+        self.assertIsNotNone(workflow_run_download)
+        workflow_run_block = workflow_run_download.group(0)
+        self.assertIn("github.event_name == 'workflow_run'", workflow_run_block)
+        self.assertIn("secrets.GITHUB_TOKEN", workflow_run_block)
+        self.assertIn("github.event.workflow_run.id", workflow_run_block)
+        self.assertIn("name: scout-daily-reports", workflow_run_block)
+        self.assertNotIn("github.run_id", workflow_run_block)
+
+        # Manual / workflow_dispatch paths remain intact.
+        self.assertIn("download-daily-reports-current", worker)
+        self.assertIn("download-daily-reports-run-id", worker)
+        self.assertIn("github.event_name != 'workflow_run'", worker)
+        self.assertIn("inputs.use_daily_reports_artifact", worker)
+        self.assertIn("inputs.daily_reports_artifact_run_id", worker)
+        self.assertIn("use_snapshot_artifact", worker)
+        self.assertIn("scout-research-snapshot", worker)
+        self.assertIn("actions: read", worker)
+
     def test_fetch_scout_report_documents_uses_descending_not_desc(self) -> None:
         """Regression: Firestore rejects direction='DESC'; must be DESCENDING."""
         import re
