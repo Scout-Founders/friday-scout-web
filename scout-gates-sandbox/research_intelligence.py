@@ -135,6 +135,10 @@ def get_research_intelligence_summary() -> dict[str, Any]:
             """
         ).fetchone()[0]
 
+    from ingest_scout_reports import get_sent_picks_summary
+
+    sent_picks_summary = get_sent_picks_summary()
+
     highest_validation = None
     if highest is not None:
         highest_validation = {
@@ -158,6 +162,10 @@ def get_research_intelligence_summary() -> dict[str, Any]:
             latest_monday_coffee["market_date"] if latest_monday_coffee else None
         ),
         "dailyReportFindingsCount": int(daily_report_findings or 0),
+        "totalSentPicks": sent_picks_summary["totalSentPicks"],
+        "sentReportsRepresented": sent_picks_summary["sentReportsRepresented"],
+        "latestSentPickDate": sent_picks_summary["latestSentPickDate"],
+        "sentPicksByClassification": sent_picks_summary.get("byClassification") or {},
     }
 
 
@@ -183,6 +191,52 @@ def get_daily_report_findings(limit: int = 10) -> list[dict[str, Any]]:
             "reportType": (finding.get("supportingMetrics") or {}).get("reportType"),
             "marketDate": (finding.get("supportingMetrics") or {}).get("marketDate"),
             "reportId": (finding.get("supportingMetrics") or {}).get("reportId"),
+            "recommendedNextTest": finding.get("recommendedNextTest"),
+        }
+        for finding in ranked[:bounded]
+    ]
+
+
+def get_recent_sent_picks(limit: int = 20) -> list[dict[str, Any]]:
+    from ingest_scout_reports import list_sent_picks
+
+    picks = list_sent_picks(limit=min(max(int(limit), 1), 100))
+    return [
+        {
+            "sentPickId": pick.get("sentPickId"),
+            "marketDate": pick.get("marketDate"),
+            "ticker": pick.get("ticker"),
+            "emailClassification": pick.get("emailClassification"),
+            "direction": pick.get("direction"),
+            "reportId": pick.get("reportId"),
+            "parserConfidence": pick.get("parserConfidence"),
+            "parseMode": pick.get("parseMode"),
+            "role": "emailed_pick",
+        }
+        for pick in picks
+    ]
+
+
+def get_sent_pick_findings(limit: int = 10) -> list[dict[str, Any]]:
+    findings = list_research_findings(finding_type="sent_pick_observation", limit=200)
+    ranked = sorted(findings, key=_finding_sort_key)
+    bounded = min(max(int(limit), 1), 50)
+    return [
+        {
+            "id": finding["id"],
+            "title": finding["title"],
+            "findingType": finding["findingType"],
+            "severity": finding["severity"],
+            "confidence": finding["confidence"],
+            "reportType": (finding.get("supportingMetrics") or {}).get("reportType"),
+            "marketDate": (finding.get("supportingMetrics") or {}).get("marketDate"),
+            "reportId": (finding.get("supportingMetrics") or {}).get("reportId"),
+            "ticker": (finding.get("supportingMetrics") or {}).get("ticker"),
+            "emailClassification": (finding.get("supportingMetrics") or {}).get(
+                "emailClassification"
+            ),
+            "direction": (finding.get("supportingMetrics") or {}).get("direction"),
+            "parseMode": (finding.get("supportingMetrics") or {}).get("parseMode"),
             "recommendedNextTest": finding.get("recommendedNextTest"),
         }
         for finding in ranked[:bounded]
@@ -558,4 +612,6 @@ def get_research_intelligence_dashboard() -> dict[str, Any]:
         "recurringFailurePatterns": get_recurring_failure_patterns(limit=10),
         "recommendedNextExperiments": get_recommended_next_experiments(limit=10),
         "dailyScoutIntelligence": get_daily_report_findings(limit=10),
+        "recentSentPicks": get_recent_sent_picks(limit=20),
+        "sentPickObservations": get_sent_pick_findings(limit=10),
     }

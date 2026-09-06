@@ -1,0 +1,92 @@
+name: Scout Daily Reports Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Optional ISO generated_at lower bound (overrides lookback)
+        required: false
+        default: ""
+      lookback_days:
+        description: Incremental lookback window in days when since is empty
+        required: false
+        default: "7"
+      limit:
+        description: Max Firestore scout_reports documents to export
+        required: false
+        default: "100"
+  schedule:
+    # Weekdays at 13:45 UTC — before the cloud research worker (14:00 UTC).
+    - cron: "45 13 * * 1-5"
+
+permissions:
+  contents: read
+  actions: write
+  id-token: write
+
+concurrency:
+  group: scout-daily-reports-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-daily-reports:
+    name: Export scout_reports and upload scout-daily-reports
+    runs-on: ubuntu-latest
+    env:
+      SCOUT_FIRESTORE_PROJECT_ID: ${{ secrets.SCOUT_FIRESTORE_PROJECT_ID }}
+      SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+      DAILY_REPORTS_BUNDLE_DIR: scout-gates-sandbox/daily-reports-bundle
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exporter dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "google-cloud-firestore>=2.16.0" "google-auth>=2.29.0"
+
+      - name: Verify Firestore publisher secrets are configured
+        run: |
+          set -euo pipefail
+          if [ -z "${SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "Missing GitHub secret SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON (read-only Firestore SA JSON)." >&2
+            exit 1
+          fi
+          if [ -z "${SCOUT_FIRESTORE_PROJECT_ID}" ]; then
+            echo "Missing GitHub secret SCOUT_FIRESTORE_PROJECT_ID." >&2
+            exit 1
+          fi
+
+      - name: Export scout_reports to artifact bundle
+        run: |
+          set -euo pipefail
+          mkdir -p "${DAILY_REPORTS_BUNDLE_DIR}"
+          ARGS=(
+            scout-gates-sandbox/export_scout_daily_reports.py
+            --output-dir "${DAILY_REPORTS_BUNDLE_DIR}"
+            --limit "${{ inputs.limit || '100' }}"
+          )
+          SINCE_INPUT="${{ inputs.since || '' }}"
+          LOOKBACK_INPUT="${{ inputs.lookback_days || '7' }}"
+          if [ -n "${SINCE_INPUT}" ]; then
+            ARGS+=(--since "${SINCE_INPUT}")
+          else
+            ARGS+=(--lookback-days "${LOOKBACK_INPUT}")
+          fi
+          python3 "${ARGS[@]}"
+
+      - name: Upload scout-daily-reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scout-daily-reports
+          path: |
+            scout-gates-sandbox/daily-reports-bundle/scout_daily_reports.json
+            scout-gates-sandbox/daily-reports-bundle/scout_daily_reports.manifest.json
+          if-no-files-found: error
+          retention-days: 14

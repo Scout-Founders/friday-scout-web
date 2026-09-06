@@ -4,8 +4,12 @@
 One-way ingest paths:
   1. Artifact bundle JSON (preferred for cloud research)
   2. Firestore scout_reports read-only (optional local/dev fallback)
-  → research_daily_reports (SQLite research DB)
-  → research_findings (optional adapter)
+  → research_daily_reports (SQLite research DB)  # full report/archive history
+  → research_sent_picks (email_sent=true emailed picks from raw_report_text)
+  → research_findings (optional adapter; independent of sent-pick ledger)
+
+Official sent picks are parsed from raw_report_text (SMTP email body).
+structured_report_json.picks remain scan candidates only (passed[:6]).
 
 Never writes to Firestore, SMTP, live scans, scoring, gates, or trades.
 """
@@ -21,6 +25,12 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from memory_store import connect, get_db_path, init_db, json_dump, json_load
+from sent_pick_parser import (
+    PARSE_MODE_RAW_SCAN_FALLBACK,
+    PARSE_MODE_UNRECOGNIZED,
+    extract_scan_candidates,
+    parse_scout_email_picks,
+)
 
 
 SCOUT_REPORTS_COLLECTION = "scout_reports"
@@ -51,6 +61,29 @@ REPORT_TYPE_ALIASES = {
 }
 
 FINDING_TYPE_DAILY_REPORT = "daily_report_observation"
+FINDING_TYPE_SENT_PICK = "sent_pick_observation"
+
+SENT_PICK_TABLE_COLUMNS: dict[str, str] = {
+    "sent_pick_id": "TEXT NOT NULL PRIMARY KEY",
+    "report_id": "TEXT NOT NULL",
+    "report_type": "TEXT",
+    "market_date": "TEXT",
+    "generated_at": "TEXT",
+    "email_sent_at": "TEXT",
+    "ticker": "TEXT NOT NULL",
+    "email_classification": "TEXT NOT NULL",
+    "direction": "TEXT",
+    "strike": "REAL",
+    "expiration": "TEXT",
+    "strategy_text": "TEXT",
+    "parser_confidence": "REAL",
+    "parse_mode": "TEXT",
+    "source_section": "TEXT",
+    "source_excerpt": "TEXT",
+    "pick_json": "TEXT NOT NULL DEFAULT '{}'",
+    "created_at": "TEXT NOT NULL",
+    "updated_at": "TEXT NOT NULL",
+}
 
 
 def utc_now_iso() -> str:
@@ -92,6 +125,90 @@ def init_research_daily_reports_store(conn: sqlite3.Connection) -> None:
             ON research_daily_reports(report_id);
         """
     )
+    init_research_sent_picks_store(conn)
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    names: set[str] = set()
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            names.add(str(row["name"]))
+        else:
+            names.add(str(row[1]))
+    return names
+
+
+def init_research_sent_picks_store(conn: sqlite3.Connection) -> None:
+    """Create/migrate research_sent_picks. Safe for existing scout_memory.db."""
+    # Create table first, then migrate columns, then indexes — indexes that
+    # reference newer columns must not run before ALTER TABLE on older DBs.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_sent_picks (
+            sent_pick_id TEXT NOT NULL PRIMARY KEY,
+            report_id TEXT NOT NULL,
+            report_type TEXT,
+            market_date TEXT,
+            generated_at TEXT,
+            email_sent_at TEXT,
+            ticker TEXT NOT NULL,
+            email_classification TEXT NOT NULL DEFAULT 'unknown',
+            direction TEXT,
+            strike REAL,
+            expiration TEXT,
+            strategy_text TEXT,
+            parser_confidence REAL,
+            parse_mode TEXT,
+            source_section TEXT,
+            source_excerpt TEXT,
+            pick_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    existing = _table_column_names(conn, "research_sent_picks")
+    alter_specs = [
+        ("email_classification", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("direction", "TEXT"),
+        ("strike", "REAL"),
+        ("expiration", "TEXT"),
+        ("strategy_text", "TEXT"),
+        ("parser_confidence", "REAL"),
+        ("parse_mode", "TEXT"),
+        ("source_section", "TEXT"),
+        ("source_excerpt", "TEXT"),
+        ("pick_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("created_at", "TEXT"),
+        ("updated_at", "TEXT"),
+    ]
+    for column, col_type in alter_specs:
+        if column not in existing:
+            conn.execute(
+                f"ALTER TABLE research_sent_picks ADD COLUMN {column} {col_type}"
+            )
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_research_sent_picks_report_id
+            ON research_sent_picks(report_id);
+
+        CREATE INDEX IF NOT EXISTS idx_research_sent_picks_ticker
+            ON research_sent_picks(ticker, market_date DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_research_sent_picks_market_date
+            ON research_sent_picks(market_date DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_research_sent_picks_direction
+            ON research_sent_picks(direction, market_date DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_research_sent_picks_report_type
+            ON research_sent_picks(report_type, market_date DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_research_sent_picks_classification
+            ON research_sent_picks(email_classification, market_date DESC);
+        """
+    )
 
 
 def normalize_report_type(value: Any) -> Optional[str]:
@@ -131,6 +248,37 @@ def research_daily_report_row(row: sqlite3.Row) -> dict[str, Any]:
         "emailError": row["email_error"],
         "ingestedAt": row["ingested_at"],
         "sourceSystem": row["source_system"],
+    }
+
+
+def research_sent_pick_row(row: sqlite3.Row) -> dict[str, Any]:
+    keys = set(row.keys())
+    return {
+        "sentPickId": row["sent_pick_id"],
+        "reportId": row["report_id"],
+        "reportType": row["report_type"],
+        "marketDate": row["market_date"],
+        "generatedAt": row["generated_at"],
+        "emailSentAt": row["email_sent_at"],
+        "ticker": row["ticker"],
+        "emailClassification": row["email_classification"]
+        if "email_classification" in keys
+        else None,
+        "direction": (row["direction"] or None),
+        "strike": row["strike"] if "strike" in keys else None,
+        "expiration": row["expiration"] if "expiration" in keys else None,
+        "strategyText": row["strategy_text"] if "strategy_text" in keys else None,
+        "parserConfidence": row["parser_confidence"]
+        if "parser_confidence" in keys
+        else None,
+        "parseMode": row["parse_mode"] if "parse_mode" in keys else None,
+        "sourceSection": row["source_section"] if "source_section" in keys else None,
+        "sourceExcerpt": row["source_excerpt"] if "source_excerpt" in keys else None,
+        "pick": json_load(row["pick_json"]) if "pick_json" in keys else {},
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        # Role label so APIs never conflate with scan candidates.
+        "role": "emailed_pick",
     }
 
 
@@ -591,10 +739,16 @@ def ingest_scout_report_document(
             "SELECT * FROM research_daily_reports WHERE id = ?",
             (report_row_id,),
         ).fetchone()
+        report = research_daily_report_row(row)
+        try:
+            materialize_sent_picks_for_report(report, conn=conn)
+        except Exception as materialize_err:
+            # Never fail report ingest because of ledger materialization.
+            print(f"[SENT_PICKS] materialize failed for {payload['report_id']}: {materialize_err}")
         return {
             "ok": True,
             "action": action,
-            "report": research_daily_report_row(row),
+            "report": report,
         }
 
 
@@ -766,6 +920,371 @@ def get_latest_ingested_report(*, report_type: Optional[str] = None) -> Optional
 
 
 # ---------------------------------------------------------------------------
+# Sent-pick ledger (email_sent=true only; parsed from raw_report_text)
+# ---------------------------------------------------------------------------
+
+
+def build_sent_pick_id(
+    report_id: str,
+    email_classification: str,
+    ticker: str,
+    ordinal: int = 0,
+) -> str:
+    """Deterministic identity: report_id + classification + ticker (+ ordinal)."""
+    base = f"{report_id}|{email_classification}|{ticker}"
+    if ordinal <= 0:
+        return base
+    return f"{base}|{ordinal}"
+
+
+def clear_sent_picks_for_report(conn: sqlite3.Connection, report_id: str) -> int:
+    cursor = conn.execute(
+        "DELETE FROM research_sent_picks WHERE report_id = ?",
+        (report_id,),
+    )
+    return int(cursor.rowcount or 0)
+
+
+def list_scan_candidates_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic scan candidates from structured_report_json.picks (not emailed)."""
+    structured = report.get("structuredReport")
+    if structured is None:
+        structured = report.get("structured_report")
+    if isinstance(structured, str):
+        try:
+            structured = json.loads(structured)
+        except json.JSONDecodeError:
+            structured = {}
+    if structured is None and report.get("structured_report_json") is not None:
+        raw = report.get("structured_report_json")
+        if isinstance(raw, str):
+            try:
+                structured = json.loads(raw)
+            except json.JSONDecodeError:
+                structured = {}
+        else:
+            structured = raw
+    return extract_scan_candidates(structured or {})
+
+
+def materialize_sent_picks_for_report(
+    report: dict[str, Any],
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, Any]:
+    """Upsert emailed-pick rows for one ingested report when email_sent is true.
+
+    Source of truth: raw_report_text (SMTP body), NOT structured_report_json.picks.
+    Safe on malformed/empty text: clears ledger rows for the report and returns
+    without raising. Never fails report ingest.
+    """
+    report_id = _as_text(report.get("reportId") or report.get("report_id"))
+    if not report_id:
+        return {
+            "ok": True,
+            "reportId": None,
+            "upserted": 0,
+            "removed": 0,
+            "skipped": True,
+            "reason": "missing_report_id",
+            "parseMode": PARSE_MODE_UNRECOGNIZED,
+        }
+
+    email_sent = bool(report.get("emailSent") if "emailSent" in report else report.get("email_sent"))
+    owns_connection = conn is None
+
+    def _run(active: sqlite3.Connection) -> dict[str, Any]:
+        init_research_sent_picks_store(active)
+        if not email_sent:
+            removed = clear_sent_picks_for_report(active, report_id)
+            return {
+                "ok": True,
+                "reportId": report_id,
+                "upserted": 0,
+                "removed": removed,
+                "skipped": True,
+                "reason": "email_not_sent",
+                "parseMode": None,
+            }
+
+        raw_text = report.get("rawReportText")
+        if raw_text is None:
+            raw_text = report.get("raw_report_text")
+        parsed = parse_scout_email_picks(raw_text if isinstance(raw_text, str) else str(raw_text or ""))
+        parse_mode = parsed.get("parse_mode") or PARSE_MODE_UNRECOGNIZED
+        picks = parsed.get("picks") or []
+        if not isinstance(picks, list):
+            picks = []
+
+        if not picks:
+            removed = clear_sent_picks_for_report(active, report_id)
+            return {
+                "ok": True,
+                "reportId": report_id,
+                "upserted": 0,
+                "removed": removed,
+                "skipped": True,
+                "reason": (
+                    "raw_scan_fallback"
+                    if parse_mode == PARSE_MODE_RAW_SCAN_FALLBACK
+                    else "no_emailed_picks"
+                ),
+                "parseMode": parse_mode,
+            }
+
+        report_type = report.get("reportType") or report.get("report_type")
+        market_date = report.get("marketDate") or report.get("market_date")
+        generated_at = report.get("generatedAt") or report.get("generated_at")
+        email_sent_at = report.get("emailSentAt") or report.get("email_sent_at")
+        now = utc_now_iso()
+        occurrence: dict[tuple[str, str], int] = {}
+        kept_ids: list[str] = []
+        upserted = 0
+
+        for pick in picks:
+            if not isinstance(pick, dict):
+                continue
+            ticker = _as_text(pick.get("ticker"))
+            classification = _as_text(pick.get("email_classification"))
+            if not ticker or not classification:
+                continue
+            ticker = ticker.upper()
+            classification = classification.lower()
+            key = (classification, ticker)
+            ordinal = occurrence.get(key, 0)
+            occurrence[key] = ordinal + 1
+            sent_pick_id = build_sent_pick_id(report_id, classification, ticker, ordinal)
+
+            direction = _as_text(pick.get("direction"))
+            strike = pick.get("strike")
+            try:
+                strike_value = float(strike) if strike is not None and strike != "" else None
+            except (TypeError, ValueError):
+                strike_value = None
+            expiration = _as_text(pick.get("expiration"))
+            strategy_text = _as_text(pick.get("strategy_text"))
+            parser_confidence = pick.get("parser_confidence")
+            try:
+                confidence_value = (
+                    float(parser_confidence) if parser_confidence is not None else None
+                )
+            except (TypeError, ValueError):
+                confidence_value = None
+            pick_parse_mode = _as_text(pick.get("parse_mode")) or parse_mode
+            source_section = _as_text(pick.get("source_section"))
+            source_excerpt = _as_text(pick.get("source_excerpt"))
+
+            existing = active.execute(
+                "SELECT created_at FROM research_sent_picks WHERE sent_pick_id = ?",
+                (sent_pick_id,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing else now
+
+            # Store empty string for missing direction to stay compatible with
+            # older DBs that created direction as NOT NULL.
+            direction_value = direction or ""
+
+            active.execute(
+                """
+                INSERT INTO research_sent_picks (
+                    sent_pick_id, report_id, report_type, market_date, generated_at,
+                    email_sent_at, ticker, email_classification, direction, strike,
+                    expiration, strategy_text, parser_confidence, parse_mode,
+                    source_section, source_excerpt, pick_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sent_pick_id) DO UPDATE SET
+                    report_id = excluded.report_id,
+                    report_type = excluded.report_type,
+                    market_date = excluded.market_date,
+                    generated_at = excluded.generated_at,
+                    email_sent_at = excluded.email_sent_at,
+                    ticker = excluded.ticker,
+                    email_classification = excluded.email_classification,
+                    direction = excluded.direction,
+                    strike = excluded.strike,
+                    expiration = excluded.expiration,
+                    strategy_text = excluded.strategy_text,
+                    parser_confidence = excluded.parser_confidence,
+                    parse_mode = excluded.parse_mode,
+                    source_section = excluded.source_section,
+                    source_excerpt = excluded.source_excerpt,
+                    pick_json = excluded.pick_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    sent_pick_id,
+                    report_id,
+                    report_type,
+                    market_date,
+                    generated_at,
+                    email_sent_at,
+                    ticker,
+                    classification,
+                    direction_value,
+                    strike_value,
+                    expiration,
+                    strategy_text,
+                    confidence_value,
+                    pick_parse_mode,
+                    source_section,
+                    source_excerpt,
+                    json_dump(pick),
+                    created_at,
+                    now,
+                ),
+            )
+            kept_ids.append(sent_pick_id)
+            upserted += 1
+
+        if kept_ids:
+            placeholders = ",".join("?" for _ in kept_ids)
+            cursor = active.execute(
+                f"""
+                DELETE FROM research_sent_picks
+                WHERE report_id = ?
+                  AND sent_pick_id NOT IN ({placeholders})
+                """,
+                [report_id, *kept_ids],
+            )
+            removed = int(cursor.rowcount or 0)
+        else:
+            removed = clear_sent_picks_for_report(active, report_id)
+
+        return {
+            "ok": True,
+            "reportId": report_id,
+            "upserted": upserted,
+            "removed": removed,
+            "skipped": upserted == 0,
+            "reason": None if upserted else "no_valid_picks",
+            "parseMode": parse_mode,
+        }
+
+    try:
+        if owns_connection:
+            init_db()
+            with connect() as active:
+                return _run(active)
+        assert conn is not None
+        return _run(conn)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reportId": report_id,
+            "upserted": 0,
+            "removed": 0,
+            "skipped": True,
+            "reason": f"materialize_error: {exc}",
+            "parseMode": None,
+        }
+
+
+def list_sent_picks(
+    *,
+    ticker: Optional[str] = None,
+    direction: Optional[str] = None,
+    report_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    report_id: Optional[str] = None,
+    email_classification: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    init_db()
+    clauses = ["1 = 1"]
+    params: list[Any] = []
+    if ticker:
+        clauses.append("ticker = ?")
+        params.append(str(ticker).strip().upper())
+    if direction:
+        clauses.append("UPPER(COALESCE(direction, '')) = ?")
+        params.append(str(direction).strip().upper())
+    if report_type:
+        clauses.append("report_type = ?")
+        params.append(normalize_report_type(report_type) or report_type)
+    if start_date:
+        clauses.append(
+            "COALESCE(market_date, substr(email_sent_at, 1, 10), substr(generated_at, 1, 10)) >= ?"
+        )
+        params.append(str(start_date).strip()[:10])
+    if end_date:
+        clauses.append(
+            "COALESCE(market_date, substr(email_sent_at, 1, 10), substr(generated_at, 1, 10)) <= ?"
+        )
+        params.append(str(end_date).strip()[:10])
+    if report_id:
+        clauses.append("report_id = ?")
+        params.append(str(report_id).strip())
+    if email_classification:
+        clauses.append("LOWER(COALESCE(email_classification, '')) = ?")
+        params.append(str(email_classification).strip().lower())
+    bounded = min(max(int(limit), 1), 1000)
+    params.append(bounded)
+    with connect() as conn:
+        init_research_sent_picks_store(conn)
+        rows = conn.execute(
+            f"""
+            SELECT * FROM research_sent_picks
+            WHERE {' AND '.join(clauses)}
+            ORDER BY COALESCE(market_date, email_sent_at, generated_at, updated_at) DESC,
+                     CASE LOWER(COALESCE(email_classification, ''))
+                       WHEN 'top' THEN 0
+                       WHEN 'secondary' THEN 1
+                       WHEN 'watch' THEN 2
+                       ELSE 3
+                     END,
+                     email_sent_at DESC,
+                     sent_pick_id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [research_sent_pick_row(row) for row in rows]
+
+
+def list_sent_picks_for_report(report_id: str) -> list[dict[str, Any]]:
+    return list_sent_picks(report_id=report_id, limit=500)
+
+
+def list_sent_picks_for_date(market_date: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    day = str(market_date or "").strip()[:10]
+    return list_sent_picks(start_date=day, end_date=day, limit=limit)
+
+
+def get_sent_picks_summary() -> dict[str, Any]:
+    """Lightweight counts for research intelligence (no performance claims)."""
+    init_db()
+    with connect() as conn:
+        init_research_sent_picks_store(conn)
+        total = conn.execute("SELECT COUNT(*) AS n FROM research_sent_picks").fetchone()["n"]
+        reports = conn.execute(
+            "SELECT COUNT(DISTINCT report_id) AS n FROM research_sent_picks"
+        ).fetchone()["n"]
+        latest = conn.execute(
+            """
+            SELECT COALESCE(market_date, substr(email_sent_at, 1, 10), substr(generated_at, 1, 10)) AS d
+            FROM research_sent_picks
+            ORDER BY COALESCE(market_date, email_sent_at, generated_at, updated_at) DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        by_class_rows = conn.execute(
+            """
+            SELECT LOWER(COALESCE(email_classification, 'unknown')) AS klass, COUNT(*) AS n
+            FROM research_sent_picks
+            GROUP BY LOWER(COALESCE(email_classification, 'unknown'))
+            """
+        ).fetchall()
+    by_class = {row["klass"]: int(row["n"]) for row in by_class_rows}
+    return {
+        "totalSentPicks": int(total or 0),
+        "sentReportsRepresented": int(reports or 0),
+        "latestSentPickDate": latest["d"] if latest else None,
+        "byClassification": by_class,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report → findings adapter (structured_report_json only)
 # ---------------------------------------------------------------------------
 
@@ -816,6 +1335,75 @@ def _normalize_regime_label(value: Any) -> Optional[str]:
     if "mixed" in text:
         return "mixed regime"
     return str(value).strip() or None
+
+
+def _confidence_label_from_parser(value: Any) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return "medium"
+    if score >= 0.8:
+        return "high"
+    if score >= 0.6:
+        return "medium"
+    return "low"
+
+
+def finding_payloads_from_sent_picks(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build sent_pick_observation findings from the official emailed-pick ledger."""
+    if not bool(report.get("emailSent") if "emailSent" in report else report.get("email_sent")):
+        return []
+    report_id = str(report.get("reportId") or report.get("report_id") or "")
+    if not report_id:
+        return []
+    picks = list_sent_picks_for_report(report_id)
+    market_date = report.get("marketDate") or report.get("market_date")
+    report_type = report.get("reportType") or report.get("report_type")
+    payloads: list[dict[str, Any]] = []
+    for pick in picks:
+        ticker = pick.get("ticker")
+        classification = pick.get("emailClassification") or "unknown"
+        direction = pick.get("direction")
+        parse_mode = pick.get("parseMode")
+        confidence = _confidence_label_from_parser(pick.get("parserConfidence"))
+        class_label = str(classification).upper()
+        direction_bit = f" ({direction})" if direction else ""
+        title = (
+            f"Sent pick observation: {ticker} — {class_label}{direction_bit} "
+            f"on {market_date or 'unknown date'}"
+        )
+        payloads.append(
+            {
+                "finding_type": FINDING_TYPE_SENT_PICK,
+                "severity": "info" if classification != "top" else "watch",
+                "title": title,
+                "description": (
+                    f"Scout emailed {ticker} as {class_label} in report {report_id} "
+                    f"(parse_mode={parse_mode or 'unknown'}, "
+                    f"parser_confidence={pick.get('parserConfidence')})."
+                ),
+                "confidence": confidence,
+                "supporting_metrics": {
+                    "reportId": report_id,
+                    "reportType": report_type,
+                    "marketDate": market_date,
+                    "source": "sent_pick",
+                    "ticker": ticker,
+                    "emailClassification": classification,
+                    "direction": direction,
+                    "parserConfidence": pick.get("parserConfidence"),
+                    "parseMode": parse_mode,
+                    "sentPickId": pick.get("sentPickId"),
+                },
+                "related_sectors": [],
+                "related_tickers": [ticker] if ticker else [],
+                "recommended_next_test": (
+                    "Compare emailed classifications against deterministic scan candidates "
+                    "for the same report_id without treating them as interchangeable."
+                ),
+            }
+        )
+    return payloads
 
 
 def finding_payloads_from_daily_report(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1069,7 +1657,7 @@ def _daily_report_finding_exists(
 
 
 def generate_findings_from_daily_reports(*, limit: int = 20) -> dict[str, Any]:
-    """Create research findings from ingested daily reports (structured JSON only)."""
+    """Create research findings from ingested daily reports + emailed sent picks."""
     from research_findings_engine import create_research_finding, init_research_findings_store
 
     reports = list_ingested_daily_reports(limit=limit)
@@ -1084,6 +1672,7 @@ def generate_findings_from_daily_reports(*, limit: int = 20) -> dict[str, Any]:
         for report in reports:
             processed += 1
             payloads = finding_payloads_from_daily_report(report)
+            payloads.extend(finding_payloads_from_sent_picks(report))
             if not payloads:
                 continue
             report_id = str(report.get("reportId") or "")

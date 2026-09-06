@@ -4324,6 +4324,770 @@ class CloudResearchDailyReportsWorkflowTests(unittest.TestCase):
             )
 
 
+class ScoutSentPickLedgerTests(unittest.TestCase):
+    """Email-body sent picks vs structured scan candidates."""
+
+    EDITORIAL_EMAIL = """\
+MACRO BRIEF
+Markets are mixed with leadership in semis. SPY and QQQ held support while
+sector rotation favored AI infrastructure over defensives.
+
+SECTOR TABLE
+Semis: tailwind | Energy: headwind
+
+TOP PICK
+AAPL (CALL) — Apple continues to show relative strength.
+STRATEGY: Bull call spread, strike $195 / $205, expiration 6-10 weeks.
+Max profit defined; verify live pricing.
+
+SECONDARY PICK
+ON (PUT) — Semiconductor weakness after guidance cut.
+Strategy: Bear put spread. Exp: 4-6 weeks.
+
+WATCH LIST
+- MSFT: waiting for IV crush post-earnings
+- NVDA — bullish momentum but elevated IV
+- AMD: one-line watch only
+
+Active trade updates available in the Hourly Scanner and End-of-Day Report.
+Scout provides analysis for educational purposes only. This is not financial advice.
+"""
+
+    RAW_SCAN_FALLBACK = """\
+Fetched 120 quotes.
+
+  CALL CANDIDATES:
+  AAPL passed all gates
+  2 calls passed all gates
+
+  PUT CANDIDATES:
+  ON passed all gates
+  1 puts passed all gates
+
+==================================================
+FINAL RANKINGS
+==================================================
+  #1: AAPL (CALL) — Scout Score: 87/100 (STRONG) — Strategy: BULL CALL SPREAD — Exp: 6-10 weeks
+  #2: ON (PUT) — Scout Score: 72/100 (MODERATE) — Strategy: BEAR PUT SPREAD — Exp: 4-6 weeks
+  #3: MSFT (CALL) — Scout Score: 65/100 (WATCH) — Strategy: WAIT — Exp: watch
+
+  TOP PICK: AAPL (CALL) Scout Score 87/100
+"""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "sent_pick_ledger_test.db"
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def production_shaped_doc(
+        self,
+        report_id: str = "scout_v6_2026-06-20_1200",
+        *,
+        email_sent: bool = True,
+        raw_report_text: str | None = None,
+        picks: list | None = None,
+        market_date: str = "2026-06-20",
+    ) -> dict:
+        if picks is None:
+            picks = [
+                {
+                    "ticker": "AAPL",
+                    "direction": "CALL",
+                    "scout_score": 87,
+                    "total_score": 14,
+                    "strategy": "BULL CALL SPREAD",
+                    "catalyst_level": "PRESENT",
+                    "expiration_rec": "6-10 weeks",
+                    "strikes": {
+                        "conviction": "HIGH",
+                        "conservative_strike": 195,
+                        "risky_strike": 205,
+                    },
+                },
+                {
+                    "ticker": "TSLA",
+                    "direction": "CALL",
+                    "scout_score": 70,
+                    "total_score": 11,
+                    "strategy": "WAIT",
+                    "catalyst_level": "NONE",
+                    "expiration_rec": "watch",
+                    "strikes": {},
+                },
+            ]
+        return {
+            "report_id": report_id,
+            "report_type": "scout_v6",
+            "report_version": "6",
+            "market_date": market_date,
+            "generated_at": f"{market_date}T12:00:00+00:00",
+            "status_prefix": "INFO",
+            "email_subject": f"[INFO] Scout v6 — {market_date[5:7]}/{market_date[8:10]}/{market_date[0:4]}",
+            "raw_report_text": (
+                self.EDITORIAL_EMAIL if raw_report_text is None else raw_report_text
+            ),
+            "structured_report_json": {
+                "picks": picks,
+                "total_passed": len(picks),
+            },
+            "claude_model": "claude-sonnet-4-6",
+            "email_attempted": True,
+            "email_sent": email_sent,
+            "email_sent_at": f"{market_date}T12:05:00+00:00" if email_sent else None,
+            "email_error": None,
+        }
+
+    def test_parser_normal_top_secondary_watch(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        parsed = parse_scout_email_picks(self.EDITORIAL_EMAIL)
+        self.assertEqual(parsed["parse_mode"], "editorial")
+        by_class = {p["email_classification"]: p for p in parsed["picks"]}
+        self.assertEqual(by_class["top"]["ticker"], "AAPL")
+        self.assertEqual(by_class["top"]["direction"], "CALL")
+        self.assertEqual(by_class["secondary"]["ticker"], "ON")
+        self.assertEqual(by_class["secondary"]["direction"], "PUT")
+        watch = [p for p in parsed["picks"] if p["email_classification"] == "watch"]
+        self.assertEqual(sorted(p["ticker"] for p in watch), ["AMD", "MSFT", "NVDA"])
+
+    def test_parser_capitalization_differences(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        text = """\
+Macro Brief
+Quiet tape.
+
+Top Pick
+NVDA (call) strength continues. Strategy: long call.
+
+Secondary Pick
+META — bearish setup. Strategy: bear put spread.
+
+Watch List
+1. AVGO — one-liner
+2. MU: another watch
+"""
+        parsed = parse_scout_email_picks(text)
+        self.assertEqual(parsed["parse_mode"], "editorial")
+        tickers = {(p["email_classification"], p["ticker"]) for p in parsed["picks"]}
+        self.assertIn(("top", "NVDA"), tickers)
+        self.assertIn(("secondary", "META"), tickers)
+        self.assertIn(("watch", "AVGO"), tickers)
+        self.assertIn(("watch", "MU"), tickers)
+
+    def test_parser_watch_list_bullets(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        text = """\
+MACRO BRIEF
+Rotation day.
+
+TOP PICK
+AAPL (CALL) lead.
+
+SECONDARY PICK
+MSFT (CALL) follow.
+
+WATCH LIST
+• CRM: waiting on sector confirmation
+- SNOW — elevated IV
+* PLTR: speculative only
+"""
+        parsed = parse_scout_email_picks(text)
+        watch = [p["ticker"] for p in parsed["picks"] if p["email_classification"] == "watch"]
+        self.assertEqual(watch, ["CRM", "SNOW", "PLTR"])
+
+    def test_parser_call_and_put_extraction(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        parsed = parse_scout_email_picks(self.EDITORIAL_EMAIL)
+        by_class = {p["email_classification"]: p for p in parsed["picks"]}
+        self.assertEqual(by_class["top"]["direction"], "CALL")
+        self.assertEqual(by_class["secondary"]["direction"], "PUT")
+
+    def test_parser_missing_direction(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        text = """\
+MACRO BRIEF
+Soft open.
+
+TOP PICK
+COST — relative strength with no explicit option side in the header.
+Strategy: cash-secured put.
+
+SECONDARY PICK
+WMT watch-and-wait only.
+
+WATCH LIST
+- TGT: no direction stated
+"""
+        parsed = parse_scout_email_picks(text)
+        by_class = {p["email_classification"]: p for p in parsed["picks"]}
+        self.assertEqual(by_class["top"]["ticker"], "COST")
+        self.assertIsNone(by_class["top"]["direction"])
+        self.assertEqual(by_class["secondary"]["ticker"], "WMT")
+        self.assertIsNone(by_class["secondary"]["direction"])
+        watch = [p for p in parsed["picks"] if p["email_classification"] == "watch"]
+        self.assertEqual(watch[0]["ticker"], "TGT")
+        self.assertIsNone(watch[0]["direction"])
+
+    def test_parser_missing_strike_expiration(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        text = """\
+MACRO BRIEF
+Quiet.
+
+TOP PICK
+AAPL (CALL) no strike or expiration listed here.
+
+SECONDARY PICK
+MSFT (PUT) also missing strike/expiration.
+"""
+        parsed = parse_scout_email_picks(text)
+        for pick in parsed["picks"]:
+            self.assertIsNone(pick["strike"])
+            self.assertIsNone(pick["expiration"])
+
+    def test_parser_raw_scan_fallback(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        parsed = parse_scout_email_picks(self.RAW_SCAN_FALLBACK)
+        self.assertEqual(parsed["parse_mode"], "raw_scan_fallback")
+        self.assertEqual(parsed["picks"], [])
+
+    def test_parser_malformed_unrecognized(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        parsed = parse_scout_email_picks("Hello world. Markets were mixed. RSI and IV discussed.")
+        self.assertEqual(parsed["parse_mode"], "unrecognized")
+        self.assertEqual(parsed["picks"], [])
+
+    def test_parser_ignores_macro_ticker_noise(self) -> None:
+        from sent_pick_parser import parse_scout_email_picks
+
+        text = """\
+MACRO BRIEF
+SPY and QQQ held the 200DMA while the RSI on the VIX cooled. IV remains elevated
+across the ETF complex. No pick should be inferred from this paragraph alone.
+
+TOP PICK
+AAPL (CALL) explicit featured name.
+
+SECONDARY PICK
+MSFT (CALL) explicit featured name.
+
+WATCH LIST
+- AMZN: explicit watch entry
+"""
+        parsed = parse_scout_email_picks(text)
+        tickers = {p["ticker"] for p in parsed["picks"]}
+        self.assertEqual(tickers, {"AAPL", "MSFT", "AMZN"})
+        self.assertNotIn("SPY", tickers)
+        self.assertNotIn("QQQ", tickers)
+        self.assertNotIn("VIX", tickers)
+        self.assertNotIn("ETF", tickers)
+        self.assertNotIn("RSI", tickers)
+
+    def test_email_sent_true_creates_sent_pick_rows_from_email(self) -> None:
+        import ingest_scout_reports as isr
+
+        result = isr.ingest_scout_report_document(self.production_shaped_doc())
+        self.assertTrue(result["ok"])
+        picks = isr.list_sent_picks()
+        self.assertGreaterEqual(len(picks), 4)
+        by_class = {}
+        for pick in picks:
+            by_class.setdefault(pick["emailClassification"], []).append(pick["ticker"])
+        self.assertEqual(by_class["top"], ["AAPL"])
+        self.assertEqual(by_class["secondary"], ["ON"])
+        self.assertIn("MSFT", by_class["watch"])
+        self.assertEqual(picks[0]["parseMode"], "editorial")
+        self.assertEqual(picks[0]["role"], "emailed_pick")
+
+    def test_email_sent_false_stores_report_without_sent_picks(self) -> None:
+        import ingest_scout_reports as isr
+
+        result = isr.ingest_scout_report_document(
+            self.production_shaped_doc(email_sent=False)
+        )
+        self.assertTrue(result["ok"])
+        reports = isr.list_ingested_daily_reports()
+        self.assertEqual(len(reports), 1)
+        self.assertFalse(reports[0]["emailSent"])
+        self.assertEqual(isr.list_sent_picks(), [])
+
+    def test_structured_picks_preserved_separately_from_emailed(self) -> None:
+        import ingest_scout_reports as isr
+
+        isr.ingest_scout_report_document(self.production_shaped_doc())
+        reports = isr.list_ingested_daily_reports()
+        self.assertEqual(len(reports), 1)
+        structured_tickers = [
+            pick["ticker"] for pick in reports[0]["structuredReport"]["picks"]
+        ]
+        self.assertEqual(structured_tickers, ["AAPL", "TSLA"])
+        emailed = {pick["ticker"] for pick in isr.list_sent_picks()}
+        # TSLA is only a scan candidate, not an emailed classification.
+        self.assertNotIn("TSLA", emailed)
+        self.assertIn("ON", emailed)
+        candidates = isr.list_scan_candidates_for_report(reports[0])
+        self.assertEqual([c["ticker"] for c in candidates], ["AAPL", "TSLA"])
+        self.assertEqual(candidates[0]["role"], "scan_candidate")
+
+    def test_reingest_does_not_duplicate(self) -> None:
+        import ingest_scout_reports as isr
+
+        doc = self.production_shaped_doc()
+        isr.ingest_scout_report_document(doc)
+        first = isr.list_sent_picks()
+        isr.ingest_scout_report_document(doc)
+        second = isr.list_sent_picks()
+        self.assertEqual(len(first), len(second))
+        self.assertEqual(
+            sorted(p["sentPickId"] for p in first),
+            sorted(p["sentPickId"] for p in second),
+        )
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 1)
+
+    def test_raw_scan_fallback_ingest_no_official_sent_picks(self) -> None:
+        import ingest_scout_reports as isr
+
+        isr.ingest_scout_report_document(
+            self.production_shaped_doc(
+                "rep-raw",
+                raw_report_text=self.RAW_SCAN_FALLBACK,
+            )
+        )
+        self.assertEqual(isr.list_sent_picks_for_report("rep-raw"), [])
+        report = isr.list_ingested_daily_reports()[0]
+        self.assertEqual(len(report["structuredReport"]["picks"]), 2)
+
+    def test_malformed_email_does_not_crash_ingest(self) -> None:
+        import ingest_scout_reports as isr
+
+        bad = self.production_shaped_doc("rep-bad")
+        bad["raw_report_text"] = "??? totally unstructured noise ???"
+        self.assertTrue(isr.ingest_scout_report_document(bad)["ok"])
+        self.assertEqual(isr.list_sent_picks_for_report("rep-bad"), [])
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 1)
+
+    def test_scout_v6_alias_normalization(self) -> None:
+        import ingest_scout_reports as isr
+
+        isr.ingest_scout_report_document(self.production_shaped_doc())
+        reports = isr.list_ingested_daily_reports(report_type="scout_v6")
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["reportType"], "daily_scan")
+        picks = isr.list_sent_picks(report_type="scout_v6")
+        self.assertGreaterEqual(len(picks), 1)
+        self.assertEqual(picks[0]["reportType"], "daily_scan")
+
+    def test_list_sent_picks_ticker_and_date_filters(self) -> None:
+        import ingest_scout_reports as isr
+
+        isr.ingest_scout_report_document(
+            self.production_shaped_doc("rep-a", market_date="2026-06-10")
+        )
+        isr.ingest_scout_report_document(
+            self.production_shaped_doc(
+                "rep-b",
+                market_date="2026-06-20",
+                raw_report_text="""\
+MACRO BRIEF
+Day two.
+
+TOP PICK
+ON (PUT) featured.
+
+SECONDARY PICK
+AAPL (CALL) backup.
+
+WATCH LIST
+- MSFT: watch
+""",
+            )
+        )
+        by_ticker = isr.list_sent_picks(ticker="on")
+        self.assertTrue(all(row["ticker"] == "ON" for row in by_ticker))
+        self.assertGreaterEqual(len(by_ticker), 1)
+
+        by_date = isr.list_sent_picks(start_date="2026-06-15", end_date="2026-06-30")
+        self.assertTrue(all(row["marketDate"] == "2026-06-20" for row in by_date))
+
+        early = isr.list_sent_picks(end_date="2026-06-12")
+        self.assertTrue(all(row["marketDate"] == "2026-06-10" for row in early))
+
+    def test_dashboard_api_returns_sent_picks(self) -> None:
+        import json
+        import threading
+        from http.server import ThreadingHTTPServer
+        import urllib.request
+
+        import ingest_scout_reports as isr
+        from dashboard import DashboardHandler
+
+        isr.ingest_scout_report_document(self.production_shaped_doc())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/research-sent-picks?ticker=AAPL&limit=10"
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertGreaterEqual(len(payload["picks"]), 1)
+            self.assertEqual(payload["picks"][0]["ticker"], "AAPL")
+            self.assertEqual(payload["picks"][0]["emailClassification"], "top")
+            self.assertIn("emailedPicks", payload)
+            self.assertIn("scanCandidates", payload)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_init_safe_on_existing_db_and_intelligence_summary(self) -> None:
+        import ingest_scout_reports as isr
+        import memory_store as ms
+        import research_intelligence as ri
+        from memory_store import connect
+
+        with connect() as conn:
+            conn.execute("DROP TABLE IF EXISTS research_sent_picks")
+        ms._DB_INITIALIZED = False
+        ms.init_db()
+        with connect() as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        self.assertIn("research_daily_reports", tables)
+        self.assertIn("research_sent_picks", tables)
+
+        isr.ingest_scout_report_document(self.production_shaped_doc())
+        summary = ri.get_research_intelligence_summary()
+        self.assertGreaterEqual(summary["totalSentPicks"], 4)
+        self.assertEqual(summary["sentReportsRepresented"], 1)
+        self.assertEqual(summary["latestSentPickDate"], "2026-06-20")
+        dashboard = ri.get_research_intelligence_dashboard()
+        self.assertGreaterEqual(len(dashboard["recentSentPicks"]), 4)
+
+    def test_email_sent_false_after_true_clears_stale_ledger_rows(self) -> None:
+        import ingest_scout_reports as isr
+
+        report_id = "scout_v6_toggle"
+        isr.ingest_scout_report_document(self.production_shaped_doc(report_id, email_sent=True))
+        self.assertGreaterEqual(len(isr.list_sent_picks_for_report(report_id)), 1)
+        isr.ingest_scout_report_document(self.production_shaped_doc(report_id, email_sent=False))
+        self.assertEqual(isr.list_sent_picks_for_report(report_id), [])
+        self.assertEqual(len(isr.list_ingested_daily_reports()), 1)
+
+    def test_sent_pick_observation_findings(self) -> None:
+        import ingest_scout_reports as isr
+
+        isr.ingest_scout_report_document(self.production_shaped_doc())
+        result = isr.generate_findings_from_daily_reports(limit=10)
+        self.assertTrue(result["ok"])
+        sent_findings = [
+            finding
+            for finding in result["findings"]
+            if finding.get("findingType") == "sent_pick_observation"
+        ]
+        self.assertGreaterEqual(len(sent_findings), 1)
+        metrics = sent_findings[0]["supportingMetrics"]
+        self.assertEqual(metrics["source"], "sent_pick")
+        self.assertIn(metrics["emailClassification"], {"top", "secondary", "watch"})
+
+
+class ScoutDailyReportsPublisherTests(unittest.TestCase):
+    """Deterministic tests for Firestore → scout-daily-reports exporter (no live network)."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import memory_store as ms
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "daily_reports_publisher_test.db"
+        self._output_dir = Path(self._tmpdir.name) / "out"
+        self._output_dir.mkdir()
+        self._patchers = [
+            patch.object(ms, "DB_PATH", self._db_path),
+            patch.object(ms, "_DB_INITIALIZED", False),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+        ms.init_db()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self._tmpdir.cleanup()
+
+    def sample_doc(
+        self,
+        report_id: str,
+        *,
+        email_sent: bool = True,
+        generated_at: str = "2026-06-20T12:00:00+00:00",
+        market_date: str = "2026-06-20",
+    ) -> dict:
+        return {
+            "report_id": report_id,
+            "report_type": "scout_v6",
+            "report_version": "6",
+            "market_date": market_date,
+            "generated_at": generated_at,
+            "status_prefix": "INFO",
+            "email_subject": f"[INFO] Scout v6 — {market_date}",
+            "raw_report_text": (
+                "MACRO BRIEF\nQuiet day.\n\n"
+                "TOP PICK\nAAPL (CALL) featured.\n\n"
+                "SECONDARY PICK\nMSFT (CALL) backup.\n\n"
+                "WATCH LIST\n- NVDA: watch\n"
+            ),
+            "structured_report_json": {
+                "picks": [
+                    {"ticker": "AAPL", "direction": "CALL", "scout_score": 80},
+                    {"ticker": "TSLA", "direction": "PUT", "scout_score": 70},
+                ]
+            },
+            "claude_model": "claude-sonnet-4-6",
+            "email_attempted": True,
+            "email_sent": email_sent,
+            "email_sent_at": f"{market_date}T12:05:00+00:00" if email_sent else None,
+            "email_error": None if email_sent else "smtp timeout",
+        }
+
+    def test_normalize_into_bundle_preserves_email_sent_flags(self) -> None:
+        import export_scout_daily_reports as exporter
+
+        reports = exporter.normalize_documents_for_export(
+            [
+                self.sample_doc("rep-sent", email_sent=True),
+                self.sample_doc("rep-unsent", email_sent=False),
+            ]
+        )
+        by_id = {report["report_id"]: report for report in reports}
+        self.assertTrue(by_id["rep-sent"]["email_sent"])
+        self.assertFalse(by_id["rep-unsent"]["email_sent"])
+        self.assertEqual(by_id["rep-sent"]["email_error"], None)
+        self.assertEqual(by_id["rep-unsent"]["email_error"], "smtp timeout")
+        self.assertIsInstance(by_id["rep-sent"]["structured_report_json"], dict)
+        self.assertEqual(by_id["rep-sent"]["report_type"], "daily_scan")
+
+    def test_duplicate_report_id_dedupes_to_newest(self) -> None:
+        import export_scout_daily_reports as exporter
+
+        older = self.sample_doc("rep-dup", generated_at="2026-06-20T10:00:00+00:00")
+        newer = self.sample_doc("rep-dup", generated_at="2026-06-20T14:00:00+00:00")
+        newer["email_subject"] = "NEWER SUBJECT"
+        reports = exporter.normalize_documents_for_export([older, newer])
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["email_subject"], "NEWER SUBJECT")
+        self.assertEqual(reports[0]["generated_at"], "2026-06-20T14:00:00+00:00")
+
+    def test_since_and_limit_passed_to_fetch(self) -> None:
+        from unittest.mock import patch
+
+        import export_scout_daily_reports as exporter
+
+        with patch.object(exporter, "firestore_credentials_available", return_value=True), patch.object(
+            exporter,
+            "fetch_scout_report_documents",
+            return_value=[self.sample_doc("rep-1")],
+        ) as fetch:
+            result = exporter.export_scout_daily_reports(
+                output_dir=self._output_dir,
+                since="2026-06-01T00:00:00+00:00",
+                limit=17,
+            )
+        fetch.assert_called_once_with(limit=17, since="2026-06-01T00:00:00+00:00")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["limit"], 17)
+        self.assertEqual(result["since"], "2026-06-01T00:00:00+00:00")
+
+    def test_lookback_days_builds_since_when_missing(self) -> None:
+        from datetime import datetime, timezone
+
+        import export_scout_daily_reports as exporter
+
+        now = datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc)
+        since = exporter.resolve_since(lookback_days=7, now=now)
+        self.assertEqual(since, "2026-06-13T15:00:00+00:00")
+        explicit = exporter.resolve_since(
+            since="2026-06-01T00:00:00+00:00",
+            lookback_days=7,
+            now=now,
+        )
+        self.assertEqual(explicit, "2026-06-01T00:00:00+00:00")
+
+    def test_limit_respected_on_injected_documents(self) -> None:
+        import export_scout_daily_reports as exporter
+
+        docs = [
+            self.sample_doc(f"rep-{index}", generated_at=f"2026-06-{10+index:02d}T12:00:00+00:00")
+            for index in range(5)
+        ]
+        result = exporter.export_scout_daily_reports(
+            output_dir=self._output_dir,
+            documents=docs,
+            limit=2,
+        )
+        self.assertEqual(result["reportCount"], 2)
+        self.assertEqual(result["fetchedCount"], 5)
+        self.assertEqual(result["dedupedCount"], 2)
+
+    def test_bundle_schema_manifest_checksum(self) -> None:
+        import hashlib
+        import json
+
+        import export_scout_daily_reports as exporter
+        import ingest_scout_reports as isr
+
+        result = exporter.export_scout_daily_reports(
+            output_dir=self._output_dir,
+            documents=[
+                self.sample_doc("rep-a", email_sent=True),
+                self.sample_doc("rep-b", email_sent=False),
+            ],
+        )
+        self.assertEqual(result["schemaVersion"], 1)
+        self.assertEqual(result["reportCount"], 2)
+        self.assertEqual(result["emailSentTrue"], 1)
+        self.assertEqual(result["emailSentFalse"], 1)
+
+        bundle_path = self._output_dir / isr.BUNDLE_FILENAME
+        manifest_path = self._output_dir / isr.MANIFEST_FILENAME
+        payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(manifest["report_count"], 2)
+        digest = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+        self.assertEqual(manifest["checksum_sha256"], digest)
+        self.assertEqual(result["checksumSha256"], digest)
+        isr.validate_report_bundle_manifest(
+            manifest_path=manifest_path,
+            bundle_path=bundle_path,
+        )
+
+    def test_malformed_document_fails_clearly(self) -> None:
+        import export_scout_daily_reports as exporter
+
+        with self.assertRaises(exporter.ExportError) as ctx:
+            exporter.normalize_documents_for_export(
+                [{"report_type": "scout_v6", "generated_at": "2026-06-20T12:00:00+00:00"}]
+            )
+        self.assertIn("Malformed", str(ctx.exception))
+
+        with self.assertRaises(exporter.ExportError):
+            exporter.export_scout_daily_reports(
+                output_dir="/tmp/this-should-not-matter-on-failure",
+                documents=[{"report_id": "x"}],  # missing report_type
+            )
+
+    def test_missing_credentials_fails_without_live_call(self) -> None:
+        from unittest.mock import patch
+
+        import export_scout_daily_reports as exporter
+
+        with patch.object(exporter, "firestore_credentials_available", return_value=False), patch.object(
+            exporter, "fetch_scout_report_documents"
+        ) as fetch:
+            with self.assertRaises(exporter.ExportError) as ctx:
+                exporter.export_scout_daily_reports(output_dir=self._output_dir, limit=5)
+        fetch.assert_not_called()
+        self.assertIn("credentials unavailable", str(ctx.exception).lower())
+
+    def test_workflow_artifact_name_and_no_embedded_credentials(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        publish = (root / ".github/workflows/scout-daily-reports-publish.yml").read_text(
+            encoding="utf-8"
+        )
+        worker = (root / ".github/workflows/scout-research-worker.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("name: scout-daily-reports", publish)
+        self.assertIn("export_scout_daily_reports.py", publish)
+        self.assertIn("secrets.SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON", publish)
+        self.assertIn("secrets.SCOUT_FIRESTORE_PROJECT_ID", publish)
+        self.assertNotIn("BEGIN PRIVATE KEY", publish)
+        self.assertNotIn("private_key", publish)
+        self.assertNotRegex(publish, r'"type"\s*:\s*"service_account"')
+        self.assertIn("Scout Daily Reports Publish", worker)
+        self.assertIn("workflow_run", worker)
+        self.assertIn("name: scout-daily-reports", worker)
+
+    def test_hosted_firestore_block_and_requirements_intact(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import hosted_config as hc
+
+        with patch.dict("os.environ", {"SCOUT_HOSTED_MODE": "1", "SCOUT_MAINTENANCE_MODE": "0"}):
+            self.assertTrue(hc.firestore_direct_ingest_blocked())
+
+        requirements = (
+            Path(__file__).resolve().parent / "deploy" / "requirements-hosted.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("google-cloud-firestore is intentionally omitted", requirements)
+        self.assertTrue(
+            all(
+                not line.strip().startswith("google-cloud-firestore")
+                or line.strip().startswith("#")
+                for line in requirements.splitlines()
+            )
+        )
+
+    def test_downstream_ingest_of_exported_bundle(self) -> None:
+        import export_scout_daily_reports as exporter
+        import ingest_scout_reports as isr
+
+        exporter.export_scout_daily_reports(
+            output_dir=self._output_dir,
+            documents=[
+                self.sample_doc("rep-sent", email_sent=True),
+                self.sample_doc("rep-unsent", email_sent=False),
+            ],
+        )
+        result = isr.ingest_scout_reports_from_bundle_dir(self._output_dir)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["imported"], 2)
+        reports = {report["reportId"]: report for report in isr.list_ingested_daily_reports()}
+        self.assertTrue(reports["rep-sent"]["emailSent"])
+        self.assertFalse(reports["rep-unsent"]["emailSent"])
+        self.assertGreaterEqual(len(isr.list_sent_picks_for_report("rep-sent")), 1)
+        self.assertEqual(isr.list_sent_picks_for_report("rep-unsent"), [])
+        # Scan candidates preserved separately from emailed picks.
+        candidates = isr.list_scan_candidates_for_report(reports["rep-sent"])
+        self.assertEqual([item["ticker"] for item in candidates], ["AAPL", "TSLA"])
+
+
 class ScheduledResearchRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile
