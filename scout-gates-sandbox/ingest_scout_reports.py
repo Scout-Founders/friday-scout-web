@@ -611,12 +611,18 @@ def fetch_scout_report_documents(
     limit: int = 50,
     since: Optional[str] = None,
 ) -> list[Any]:
+    from google.cloud import firestore  # type: ignore
+
     client = _load_firestore_client()
     query = client.collection(SCOUT_REPORTS_COLLECTION)
     if since:
         # Prefer generated_at when present; Firestore may store as string ISO.
         query = query.where("generated_at", ">=", since)
-    query = query.order_by("generated_at", direction="DESC").limit(max(int(limit), 1))
+    # google-cloud-firestore requires ASCENDING/DESCENDING (not ASC/DESC).
+    query = query.order_by(
+        "generated_at",
+        direction=firestore.Query.DESCENDING,
+    ).limit(max(int(limit), 1))
     return list(query.stream())
 
 
