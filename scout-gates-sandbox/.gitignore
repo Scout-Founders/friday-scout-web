@@ -2,3 +2,7 @@ scout_memory.db
 scout_research_cloud.db
 research_snapshot.db
 research_snapshot.manifest.json
+
+.venv/
+__pycache__/
+*.pyc

@@ -25,8 +25,10 @@ cron example (run weekly on Monday at 6:00 AM):
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from cloud_research_worker import (
@@ -103,6 +105,59 @@ def ingest_daily_reports_if_available(*, limit: int = 50) -> dict[str, Any]:
         }
 
 
+def ingest_daily_reports_from_bundle_if_available(
+    bundle_dir: Optional[str | Path] = None,
+) -> dict[str, Any]:
+    try:
+        from ingest_scout_reports import ingest_scout_reports_from_bundle_dir
+    except ImportError:
+        return {
+            "ok": True,
+            "available": False,
+            "imported": 0,
+            "updated": 0,
+            "skipped": 0,
+            "message": "daily report artifact ingest unavailable",
+        }
+
+    resolved_dir = str(bundle_dir or os.environ.get("SCOUT_DAILY_REPORTS_BUNDLE_DIR", "")).strip()
+    if not resolved_dir:
+        return {
+            "ok": True,
+            "available": False,
+            "imported": 0,
+            "updated": 0,
+            "skipped": 0,
+            "message": "daily report artifact bundle not configured",
+        }
+
+    bundle_path = Path(resolved_dir).expanduser()
+    if not bundle_path.exists():
+        return {
+            "ok": True,
+            "available": False,
+            "imported": 0,
+            "updated": 0,
+            "skipped": 0,
+            "message": f"daily report artifact bundle not found: {bundle_path}",
+        }
+
+    try:
+        result = ingest_scout_reports_from_bundle_dir(bundle_path)
+        result["available"] = True
+        return result
+    except Exception as exc:
+        return {
+            "ok": False,
+            "available": True,
+            "imported": 0,
+            "updated": 0,
+            "skipped": 0,
+            "message": f"daily report artifact ingest failed: {exc}",
+            "errors": [str(exc)],
+        }
+
+
 def generate_daily_report_findings_if_available(*, limit: int = 20) -> dict[str, Any]:
     try:
         from ingest_scout_reports import generate_findings_from_daily_reports
@@ -135,6 +190,8 @@ def run_scheduled_research(
     generate_findings: bool = True,
     ingest_reports: bool = True,
     report_ingest_limit: int = 50,
+    report_bundle_dir: Optional[str | Path] = None,
+    skip_firestore_ingest: bool = False,
 ) -> dict[str, Any]:
     """Run the scheduled research workflow and return a structured summary."""
     summary: dict[str, Any] = {
@@ -151,6 +208,7 @@ def run_scheduled_research(
         "dailyReportsUpdated": 0,
         "dailyReportFindingsGenerated": 0,
         "dailyReportIngestAvailable": False,
+        "dailyReportIngestMode": None,
         "errors": [],
     }
 
@@ -162,8 +220,23 @@ def run_scheduled_research(
         return summary
 
     if ingest_reports:
-        ingest_result = ingest_daily_reports_if_available(limit=report_ingest_limit)
+        bundle_result = ingest_daily_reports_from_bundle_if_available(report_bundle_dir)
+        if bundle_result.get("available"):
+            ingest_result = bundle_result
+        elif skip_firestore_ingest:
+            ingest_result = {
+                "ok": True,
+                "available": False,
+                "imported": 0,
+                "updated": 0,
+                "skipped": 0,
+                "message": "daily report artifact ingest unavailable; Firestore ingest skipped",
+            }
+        else:
+            ingest_result = ingest_daily_reports_if_available(limit=report_ingest_limit)
+
         summary["dailyReportIngestAvailable"] = bool(ingest_result.get("available"))
+        summary["dailyReportIngestMode"] = ingest_result.get("ingestMode")
         summary["dailyReportsImported"] = int(ingest_result.get("imported") or 0)
         summary["dailyReportsUpdated"] = int(ingest_result.get("updated") or 0)
         if ingest_result.get("message") and not ingest_result.get("available"):
@@ -251,6 +324,8 @@ def format_scheduled_research_summary(summary: dict[str, Any]) -> str:
     )
     if not summary.get("dailyReportIngestAvailable"):
         lines.append("daily report ingest: unavailable")
+    elif summary.get("dailyReportIngestMode"):
+        lines.append(f"daily report ingest mode: {summary.get('dailyReportIngestMode')}")
     findings_skipped = int(summary.get("findingsSkipped") or 0)
     if findings_skipped:
         lines.append(f"findings skipped (duplicates): {findings_skipped}")
@@ -290,13 +365,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-report-ingest",
         action="store_true",
-        help="Skip Firestore daily report ingest.",
+        help="Skip daily report ingest (Firestore and artifact bundle).",
+    )
+    parser.add_argument(
+        "--skip-firestore-ingest",
+        action="store_true",
+        help=(
+            "Skip direct Firestore ingest. Artifact bundle ingest still runs when "
+            "--from-bundle-dir or SCOUT_DAILY_REPORTS_BUNDLE_DIR is configured."
+        ),
+    )
+    parser.add_argument(
+        "--from-bundle-dir",
+        dest="from_bundle_dir",
+        default=None,
+        help="Import scout-daily-reports artifact bundle before running research jobs.",
     )
     parser.add_argument(
         "--report-ingest-limit",
         type=int,
         default=50,
-        help="Max Firestore scout_reports documents to ingest (default: 50).",
+        help="Max Firestore scout_reports documents to ingest when Firestore fallback is used.",
     )
     parser.add_argument(
         "--cloud-worker",
@@ -342,6 +431,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         generate_findings=not args.skip_findings,
         ingest_reports=not args.skip_report_ingest,
         report_ingest_limit=max(int(args.report_ingest_limit), 1),
+        report_bundle_dir=args.from_bundle_dir,
+        skip_firestore_ingest=bool(args.skip_firestore_ingest or args.cloud_worker),
     )
     if cloud_db_path:
         summary["databasePath"] = cloud_db_path

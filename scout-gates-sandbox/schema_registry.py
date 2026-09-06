@@ -416,6 +416,30 @@ EXPECTED_SCHEMAS: dict[str, dict[str, Any]] = {
             "source_system": "TEXT",
         },
     },
+    "research_sent_picks": {
+        "table": "research_sent_picks",
+        "columns": {
+            "sent_pick_id": "TEXT",
+            "report_id": "TEXT",
+            "report_type": "TEXT",
+            "market_date": "TEXT",
+            "generated_at": "TEXT",
+            "email_sent_at": "TEXT",
+            "ticker": "TEXT",
+            "email_classification": "TEXT",
+            "direction": "TEXT",
+            "strike": "REAL",
+            "expiration": "TEXT",
+            "strategy_text": "TEXT",
+            "parser_confidence": "REAL",
+            "parse_mode": "TEXT",
+            "source_section": "TEXT",
+            "source_excerpt": "TEXT",
+            "pick_json": "TEXT",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+        },
+    },
 }
 
 

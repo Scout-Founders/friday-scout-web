@@ -102,6 +102,25 @@
     .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
     .empty-state { color: var(--muted); padding: 8px 0; }
     .button:disabled { opacity: 0.55; cursor: wait; }
+    table.sent-picks {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    table.sent-picks th,
+    table.sent-picks td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    table.sent-picks th {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -143,6 +162,12 @@
         </div>
         <div class="metric"><div class="metric-label">Ingested Daily Reports</div><div class="metric-value" id="metric-daily-reports">—</div></div>
         <div class="metric"><div class="metric-label">Daily-Report Findings</div><div class="metric-value" id="metric-daily-findings">—</div></div>
+        <div class="metric"><div class="metric-label">Sent Picks</div><div class="metric-value" id="metric-sent-picks">—</div></div>
+        <div class="metric"><div class="metric-label">Sent Reports Represented</div><div class="metric-value" id="metric-sent-reports">—</div></div>
+        <div class="metric">
+          <div class="metric-label">Latest Sent-Pick Date</div>
+          <div class="metric-value" id="metric-latest-sent-pick" style="font-size:18px;">—</div>
+        </div>
         <div class="metric">
           <div class="metric-label">Latest Scout v6 / Coffee</div>
           <div class="metric-value" id="metric-latest-v6" style="font-size:18px;">—</div>
@@ -155,6 +180,15 @@
       <h2>Daily Scout Intelligence</h2>
       <p class="hint">Research-only findings derived from ingested Scout v6 / Monday Coffee structured reports. Does not change scoring or recommendations.</p>
       <div class="list" id="daily-intelligence-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>Sent Picks</h2>
+      <p class="hint">
+        <strong>Emailed Picks</strong> are parsed from <code>raw_report_text</code> (TOP / SECONDARY / WATCH).
+        They are not the same as <strong>Scan Candidates</strong> from <code>structured_report_json.picks</code> (deterministic passed[:6]).
+      </p>
+      <div id="sent-picks-table"></div>
     </section>
 
     <section class="card">
@@ -241,6 +275,10 @@
       document.getElementById("metric-completed-validations").textContent = String(summary.completedValidations ?? 0);
       document.getElementById("metric-daily-reports").textContent = String(summary.ingestedDailyReports ?? 0);
       document.getElementById("metric-daily-findings").textContent = String(summary.dailyReportFindingsCount ?? 0);
+      document.getElementById("metric-sent-picks").textContent = String(summary.totalSentPicks ?? 0);
+      document.getElementById("metric-sent-reports").textContent = String(summary.sentReportsRepresented ?? 0);
+      document.getElementById("metric-latest-sent-pick").textContent =
+        summary.latestSentPickDate ? String(summary.latestSentPickDate) : "—";
       document.getElementById("metric-latest-v6").textContent =
         summary.latestScoutV6ReportDate ? `v6 ${summary.latestScoutV6ReportDate}` : "v6 —";
       document.getElementById("metric-latest-coffee").textContent =
@@ -271,6 +309,33 @@
             <div class="item-meta">Next test: ${item.recommendedNextTest || "—"}</div>
           </article>`).join("")
         : renderEmpty("No daily-report findings yet. Ingest scout_reports to populate this section.");
+
+      const sentPicks = data.recentSentPicks || [];
+      document.getElementById("sent-picks-table").innerHTML = sentPicks.length
+        ? `<table class="sent-picks">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Ticker</th>
+                <th>Classification</th>
+                <th>Direction</th>
+                <th>Report</th>
+                <th>Parse confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sentPicks.map((pick) => `
+                <tr>
+                  <td>${pick.marketDate || "—"}</td>
+                  <td>${pick.ticker || "—"}</td>
+                  <td>${(pick.emailClassification || "—").toString().toUpperCase()}</td>
+                  <td>${pick.direction || "—"}</td>
+                  <td>${pick.reportId || "—"}</td>
+                  <td>${pick.parserConfidence == null ? "—" : Number(pick.parserConfidence).toFixed(2)}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>`
+        : renderEmpty("No emailed sent picks yet. Ingest email_sent=true Scout v6 reports to populate this ledger.");
 
       const validations = data.strongestValidatedIdeas || [];
       document.getElementById("validated-ideas-list").innerHTML = validations.length

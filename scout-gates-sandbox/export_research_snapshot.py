@@ -30,6 +30,7 @@ EXCLUDED_TABLES = frozenset(
         "rule_candidates",
         "rule_validations",
         "research_daily_reports",
+        "research_sent_picks",
         "backtest_runs",
         "backtest_signals",
         "backtest_metrics",

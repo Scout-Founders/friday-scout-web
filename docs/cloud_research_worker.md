@@ -16,19 +16,168 @@ python3 scout-gates-sandbox/scheduled_research_runner.py --cloud-worker
 Each run:
 
 1. Validates required GitHub Actions secrets
-2. Initializes the Scout sandbox SQLite memory database
-3. Creates default research jobs if they are missing
-4. Runs all enabled research jobs via `preview_backtest()` analytics
-5. Generates research findings from recent completed runs
-6. Prints a concise terminal summary (jobs run, completed, failed, findings generated, timestamp)
+2. Restores or creates the dedicated cloud research SQLite database
+3. Optionally imports a `scout-research-snapshot` artifact (scan signal history only)
+4. Optionally imports a `scout-daily-reports` artifact (Scout v6 / Monday Coffee report copies)
+5. Initializes the Scout sandbox SQLite memory database
+6. Creates default research jobs if they are missing
+7. Runs all enabled research jobs via `preview_backtest()` analytics
+8. Generates research findings from recent completed runs and ingested daily reports
+9. Prints a concise terminal summary (jobs run, completed, failed, findings generated, timestamp)
 
 The workflow also:
 
 - Restores a cached `scout-gates-sandbox/scout_research_cloud.db` between runs when available
 - Optionally imports a `scout-research-snapshot` artifact into the cloud DB before research runs
+- Optionally imports a `scout-daily-reports` artifact into `research_daily_reports` before research runs
 - Uploads the updated cloud research database as a workflow artifact for inspection or manual recovery
 
 Workflow file: [`.github/workflows/scout-research-worker.yml`](../.github/workflows/scout-research-worker.yml)
+
+---
+
+## Daily report artifact ingest (v1)
+
+Cloud research **does not** authenticate to production Firestore from the hosted VPS or the research-worker job itself. Daily Scout v6 / Monday Coffee reports reach research through a **research-safe JSON artifact** published by the **Scout Daily Reports Publish** GitHub Actions workflow.
+
+### Publisher architecture
+
+```
+Production Firestore scout_reports
+        ↓
+GitHub Actions: Scout Daily Reports Publish
+  (read-only SA via secrets; export_scout_daily_reports.py)
+        ↓
+artifact: scout-daily-reports
+  - scout_daily_reports.json
+  - scout_daily_reports.manifest.json
+        ↓
+GitHub Actions: Scout Cloud Research Worker
+  (workflow_run chain or manual use_daily_reports_artifact)
+        ↓
+ingest_scout_reports.py --from-bundle-dir
+        ↓
+research_daily_reports → research_sent_picks
+```
+
+- Production `friday-scout` email/SMTP is unchanged.
+- Hosted VPS never receives Firestore credentials.
+- Overlapping export windows are safe: ingest upserts by `report_id`.
+- Default publisher lookback is **7 days** (`--lookback-days`) for reliability.
+- Both `email_sent=true` and `email_sent=false` reports are exported; only `email_sent=true` enters `research_sent_picks`.
+
+### Cloud import sequence
+
+1. Restore `scout_research_cloud.db` cache
+2. Import `scout-research-snapshot` when `use_snapshot_artifact=true`
+3. Import `scout-daily-reports` when chained from the publisher (`workflow_run`) or when `use_daily_reports_artifact=true`
+4. Run `scheduled_research_runner.py --cloud-worker --skip-report-ingest`
+5. Generate daily report findings from already-imported `research_daily_reports`
+6. Continue the existing research job / findings loop
+
+Direct Firestore ingest remains available for **local development only** via `ingest_scout_reports.py` when credentials are configured. The publisher exporter is for CI only.
+
+### Report bundle contract (`scout_daily_reports.json`)
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-20T12:00:00+00:00",
+  "reports": [
+    {
+      "report_id": "rep-001",
+      "report_type": "scout_v6",
+      "report_version": "6.0",
+      "generated_at": "2026-06-20T12:00:00+00:00",
+      "market_date": "2026-06-20",
+      "status_prefix": "FINAL",
+      "email_subject": "Scout Daily Report",
+      "raw_report_text": "...",
+      "structured_report_json": {},
+      "source_scan_run_id": "scan-123",
+      "claude_model": "claude-...",
+      "underlying_data_timestamp": "2026-06-20T11:30:00+00:00",
+      "email_attempted": true,
+      "email_sent": true,
+      "email_sent_at": "2026-06-20T12:05:00+00:00",
+      "email_error": null
+    }
+  ]
+}
+```
+
+Required per report: `report_id`, `report_type`. All other fields are optional but map to `research_daily_reports` when present.
+
+### Manifest contract (`scout_daily_reports.manifest.json`)
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-20T12:00:00+00:00",
+  "report_count": 1,
+  "bundle_filename": "scout_daily_reports.json",
+  "checksum_sha256": "<sha256 of scout_daily_reports.json>"
+}
+```
+
+The cloud worker validates the manifest checksum and report count before import.
+
+### Local file import
+
+```bash
+cd scout-gates-sandbox
+python3 ingest_scout_reports.py \
+  --from-file scout_daily_reports.json \
+  --generate-findings
+```
+
+Or import an artifact directory:
+
+```bash
+python3 ingest_scout_reports.py \
+  --from-bundle-dir ./daily-reports-bundle \
+  --generate-findings
+```
+
+### What publishes `scout-daily-reports`
+
+The in-repo publisher workflow [`.github/workflows/scout-daily-reports-publish.yml`](../.github/workflows/scout-daily-reports-publish.yml) runs:
+
+```bash
+python3 scout-gates-sandbox/export_scout_daily_reports.py \
+  --output-dir scout-gates-sandbox/daily-reports-bundle \
+  --lookback-days 7 \
+  --limit 100
+```
+
+It uploads GitHub Actions artifact **`scout-daily-reports`** containing:
+
+- `scout_daily_reports.json`
+- `scout_daily_reports.manifest.json`
+
+On success, **Scout Cloud Research Worker** is triggered via `workflow_run` and downloads that artifact using the publisher run ID (no duplicated ingest logic in YAML).
+
+Manual handoff still works:
+
+- `use_daily_reports_artifact=true`
+- `daily_reports_artifact_run_id=<publisher run id>`
+
+### Required publisher secrets
+
+| Secret | Required | Purpose |
+|--------|----------|---------|
+| `SCOUT_FIRESTORE_PROJECT_ID` | Yes (publisher) | GCP project id hosting Firestore `scout_reports` (e.g. `scout-493918`) |
+| `SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON` | Yes (publisher) | Read-only service-account JSON for Firestore `scout_reports` reads |
+
+Recommended IAM for the service account:
+
+- Firestore / Datastore **read-only** access sufficient to list/query `scout_reports`
+- **No** write roles
+- **Not** installed on the hosted VPS
+
+Workload Identity Federation is preferred long-term if the repo later adds it; v1 uses the SA JSON secret names already recognized by `ingest_scout_reports._load_firestore_client()`.
+
+Do **not** put these secrets on the hosted sandbox / VPS dashboard environment.
 
 ---
 
@@ -55,20 +204,31 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions �
 
 | Secret | Required | Purpose |
 |--------|----------|---------|
-| `SCOUT_RESEARCH_WORKER_SECRET` | Yes | Shared worker authorization token. Must be non-empty. Prevents accidental runs on forks or misconfigured repos. |
-| `SCOUT_CLOUD_RESEARCH_ENABLED` | Yes | Must be set to `true` (or `1` / `yes`) to allow cloud runs. Use this as an explicit kill switch by setting it to `false` or removing it. |
+| `SCOUT_RESEARCH_WORKER_SECRET` | Yes (worker) | Shared worker authorization token. Must be non-empty. Prevents accidental runs on forks or misconfigured repos. |
+| `SCOUT_CLOUD_RESEARCH_ENABLED` | Yes (worker) | Must be set to `true` (or `1` / `yes`) to allow cloud runs. Use this as an explicit kill switch by setting it to `false` or removing it. |
+| `SCOUT_FIRESTORE_PROJECT_ID` | Yes (publisher) | GCP project for read-only `scout_reports` export |
+| `SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON` | Yes (publisher) | Read-only Firestore service-account JSON (publisher workflow only) |
 
-The runner fails fast with clear stderr messages if either secret is missing or disabled.
+The runner fails fast with clear stderr messages if either worker secret is missing or disabled.
 
-**Do not hardcode secrets in the workflow file.** The workflow reads them from GitHub Actions secrets only.
+**Do not hardcode secrets in the workflow file.** The workflows read them from GitHub Actions secrets only.
 
-Optional future secrets (not required for v1):
-
-- Remote database restore/upload credentials if you later sync `scout_memory.db` from outside GitHub Actions artifacts/cache.
+**Do not place Firestore credentials on the hosted VPS.** Hosted mode continues to block direct Firestore ingest.
 
 ---
 
 ## How to run manually from GitHub Actions
+
+### A. Daily reports publisher smoke test
+
+1. Ensure publisher secrets are configured (`SCOUT_FIRESTORE_PROJECT_ID`, `SCOUT_FIRESTORE_SERVICE_ACCOUNT_JSON`)
+2. Open **Actions → Scout Daily Reports Publish**
+3. Click **Run workflow** (optional: set `lookback_days`, `limit`, or explicit `since`)
+4. Confirm the job uploads artifact **`scout-daily-reports`**
+5. Confirm **Scout Cloud Research Worker** starts via `workflow_run` and imports the bundle
+6. Inspect worker logs for daily-report import counts and research summary
+
+### B. Research worker only
 
 1. Open the repository on GitHub
 2. Go to **Actions**
@@ -79,6 +239,8 @@ Optional future secrets (not required for v1):
    - **skip_findings** — run research jobs only
    - **use_snapshot_artifact** — import `scout-research-snapshot` before running research (default `false`)
    - **snapshot_artifact_run_id** — workflow run ID that uploaded the snapshot (leave empty to use the current run)
+   - **use_daily_reports_artifact** — import `scout-daily-reports` before research (default `false`; automatic when chained from the publisher)
+   - **daily_reports_artifact_run_id** — publisher run ID containing `scout-daily-reports`
 6. Click **Run workflow**
 
 Review the job log for the summary block:
