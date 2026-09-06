@@ -5800,6 +5800,69 @@ class ScoutDailyReportsPublisherTests(unittest.TestCase):
         self.assertIn("workflow_run", worker)
         self.assertIn("name: scout-daily-reports", worker)
 
+    def test_fetch_scout_report_documents_uses_descending_not_desc(self) -> None:
+        """Regression: Firestore rejects direction='DESC'; must be DESCENDING."""
+        import re
+        import sys
+        from pathlib import Path
+        from types import ModuleType, SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        import ingest_scout_reports as isr
+
+        source_files = [
+            Path(isr.__file__).resolve(),
+            Path(__file__).resolve().parent / "export_scout_daily_reports.py",
+        ]
+        invalid_direction = re.compile(
+            r"""order_by\([\s\S]*?direction\s*=\s*['"](?:DESC|ASC)['"]"""
+        )
+        for path in source_files:
+            text = path.read_text(encoding="utf-8")
+            self.assertIsNone(
+                invalid_direction.search(text),
+                f"{path.name} must not use Firestore order direction DESC/ASC",
+            )
+        ingest_source = Path(isr.__file__).read_text(encoding="utf-8")
+        self.assertIn("firestore.Query.DESCENDING", ingest_source)
+
+        fake_fs = ModuleType("google.cloud.firestore")
+        fake_fs.Query = SimpleNamespace(DESCENDING="DESCENDING")
+        fake_cloud = ModuleType("google.cloud")
+        fake_cloud.firestore = fake_fs
+        fake_google = ModuleType("google")
+        fake_google.cloud = fake_cloud
+
+        query = MagicMock()
+        query.where.return_value = query
+        query.order_by.return_value = query
+        query.limit.return_value = query
+        query.stream.return_value = iter([])
+        client = MagicMock()
+        client.collection.return_value = query
+
+        with patch.dict(
+            sys.modules,
+            {
+                "google": fake_google,
+                "google.cloud": fake_cloud,
+                "google.cloud.firestore": fake_fs,
+            },
+        ), patch.object(isr, "_load_firestore_client", return_value=client):
+            docs = isr.fetch_scout_report_documents(
+                limit=7,
+                since="2026-06-01T00:00:00+00:00",
+            )
+
+        self.assertEqual(docs, [])
+        query.order_by.assert_called_once_with(
+            "generated_at",
+            direction="DESCENDING",
+        )
+        direction = query.order_by.call_args.kwargs["direction"]
+        self.assertEqual(direction, "DESCENDING")
+        self.assertNotEqual(direction, "DESC")
+        query.limit.assert_called_once_with(7)
 
     def test_downstream_ingest_of_exported_bundle(self) -> None:
         import export_scout_daily_reports as exporter
