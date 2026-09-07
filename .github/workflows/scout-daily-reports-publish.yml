@@ -64,20 +64,43 @@ jobs:
           fi
 
       - name: Export scout_reports to artifact bundle
+        env:
+          # Bind workflow_dispatch inputs explicitly so shell argv mapping cannot swap them.
+          INPUT_SINCE: ${{ inputs.since }}
+          INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_days }}
+          INPUT_LIMIT: ${{ inputs.limit }}
         run: |
           set -euo pipefail
           mkdir -p "${DAILY_REPORTS_BUNDLE_DIR}"
+
+          # Schedule runs have empty inputs; apply the same defaults as workflow_dispatch.
+          SINCE="${INPUT_SINCE:-}"
+          LOOKBACK_DAYS="${INPUT_LOOKBACK_DAYS:-7}"
+          LIMIT="${INPUT_LIMIT:-100}"
+
+          case "${LOOKBACK_DAYS}" in
+            ''|*[!0-9]*)
+              echo "lookback_days must be an integer day count, got: ${LOOKBACK_DAYS}" >&2
+              exit 1
+              ;;
+          esac
+          case "${LIMIT}" in
+            ''|*[!0-9]*)
+              echo "limit must be an integer, got: ${LIMIT}" >&2
+              exit 1
+              ;;
+          esac
+
           ARGS=(
             scout-gates-sandbox/export_scout_daily_reports.py
             --output-dir "${DAILY_REPORTS_BUNDLE_DIR}"
-            --limit "${{ inputs.limit || '100' }}"
+            --limit "${LIMIT}"
           )
-          SINCE_INPUT="${{ inputs.since || '' }}"
-          LOOKBACK_INPUT="${{ inputs.lookback_days || '7' }}"
-          if [ -n "${SINCE_INPUT}" ]; then
-            ARGS+=(--since "${SINCE_INPUT}")
+          # since is the ISO generated_at lower bound and overrides lookback when present.
+          if [ -n "${SINCE}" ]; then
+            ARGS+=(--since "${SINCE}")
           else
-            ARGS+=(--lookback-days "${LOOKBACK_INPUT}")
+            ARGS+=(--lookback-days "${LOOKBACK_DAYS}")
           fi
           python3 "${ARGS[@]}"
 

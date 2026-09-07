@@ -5800,6 +5800,114 @@ class ScoutDailyReportsPublisherTests(unittest.TestCase):
         self.assertIn("workflow_run", worker)
         self.assertIn("name: scout-daily-reports", worker)
 
+    def test_publish_workflow_maps_since_lookback_and_limit_without_swap(self) -> None:
+        """Regression: ISO since must never be passed to --lookback-days."""
+        import re
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        root = Path(__file__).resolve().parent.parent
+        publish = (root / ".github/workflows/scout-daily-reports-publish.yml").read_text(
+            encoding="utf-8"
+        )
+
+        export_step = re.search(
+            r"- name: Export scout_reports to artifact bundle\n([\s\S]*?)(?=\n      - name:|\Z)",
+            publish,
+        )
+        self.assertIsNotNone(export_step)
+        block = export_step.group(1)
+
+        # Explicit env bindings from workflow_dispatch inputs (no inline argv swap).
+        self.assertRegex(block, r"INPUT_SINCE:\s*\$\{\{\s*inputs\.since\s*\}\}")
+        self.assertRegex(
+            block, r"INPUT_LOOKBACK_DAYS:\s*\$\{\{\s*inputs\.lookback_days\s*\}\}"
+        )
+        self.assertRegex(block, r"INPUT_LIMIT:\s*\$\{\{\s*inputs\.limit\s*\}\}")
+
+        # --lookback-days may only be fed from LOOKBACK_DAYS / INPUT_LOOKBACK_DAYS.
+        self.assertRegex(block, r'ARGS\+=\(--lookback-days "\$\{LOOKBACK_DAYS\}"\)')
+        self.assertRegex(block, r'ARGS\+=\(--since "\$\{SINCE\}"\)')
+        self.assertNotRegex(
+            block,
+            r'ARGS\+=\(--lookback-days "\$\{SINCE(?:_INPUT)?\}"\)',
+        )
+        self.assertNotRegex(
+            block,
+            r"--lookback-days \"\$\{\{\s*inputs\.since",
+        )
+        # Reject embedding inputs.since into the lookback env binding.
+        self.assertNotRegex(
+            block,
+            r"INPUT_LOOKBACK_DAYS:\s*\$\{\{\s*inputs\.since",
+        )
+
+        # Simulate the workflow_dispatch values from the live failure and prove argv mapping.
+        since = "2000-01-01T00:00:00+00:00"
+        lookback_days = "7"
+        limit = "100"
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            captured: dict[str, object] = {}
+
+            def fake_export(**kwargs):
+                captured.update(kwargs)
+                return {
+                    "ok": True,
+                    "reportCount": 0,
+                    "outputDir": str(output_dir),
+                }
+
+            import export_scout_daily_reports as exporter
+
+            with patch.object(exporter, "export_scout_daily_reports", side_effect=fake_export):
+                # Mirror the workflow shell decision: non-empty since => --since only.
+                argv = [
+                    "--output-dir",
+                    str(output_dir),
+                    "--limit",
+                    limit,
+                    "--since",
+                    since,
+                ]
+                # Guard: the failing live mapping would have done this instead:
+                bad_argv = [
+                    "--output-dir",
+                    str(output_dir),
+                    "--limit",
+                    limit,
+                    "--lookback-days",
+                    since,
+                ]
+                with self.assertRaises(SystemExit) as bad:
+                    exporter.main(bad_argv)
+                self.assertEqual(bad.exception.code, 2)
+
+                code = exporter.main(argv)
+                self.assertEqual(code, 0)
+                self.assertEqual(captured.get("since"), since)
+                self.assertEqual(captured.get("limit"), 100)
+                self.assertIsNone(captured.get("lookback_days"))
+
+            # Empty since uses lookback_days (schedule / default dispatch).
+            captured.clear()
+            with patch.object(exporter, "export_scout_daily_reports", side_effect=fake_export):
+                code = exporter.main(
+                    [
+                        "--output-dir",
+                        str(output_dir),
+                        "--limit",
+                        limit,
+                        "--lookback-days",
+                        lookback_days,
+                    ]
+                )
+                self.assertEqual(code, 0)
+                self.assertEqual(captured.get("lookback_days"), 7)
+                self.assertIsNone(captured.get("since"))
+
     def test_workflow_run_downloads_daily_reports_from_publisher_run_id(self) -> None:
         """Regression: cross-run artifact download needs github-token + upstream run-id."""
         import re
