@@ -415,6 +415,127 @@ function AuthModal({ onClose, onAuth, initialMode }) {
   );
 }
 
+function pickValue(pick, ...keys) {
+  if (!pick || typeof pick !== "object" || Array.isArray(pick)) return undefined;
+  for (const key of keys) {
+    const value = pick[key];
+    if (value != null && value !== "") return value;
+  }
+  return undefined;
+}
+
+function displayValue(value) {
+  if (value == null || value === "") return "—";
+  if (typeof value === "object") return "—";
+  return String(value);
+}
+
+function formatStrikes(strikes) {
+  if (!strikes || typeof strikes !== "object" || Array.isArray(strikes)) return "—";
+  const parts = Object.entries(strikes)
+    .filter(([, value]) => value != null && value !== "")
+    .map(([key, value]) => `${key} ${typeof value === "object" ? JSON.stringify(value) : value}`);
+  return parts.length ? parts.join(", ") : "—";
+}
+
+function directionColor(value) {
+  const text = String(value || "").trim().toUpperCase();
+  if (text === "CALL") return COLORS.accent;
+  if (text === "PUT") return COLORS.danger;
+  return COLORS.text;
+}
+
+/* ─── DAILY PICKS ─── */
+function DailyPicks() {
+  const [status, setStatus] = useState("loading");
+  const [message, setMessage] = useState("");
+  const [report, setReport] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/daily-picks")
+      .then(async (response) => {
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (!response.ok || !data || data.ok !== true || !data.report) {
+          setStatus("error");
+          setMessage((data && data.message) || "Could not load Daily Picks.");
+          setReport(null);
+          return;
+        }
+        setReport(data.report);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setStatus("error");
+        setMessage("Could not load Daily Picks.");
+        setReport(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const picks = Array.isArray(report?.picks) ? report.picks : [];
+  const cell = { padding: "10px 12px", borderBottom: `1px solid ${COLORS.border}`, fontSize: 13, color: COLORS.text, verticalAlign: "top" };
+  const head = { ...cell, fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.textDim, letterSpacing: 1, fontWeight: 700 };
+
+  return (
+    <div style={{ background: COLORS.surface, borderRadius: 20, padding: 32, border: `1px solid ${COLORS.border}` }}>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 16 }}>DAILY PICKS</div>
+      {status === "loading" && (
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: COLORS.textDim }}>Loading Daily Picks...</div>
+      )}
+      {status === "error" && (
+        <div style={{ fontSize: 14, color: COLORS.textDim, lineHeight: 1.6 }}>{message}</div>
+      )}
+      {status === "ready" && report && (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: COLORS.textDim }}>
+            <span>Report {displayValue(report.report_id)}</span>
+            <span>Market {displayValue(report.market_date)}</span>
+            <span>Generated {displayValue(report.generated_at)}</span>
+          </div>
+          {picks.length === 0 ? (
+            <div style={{ fontSize: 14, color: COLORS.textDim }}>No structured picks in this report.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+                <thead>
+                  <tr>
+                    {["Ticker", "Direction", "Scout score", "Total score", "Strategy", "Catalyst", "Expiration", "Strikes"].map((label) => (
+                      <th key={label} style={head}>{label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {picks.map((pick, index) => {
+                    const ticker = displayValue(pickValue(pick, "ticker", "symbol"));
+                    const direction = pickValue(pick, "direction", "side");
+                    return (
+                      <tr key={`${ticker}-${index}`}>
+                        <td style={{ ...cell, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{ticker}</td>
+                        <td style={{ ...cell, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: directionColor(direction) }}>{displayValue(direction)}</td>
+                        <td style={cell}>{displayValue(pickValue(pick, "scout_score", "scoutScore"))}</td>
+                        <td style={cell}>{displayValue(pickValue(pick, "total_score", "totalScore"))}</td>
+                        <td style={cell}>{displayValue(pickValue(pick, "strategy"))}</td>
+                        <td style={cell}>{displayValue(pickValue(pick, "catalyst_level", "catalystLevel"))}</td>
+                        <td style={cell}>{displayValue(pickValue(pick, "expiration_rec", "expirationRec"))}</td>
+                        <td style={cell}>{formatStrikes(pickValue(pick, "strikes"))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ─── MAIN PAGE ─── */
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -749,11 +870,7 @@ export default function Home() {
         {page === "dashboard" && (
           <div style={{ maxWidth: 1200, margin: "0 auto", padding: "20px 40px 80px" }}>
             <div style={{ fontSize: 26, fontWeight: 800, color: COLORS.text, marginBottom: 24 }}>Welcome back{user ? `, ${user.name}` : ""}</div>
-            <div style={{ background: COLORS.surface, borderRadius: 20, padding: 32, border: `1px solid ${COLORS.border}`, textAlign: "center" }}>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: COLORS.accent, letterSpacing: 3, marginBottom: 16 }}>COMING SOON</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.text, marginBottom: 8 }}>Trade Tracker & Performance Dashboard</div>
-              <div style={{ fontSize: 14, color: COLORS.textDim }}>Your trades, P&L history, Kelly sizing, and personalized alerts — all in one place.</div>
-            </div>
+            <DailyPicks />
           </div>
         )}
       </div>
