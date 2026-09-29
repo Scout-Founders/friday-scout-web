@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Scout Gate Sandbox</title>
+  <title>Live Scanner</title>
   <style>
     :root {
       --bg: #06080f;
@@ -978,26 +978,36 @@
         grid-template-columns: 1fr;
       }
     }
+
+    .top-nav { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .nav-primary, .nav-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.nav-context { border-style: dashed; }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Local beta testing only</div>
-    <h1>Scout Gate Sandbox</h1>
-    <p class="lede">
-      Enter a ticker universe, run the deployed Scout gate engine on demand, and inspect the final pick,
-      per-gate outcomes, rejected candidates, and raw JSON output.
-    </p>
+    <div class="eyebrow">Live observation</div>
+    <h1>Live Scanner</h1>
+    <p class="lede">What is Scout seeing right now?</p>
     <nav class="top-nav" aria-label="Sandbox navigation">
-      <a class="active" href="/">Scout Gate Sandbox</a>
-      <a href="/research">Research Memory</a>
-      <a href="/backtest">Backtesting</a>
-      <a href="/research-queue">Research Queue</a>
-      <a href="/research-findings">Research Findings</a>
-      <a href="/rule-candidates">Rule Candidates</a>
-      <a href="/rule-validations">Rule Validations</a>
-      <a href="/research-intelligence">Research Intelligence</a>
-      <a href="/control">Scout Horizon-1</a>
+      <div class="nav-primary">
+        <a href="/">Horizon-1</a>
+        <a class="active" href="/scanner">Live Scanner</a>
+        <a href="/control">Intelligence</a>
+        <a href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a href="/research-queue">Queue</a>
+        <a href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
     </nav>
 
     <section class="grid">

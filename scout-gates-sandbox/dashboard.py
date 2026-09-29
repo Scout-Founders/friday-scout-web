@@ -103,6 +103,7 @@ from rule_validation_engine import (
     run_rule_validation,
 )
 from research_intelligence import get_research_intelligence_dashboard
+from overview_read_model import build_overview_snapshot
 from ingest_scout_reports import (
     generate_findings_from_daily_reports,
     ingest_scout_reports,
@@ -116,6 +117,7 @@ from ingest_scout_reports import (
 SANDBOX_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SANDBOX_DIR.parent
 DASHBOARD_HTML = SANDBOX_DIR / "dashboard.html"
+OVERVIEW_HTML = SANDBOX_DIR / "overview.html"
 RESEARCH_HTML = SANDBOX_DIR / "research.html"
 CONTROL_HTML = SANDBOX_DIR / "control.html"
 BACKTEST_HTML = SANDBOX_DIR / "backtest.html"
@@ -372,7 +374,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path in ("/", "/dashboard.html"):
+        if parsed.path in ("/", "/overview.html"):
+            self.send_file(OVERVIEW_HTML, "text/html; charset=utf-8")
+            return
+        if parsed.path in ("/scanner", "/scanner.html", "/dashboard.html"):
             self.send_file(DASHBOARD_HTML, "text/html; charset=utf-8")
             return
         if parsed.path in ("/research", "/research.html"):
@@ -404,6 +409,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/universe-presets":
             self.send_json(list_preset_catalog())
+            return
+        if parsed.path == "/api/overview":
+            self.send_json(build_overview_snapshot(fmp_key_present=bool(fmp_api_key())))
             return
         if parsed.path == "/api/control/summary":
             self.send_json(build_control_summary())

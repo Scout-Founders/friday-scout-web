@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Scout Horizon-1</title>
+  <title>Intelligence</title>
   <style>
     :root {
       --bg: #030611;
@@ -449,45 +449,73 @@
         font-size: 22px;
       }
     }
+
+    .top-nav { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .nav-primary, .nav-sub, .action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.nav-context { border-style: dashed; }
+    .maintenance { border-color: #ffb08a88; }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Sandbox mission control</div>
-    <h1><span class="gradient-text">Scout Horizon-1</span></h1>
-    <p class="lede">
-      Mission control for Scout's research memory, learning pipeline, system health,
-      and future intelligence architecture. This page measures training readiness,
-      not active model training.
-    </p>
+    <div class="eyebrow">Horizon-1</div>
+    <h1><span class="gradient-text">Intelligence</span></h1>
+    <p class="lede">How Horizon-1 learns from accumulated evidence.</p>
     <nav class="top-nav" aria-label="Sandbox navigation">
-      <a href="/">Scout Gate Sandbox</a>
-      <a href="/research">Research Memory</a>
-      <a href="/backtest">Backtesting</a>
-      <a href="/research-queue">Research Queue</a>
-      <a href="/research-findings">Research Findings</a>
-      <a href="/rule-candidates">Rule Candidates</a>
-      <a href="/rule-validations">Rule Validations</a>
-      <a href="/research-intelligence">Research Intelligence</a>
-      <a class="active" href="/control">Scout Horizon-1</a>
+      <div class="nav-primary">
+        <a href="/">Horizon-1</a>
+        <a href="/scanner">Live Scanner</a>
+        <a class="active" href="/control">Intelligence</a>
+        <a href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a href="/research-queue">Queue</a>
+        <a href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
     </nav>
 
     <div class="status" id="status">Loading Horizon-1 control summary...</div>
 
     <section class="grid">
       <article class="card wide">
-        <div class="kicker">Phase 4 Self-Audit</div>
-        <h2>Horizon Infrastructure Verification</h2>
-        <p class="hint">Verify that Phase 4 infrastructure is connected, measurable, and ready to inform Phase 5 planning.</p>
-        <button class="button primary" id="self-audit-button" type="button">Run Horizon Self-Audit</button>
-        <button class="button" id="backfill-button" type="button">Run Horizon Backfill</button>
-        <div id="self-audit-results" style="margin-top:16px;"></div>
-        <div id="backfill-results" style="margin-top:16px;"></div>
+        <div class="kicker">Current learned state</div>
+        <h2>What the current generations contain</h2>
+        <p class="hint">These counts come from the existing Horizon summary. That payload does not include build identifiers. The Gate Intelligence table is listed in <a href="/research">Research Memory</a>.</p>
+        <div class="metric-grid" id="horizon-state"></div>
       </article>
 
       <article class="card wide">
-        <div class="kicker">Data Bank Health</div>
-        <div class="metric-grid" id="data-bank-health"></div>
+        <div class="kicker">Pattern Intelligence</div>
+        <h2>Recurring Market Setups</h2>
+        <div id="pattern-intelligence" style="margin-top:16px;"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Gate Alpha Intelligence</div>
+        <h2>Statistical Gate Performance</h2>
+        <div id="gate-alpha" style="margin-top:16px;"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Gate Attribution</div>
+        <h2>Why The Current Recommendation Happened</h2>
+        <div id="gate-attribution"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Regime Intelligence</div>
+        <h2>When Gates Perform Best</h2>
+        <p class="hint">This refresh reads the current regime summary. It does not publish a new derived generation.</p>
+        <button class="button primary" id="regime-intelligence-button" type="button">Rebuild Regime Intelligence</button>
+        <div id="regime-intelligence" style="margin-top:16px;"></div>
       </article>
 
       <article class="card two-third">
@@ -499,6 +527,24 @@
       <article class="card third">
         <div class="kicker">Future GPT/LLM Training Readiness</div>
         <div id="training-readiness"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Readiness Matrix</div>
+        <h2>Learning Readiness</h2>
+        <div class="table-wrap" id="learning-readiness"></div>
+      </article>
+
+      <article class="card half">
+        <div class="kicker">Live Status</div>
+        <h2>System Health</h2>
+        <div class="table-wrap" id="system-health"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Diagnostics</div>
+        <h2>Data Bank Health</h2>
+        <div class="metric-grid" id="data-bank-health"></div>
       </article>
 
       <article class="card wide">
@@ -518,47 +564,6 @@
         <div class="kicker">Anomaly Monitor</div>
         <h2>Data Anomaly Detection</h2>
         <div id="anomaly-monitor"></div>
-      </article>
-
-      <article class="card wide">
-        <div class="kicker">Pattern Intelligence</div>
-        <h2>Recurring Market Setups</h2>
-        <button class="button primary" id="patterns-button" type="button">Rebuild Pattern Intelligence</button>
-        <div id="pattern-intelligence" style="margin-top:16px;"></div>
-      </article>
-
-      <article class="card wide">
-        <div class="kicker">Gate Attribution</div>
-        <h2>Why The Current Recommendation Happened</h2>
-        <div id="gate-attribution"></div>
-      </article>
-
-      <article class="card wide">
-        <div class="kicker">Gate Alpha Intelligence</div>
-        <h2>Statistical Gate Performance</h2>
-        <button class="button primary" id="gate-alpha-button" type="button">Rebuild Gate Alpha</button>
-        <button class="button" id="gate-alpha-test-button" type="button">Create Gate Alpha Test Record</button>
-        <p class="hint" id="gate-alpha-test-label">Sandbox test data is isolated from real trade history.</p>
-        <div id="gate-alpha" style="margin-top:16px;"></div>
-      </article>
-
-      <article class="card wide">
-        <div class="kicker">Regime Intelligence</div>
-        <h2>When Gates Perform Best</h2>
-        <button class="button primary" id="regime-intelligence-button" type="button">Rebuild Regime Intelligence</button>
-        <div id="regime-intelligence" style="margin-top:16px;"></div>
-      </article>
-
-      <article class="card half">
-        <div class="kicker">Readiness Matrix</div>
-        <h2>Learning Readiness</h2>
-        <div class="table-wrap" id="learning-readiness"></div>
-      </article>
-
-      <article class="card half">
-        <div class="kicker">Live Status</div>
-        <h2>System Health</h2>
-        <div class="table-wrap" id="system-health"></div>
       </article>
 
       <article class="card half">
@@ -585,6 +590,28 @@
       <article class="card wide">
         <div class="kicker">Endpoint Registry</div>
         <div class="table-wrap" id="endpoints"></div>
+      </article>
+
+      <article class="card wide">
+        <div class="kicker">Phase 4 Self-Audit</div>
+        <h2>Horizon Infrastructure Verification</h2>
+        <p class="hint">Verify that Phase 4 infrastructure is connected, measurable, and ready to inform Phase 5 planning.</p>
+        <button class="button primary" id="self-audit-button" type="button">Run Horizon Self-Audit</button>
+        <div id="self-audit-results" style="margin-top:16px;"></div>
+      </article>
+
+      <article class="card wide maintenance">
+        <div class="kicker">Maintenance</div>
+        <h2>Administrative controls</h2>
+        <p class="hint">These actions change stored data. They are separate from the learned-intelligence views above.</p>
+        <div class="action-row">
+          <button class="button primary" id="patterns-button" type="button">Rebuild Pattern Intelligence</button>
+          <button class="button primary" id="gate-alpha-button" type="button">Rebuild Gate Alpha</button>
+          <button class="button" id="gate-alpha-test-button" type="button">Create Gate Alpha Test Record</button>
+          <button class="button" id="backfill-button" type="button">Run Horizon Backfill</button>
+        </div>
+        <p class="hint" id="gate-alpha-test-label">Sandbox test data is isolated from real trade history.</p>
+        <div id="backfill-results" style="margin-top:16px;"></div>
       </article>
     </section>
   </main>
@@ -1298,7 +1325,23 @@
       }
     }
 
+    function renderHorizonState(data) {
+      const rows = data.database?.rows_by_table || {};
+      const health = data.data_bank_health || {};
+      const patterns = data.pattern_intelligence?.total_patterns_discovered ?? rows.pattern_intelligence ?? 0;
+      const alpha = health.gate_alpha_metrics ?? rows.gate_alpha_metrics ?? 0;
+      const intelligence = rows.gate_intelligence_metrics ?? 0;
+      const target = document.getElementById("horizon-state");
+      if (!target) return;
+      target.innerHTML = [
+        metric("Patterns", number(patterns)),
+        metric("Gate Alpha segments", number(alpha)),
+        metric("Gate Intelligence gates", number(intelligence)),
+      ].join("");
+    }
+
     function renderAll(data) {
+      renderHorizonState(data);
       renderDataBank(data);
       renderReadiness(data.learning_readiness || []);
       renderProgress(data.learning_progress || []);

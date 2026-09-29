@@ -511,38 +511,47 @@
         grid-template-columns: 1fr;
       }
     }
+
+    .top-nav { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .nav-primary, .nav-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.nav-context { border-style: dashed; }
+    .maintenance { border-color: #ffb08a88; }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Local beta research memory</div>
+    <div class="eyebrow">Historical evidence</div>
     <h1>Research Memory</h1>
-    <p class="lede">
-      A local SQLite-backed memory of every sandbox gate run, built for beta research,
-      analysis, and future Scout training datasets.
-    </p>
+    <p class="lede">What historical evidence supports what Scout believes?</p>
     <nav class="top-nav" aria-label="Sandbox navigation">
-      <a href="/">Scout Gate Sandbox</a>
-      <a class="active" href="/research">Research Memory</a>
-      <a href="/backtest">Backtesting</a>
-      <a href="/research-queue">Research Queue</a>
-      <a href="/research-findings">Research Findings</a>
-      <a href="/rule-candidates">Rule Candidates</a>
-      <a href="/rule-validations">Rule Validations</a>
-      <a href="/research-intelligence">Research Intelligence</a>
-      <a href="/control">Scout Horizon-1</a>
+      <div class="nav-primary">
+        <a href="/">Horizon-1</a>
+        <a href="/scanner">Live Scanner</a>
+        <a href="/control">Intelligence</a>
+        <a class="active" href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a href="/research-queue">Queue</a>
+        <a href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
     </nav>
 
     <div class="status" id="status">Loading local memory...</div>
 
     <section class="card wide">
+      <h2>Evidence</h2>
       <div class="actions">
         <input id="ticker-search" placeholder="Search ticker, e.g. AMD" spellcheck="false">
         <button class="button primary" id="search-button" type="button">Search</button>
         <button class="button" id="clear-button" type="button">Clear</button>
-        <input id="test-age-days" type="number" min="1" max="365" value="30" title="Synthetic age in days for the copied test record">
-        <button class="button" id="create-test-record-button" type="button">Create Outcome Test Record</button>
-        <button class="button primary" id="update-outcomes-button" type="button">Update Outcomes</button>
         <a class="button" id="export-csv-link" href="/api/memory/export.csv">Export CSV</a>
         <button class="button" id="print-button" type="button">Print / Save PDF</button>
         <button class="button primary" id="memory-tab-button" type="button">Research Memory</button>
@@ -550,12 +559,6 @@
       </div>
       <p class="hint">
         Forward returns use <strong>trading days</strong> (FMP EOD closes), not calendar days.
-        Saved scans do not update automatically — click <strong>Update Outcomes</strong> to refresh 1D–20D results.
-      </p>
-      <p class="hint" id="outcome-refresh-hint"></p>
-      <p class="hint">
-        Test mode copies the ticker in the search box, or the latest saved recommendation if blank,
-        and backdates only the copied row. Real saved recommendations are not modified.
       </p>
       <div class="filter-grid">
         <div>
@@ -649,6 +652,21 @@
         <h2>Audit Log</h2>
         <div class="table-wrap" id="audit-log"></div>
       </article>
+    </section>
+
+    <section class="card wide maintenance">
+      <h2>Maintenance</h2>
+      <p class="hint">These actions write stored evidence. They are separate from browsing, filtering, and export.</p>
+      <div class="actions">
+        <button class="button primary" id="update-outcomes-button" type="button">Update Outcomes</button>
+        <input id="test-age-days" type="number" min="1" max="365" value="30" title="Synthetic age in days for the copied test record">
+        <button class="button" id="create-test-record-button" type="button">Create Outcome Test Record</button>
+      </div>
+      <p class="hint" id="outcome-refresh-hint"></p>
+      <p class="hint">
+        Update Outcomes refreshes 1D–20D results. Saved scans do not update automatically.
+        Create Outcome Test Record is experimental: it copies the ticker in the search box, or the latest saved recommendation if blank, and backdates only the copied row. Real saved recommendations are not modified.
+      </p>
     </section>
   </main>
 

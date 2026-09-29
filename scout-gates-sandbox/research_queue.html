@@ -92,26 +92,37 @@
     .button:disabled { opacity: 0.55; cursor: wait; }
     .table-wrap { overflow-x: auto; }
     .table-wrap table { min-width: 920px; }
+
+    .top-nav { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .nav-primary, .nav-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.nav-context { border-style: dashed; }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Research Orchestration</div>
+    <div class="eyebrow">Experiments</div>
     <h1>Research Queue</h1>
-    <p class="lede">
-      Manage predefined Scout research jobs and review run history. Jobs use read-only backtest preview
-      analytics only. No trades, no gate changes, and no live scan changes.
-    </p>
+    <p class="lede">Research work waiting to run or recently completed.</p>
+    <p class="hint">Part of <a href="/research-intelligence">Experiments</a>: Queue → <a href="/research-findings">Findings</a> → <a href="/rule-candidates">Candidates</a> → <a href="/rule-validations">Validations</a></p>
     <nav class="top-nav" aria-label="Sandbox navigation">
-      <a href="/">Scout Gate Sandbox</a>
-      <a href="/research">Research Memory</a>
-      <a href="/backtest">Backtesting</a>
-      <a class="active" href="/research-queue">Research Queue</a>
-      <a href="/research-findings">Research Findings</a>
-      <a href="/rule-candidates">Rule Candidates</a>
-      <a href="/rule-validations">Rule Validations</a>
-      <a href="/research-intelligence">Research Intelligence</a>
-      <a href="/control">Scout Horizon-1</a>
+      <div class="nav-primary">
+        <a href="/">Horizon-1</a>
+        <a href="/scanner">Live Scanner</a>
+        <a href="/control">Intelligence</a>
+        <a href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a class="nav-context" href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a class="active" href="/research-queue">Queue</a>
+        <a href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
     </nav>
 
     <div class="status" id="status">Loading research queue...</div>

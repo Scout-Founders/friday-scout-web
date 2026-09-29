@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Horizon-1</title>
+  <style>
+    :root {
+      --bg: #030611;
+      --border: #28304a;
+      --text: #f8efe8;
+      --muted: #b9a8a1;
+      --peach: #ffb08a;
+      --gold: #f5d47a;
+      --rose: #c8788f;
+      --success: #83e6b7;
+      --warning: #f5c36a;
+      --danger: #ff7d85;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 8%, #ffb08a33, transparent 34rem),
+        radial-gradient(circle at 74% 14%, #ff6f612a, transparent 28rem),
+        linear-gradient(180deg, #071126 0%, #030611 42%, #02030a 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .shell { width: min(1280px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 64px; }
+    .eyebrow, .kicker, .metric-label {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+    }
+    .eyebrow { color: var(--gold); font-size: 12px; font-weight: 800; }
+    h1 { margin: 10px 0 8px; font-size: clamp(42px, 8vw, 94px); font-weight: 750; line-height: 0.92; letter-spacing: -0.07em; }
+    h2 { margin: 0 0 14px; font-size: 20px; font-weight: 650; }
+    .lede { max-width: 820px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.65; }
+    .gradient-text {
+      background: linear-gradient(90deg, var(--peach), var(--gold), var(--rose));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .top-nav { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 24px 0 30px; }
+    .nav-primary, .nav-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .top-nav a {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #080d19cc;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      text-decoration: none;
+    }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.active { color: var(--text); border-color: var(--peach); }
+    .status { margin: 0 0 18px; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; }
+    .card {
+      position: relative;
+      grid-column: span 12;
+      overflow: hidden;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      background: linear-gradient(180deg, #11182be8, #090e1ae8);
+    }
+    .half { grid-column: span 6; }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .metric { min-height: 96px; padding: 16px; border: 1px solid #ffffff12; border-radius: 18px; background: #060a14bb; }
+    .metric-value { color: var(--gold); font-family: "SFMono-Regular", Consolas, monospace; font-size: 26px; font-weight: 850; }
+    .metric-label { color: var(--muted); font-size: 11px; font-weight: 800; }
+    .hint, .leader, .recent-line { color: var(--muted); line-height: 1.5; }
+    .leader { margin: 8px 0 0; }
+    a.inline { color: var(--peach); }
+    .attention-item { margin: 0 0 10px; padding: 12px 14px; border-radius: 14px; background: #060a14bb; }
+    .attention-item.critical { border: 1px solid var(--danger); }
+    .attention-item.action { border: 1px solid var(--warning); }
+    .attention-item.info { border: 1px solid var(--border); }
+    .hidden { display: none; }
+    @media (max-width: 800px) { .half { grid-column: span 12; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Scout</div>
+    <h1><span class="gradient-text">HORIZON-1</span></h1>
+    <p class="lede">Scout Intelligence System</p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <div class="nav-primary">
+        <a class="active" href="/">Horizon-1</a>
+        <a href="/scanner">Live Scanner</a>
+        <a href="/control">Intelligence</a>
+        <a href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a href="/research-queue">Queue</a>
+        <a href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
+    </nav>
+    <p class="status" id="status">Loading Horizon-1…</p>
+
+    <section class="card">
+      <h2>Scout</h2>
+      <div class="metric-grid" id="system-metrics"></div>
+      <div id="readiness"></div>
+    </section>
+
+    <section class="card hidden" id="attention-card">
+      <h2>Attention</h2>
+      <div id="attention"></div>
+    </section>
+
+    <section class="grid">
+      <article class="card half">
+        <h2>Live</h2>
+        <p class="hint">Latest saved scan. This is stored observation state, not a live streaming session.</p>
+        <div class="metric-grid" id="live-metrics"></div>
+        <p class="leader"><a class="inline" href="/scanner">Open Live Scanner</a></p>
+      </article>
+      <article class="card half">
+        <h2>Intelligence</h2>
+        <div class="metric-grid" id="horizon-metrics"></div>
+        <div id="horizon-leaders"></div>
+        <p class="leader"><a class="inline" href="/control">Open Intelligence</a></p>
+      </article>
+      <article class="card half">
+        <h2>Evidence</h2>
+        <p class="hint">Research-eligible population. This is separate from the full evidence-bank count above.</p>
+        <div class="metric-grid" id="memory-metrics"></div>
+        <p class="leader"><a class="inline" href="/research">Open Research Memory</a></p>
+      </article>
+      <article class="card half">
+        <h2>Research</h2>
+        <div class="metric-grid" id="experiment-metrics"></div>
+        <p class="leader"><a class="inline" href="/research-intelligence">Open Experiments</a></p>
+      </article>
+      <article class="card">
+        <h2>Recent</h2>
+        <div id="recent"></div>
+      </article>
+    </section>
+  </main>
+  <script>
+    const statusNode = document.getElementById("status");
+
+    function text(value) {
+      return value === null || value === undefined || value === "" ? "—" : String(value);
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><div class="metric-value">${text(value)}</div><div class="metric-label">${label}</div></div>`;
+    }
+
+    function patternLine(label, pattern) {
+      if (!pattern) return "";
+      const signature = pattern.signature || {};
+      const place = signature.sector || signature.sector_name || signature.profile || "";
+      return `<p class="leader">${label}: ${text(signature.direction)} ${text(place)} · win rate ${text(pattern.win_rate)} · sample ${text(pattern.sample_size)}</p>`;
+    }
+
+    function render(data) {
+      const system = data.system || {};
+      const live = data.live || {};
+      const horizon = data.horizon || {};
+      const leaders = horizon.existingLeaders || {};
+      const memory = data.memory || {};
+      const experiments = data.experiments || {};
+      const directions = live.directionCounts || {};
+      const backtest = (data.backtests || {}).latest;
+      document.getElementById("system-metrics").innerHTML = [
+        metric("Evidence bank", system.evidenceBankRows),
+        metric("Observation freshness", system.observationFreshness),
+        metric("Outcome freshness", system.outcomeFreshness),
+        metric("Schema", system.schemaStatus),
+        metric("Anomalies", system.anomalyCount),
+      ].join("");
+      const readiness = system.readiness || [];
+      document.getElementById("readiness").innerHTML = readiness.length
+        ? `<p class="hint">${readiness.map((item) => `${item.name}: ${item.status}`).join(" · ")}</p>`
+        : "";
+
+      const attention = data.attention || [];
+      const attentionCard = document.getElementById("attention-card");
+      if (attention.length) {
+        attentionCard.classList.remove("hidden");
+        document.getElementById("attention").innerHTML = attention.map((item) => (
+          `<p class="attention-item ${item.severity}"><a class="inline" href="${item.href}">${item.severity}</a> · ${item.message}</p>`
+        )).join("");
+      }
+
+      document.getElementById("live-metrics").innerHTML = [
+        metric("Saved scan", live.scanRunId),
+        metric("Tickers", live.tickerCount),
+        metric("Bullish", directions.Bullish),
+        metric("Bearish", directions.Bearish),
+        metric("Neutral", directions.Neutral),
+      ].join("");
+      document.getElementById("horizon-metrics").innerHTML = [
+        metric("Patterns", horizon.patternCount),
+        metric("Gate Alpha segments", horizon.gateAlphaSegmentCount),
+        metric("Gate Intelligence gates", horizon.gateIntelligenceGateCount),
+        metric("Regime snapshots", horizon.regimeSnapshotCount),
+      ].join("");
+      const gate = leaders.topGlobalGateAlpha;
+      const predictive = leaders.mostPredictiveGate;
+      const regime = leaders.highestExpectancyRegime;
+      document.getElementById("horizon-leaders").innerHTML = [
+        patternLine("Stored strongest bullish pattern", leaders.strongestBullishPattern),
+        patternLine("Stored strongest bearish pattern", leaders.strongestBearishPattern),
+        gate ? `<p class="leader">Stored top global Gate Alpha: ${text(gate.gate_name)} · expectancy ${text(gate.expectancy)} · sample ${text(gate.sample_count)}</p>` : "",
+        predictive ? `<p class="leader">Stored most predictive gate: ${text(predictive.gate)} · win rate ${text(predictive.win_rate)} · score ${text(predictive.predictive_score)}</p>` : "",
+        regime ? `<p class="leader">Stored highest-expectancy regime: ${text(regime.regime)} · expectancy ${text(regime.expectancy)}</p>` : "",
+      ].join("");
+      document.getElementById("memory-metrics").innerHTML = [
+        metric("Eligible", memory.eligibleObservations),
+        metric("Eligible completed", memory.eligibleCompleted),
+        metric("Eligible pending", memory.eligiblePending),
+        metric("Actionable completed", memory.actionableCompleted),
+      ].join("");
+      const openBySeverity = experiments.openFindingsBySeverity || {};
+      const runs = experiments.runStatusCounts || {};
+      const candidates = experiments.candidatesByStatus || {};
+      const validations = experiments.validationsByStatus || {};
+      document.getElementById("experiment-metrics").innerHTML = [
+        metric("Enabled jobs", experiments.enabledJobs),
+        metric("Completed runs", runs.completed),
+        metric("Open findings", experiments.openFindings),
+        metric("Open warnings", openBySeverity.warning),
+        metric("Testing candidates", candidates.testing),
+        metric("Completed validations", validations.completed),
+      ].join("");
+      const builds = system.derivedBuilds || [];
+      const buildLines = builds.map((build) => (
+        `<p class="recent-line">${build.artifact}: ${text(build.status)} · ${text(build.builtAt)} · ${text(build.rowCount)} rows</p>`
+      )).join("");
+      document.getElementById("recent").innerHTML = [
+        `<p class="recent-line">Latest saved observation: ${text(system.observationTimestamp)}</p>`,
+        `<p class="recent-line">Latest outcome update: ${text(system.outcomeUpdatedAt)}</p>`,
+        buildLines,
+        `<p class="recent-line">Latest backtest: ${backtest ? `${text(backtest.name)} · ${text(backtest.status)} · ${text(backtest.createdAt)}` : "—"}</p>`,
+      ].join("");
+      statusNode.textContent = `Horizon-1 loaded ${data.generatedAt || ""}.`;
+    }
+
+    fetch("/api/overview")
+      .then((response) => response.json())
+      .then(render)
+      .catch(() => {
+        statusNode.textContent = "Horizon-1 could not be loaded.";
+      });
+  </script>
+</body>
+</html>

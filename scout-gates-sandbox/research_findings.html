@@ -160,26 +160,37 @@
     .button.small { padding: 7px 11px; font-size: 12px; }
     .button:disabled { opacity: 0.55; cursor: wait; }
     .empty-state { color: var(--muted); padding: 18px 0; }
+
+    .top-nav { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .nav-primary, .nav-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.nav-context { border-style: dashed; }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Research Intelligence</div>
-    <h1>Research Findings</h1>
-    <p class="lede">
-      Review structured findings generated from completed research job runs. Status updates are manual
-      review actions only. No trades, no gate changes, and no automatic promotion into live rules.
-    </p>
+    <div class="eyebrow">Experiments</div>
+    <h1>Findings</h1>
+    <p class="lede">Potential relationships discovered in Scout's evidence.</p>
+    <p class="hint">Part of <a href="/research-intelligence">Experiments</a>: <a href="/research-queue">Queue</a> → Findings → <a href="/rule-candidates">Candidates</a> → <a href="/rule-validations">Validations</a></p>
     <nav class="top-nav" aria-label="Sandbox navigation">
-      <a href="/">Scout Gate Sandbox</a>
-      <a href="/research">Research Memory</a>
-      <a href="/backtest">Backtesting</a>
-      <a href="/research-queue">Research Queue</a>
-      <a class="active" href="/research-findings">Research Findings</a>
-      <a href="/rule-candidates">Rule Candidates</a>
-      <a href="/rule-validations">Rule Validations</a>
-      <a href="/research-intelligence">Research Intelligence</a>
-      <a href="/control">Scout Horizon-1</a>
+      <div class="nav-primary">
+        <a href="/">Horizon-1</a>
+        <a href="/scanner">Live Scanner</a>
+        <a href="/control">Intelligence</a>
+        <a href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a class="nav-context" href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a href="/research-queue">Queue</a>
+        <a class="active" href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
     </nav>
 
     <div class="status" id="status">Loading research findings...</div>
