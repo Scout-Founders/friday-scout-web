@@ -18,6 +18,7 @@ from memory_store import (
     json_dump,
     json_load,
 )
+from observation_evidence import assert_research_population, research_eligible_predicate
 
 
 BACKTEST_VERSION = "1.1"
@@ -295,7 +296,7 @@ def compute_directional_expectancy(signal_return_values: list[float]) -> Optiona
 
 
 def build_signal_query(filters: BacktestFilters) -> tuple[str, list[Any]]:
-    clauses = ["1 = 1"]
+    clauses = ["1 = 1", research_eligible_predicate("sr")]
     params: list[Any] = []
 
     if filters.require_completed_outcomes:
@@ -435,6 +436,7 @@ def fetch_signals_for_backtest_run(conn: sqlite3.Connection, run_id: int) -> lis
 
 
 def fetch_backtest_signals(conn: sqlite3.Connection, filters: BacktestFilters) -> list[dict[str, Any]]:
+    assert_research_population(conn)
     sql, params = build_signal_query(filters)
     rows = conn.execute(sql, params).fetchall()
     return [row_to_signal(row) for row in rows]

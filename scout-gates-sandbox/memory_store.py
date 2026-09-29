@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from engine_version import current_engine_version, current_git_commit_hash
 from feature_store import (
@@ -25,6 +25,15 @@ from feature_store import (
     init_feature_store,
     refresh_feature_vector_labels,
     save_feature_vector,
+)
+from derived_build_manifest import complete_build, fail_build, get_build, start_build
+from migrate_observation_provenance import CREATE_INDEX_SQL, CREATE_TABLE_SQL
+from observation_evidence import (
+    CAPTURE_CLASSIFIER_VERSION,
+    ResearchPopulationError,
+    assert_research_population,
+    population_stamp,
+    research_eligible_predicate,
 )
 from schema_registry import validate_schema
 from pattern_engine import (
@@ -248,7 +257,8 @@ def init_db() -> None:
                 avg_return REAL NOT NULL,
                 expectancy REAL NOT NULL,
                 confidence_score REAL NOT NULL,
-                last_updated_utc TEXT NOT NULL
+                last_updated_utc TEXT NOT NULL,
+                build_id TEXT
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_alpha_identity
@@ -292,7 +302,8 @@ def init_db() -> None:
                 bearish_win_rate REAL NOT NULL,
                 predictive_score REAL NOT NULL,
                 confidence TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                build_id TEXT
             );
             """
         )
@@ -348,6 +359,7 @@ ACTIONABLE_DIRECTIONS = (DIRECTION_BULLISH, DIRECTION_BEARISH)
 COMPLETED_OUTCOME_LABELS_SQL = "stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')"
 ACTIONABLE_DIRECTION_SQL = "final_direction IN ('Bullish', 'Bearish')"
 NEUTRAL_DIRECTION_SQL = "final_direction = 'Neutral'"
+RESEARCH_ELIGIBLE_SQL = research_eligible_predicate("scan_results")
 
 
 def is_actionable_direction(direction: Any) -> bool:
@@ -1102,6 +1114,101 @@ def build_decision_explanation(
     }
 
 
+def ensure_observation_provenance(conn: sqlite3.Connection) -> None:
+    """Create the provenance table when a fresh database does not have it yet.
+
+    A single statement keeps this inside the caller's transaction. executescript
+    would commit before the observation insert.
+    """
+    conn.execute(CREATE_TABLE_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+    for statement in CREATE_INDEX_SQL:
+        conn.execute(statement.replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1))
+
+
+def record_capture_provenance(
+    conn: sqlite3.Connection,
+    scan_result_id: int,
+    *,
+    origin: str,
+    parent_observation_uid: Optional[str],
+    classification_reason: str,
+) -> None:
+    """Insert capture-v1 provenance for one newly created observation."""
+    if origin not in {"production", "test", "synthetic"}:
+        raise ResearchPopulationError(f"capture origin {origin} is not assigned by an active writer")
+    if origin == "production" and parent_observation_uid is not None:
+        raise ResearchPopulationError("a production capture cannot have a parent")
+    eligible = 1 if origin == "production" and parent_observation_uid is None else 0
+    conn.execute(
+        """
+        INSERT INTO observation_provenance (
+            observation_uid, scan_result_id, origin, record_class,
+            parent_observation_uid, research_eligible, classification_reason,
+            classified_at, classifier_version
+        ) VALUES (?, ?, ?, 'raw', ?, ?, ?, ?, ?)
+        """,
+        (
+            f"sr:{int(scan_result_id)}",
+            int(scan_result_id),
+            origin,
+            parent_observation_uid,
+            eligible,
+            classification_reason,
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            CAPTURE_CLASSIFIER_VERSION,
+        ),
+    )
+
+
+def require_observation_provenance(conn: sqlite3.Connection, scan_result_id: int) -> None:
+    """Fail closed when an existing observation has no provenance row."""
+    if not _provenance_table_exists(conn):
+        raise ResearchPopulationError(
+            "Research population is not usable. "
+            "Refusing to fall back to scan_results or is_test_record. "
+            f"existing observation {scan_result_id} lacks provenance. "
+            "Refusing to manufacture provenance."
+        )
+    row = conn.execute(
+        "SELECT 1 FROM observation_provenance WHERE scan_result_id = ?",
+        (int(scan_result_id),),
+    ).fetchone()
+    if row is None:
+        raise ResearchPopulationError(
+            "Research population is not usable. "
+            "Refusing to fall back to scan_results or is_test_record. "
+            f"existing observation {scan_result_id} lacks provenance. "
+            "Refusing to manufacture provenance."
+        )
+
+
+def require_saved_run_provenance(run_id: int) -> None:
+    """Verify a previously stored run before save_scan_result_once returns."""
+    init_db()
+    with connect() as conn:
+        ids = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT id FROM scan_results WHERE run_id = ? ORDER BY id",
+                (int(run_id),),
+            )
+        ]
+        for scan_result_id in ids:
+            require_observation_provenance(conn, scan_result_id)
+
+
+def _provenance_table_exists(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'observation_provenance'
+            """
+        ).fetchone()
+        is not None
+    )
+
+
 def save_scan_result(payload: dict[str, Any]) -> int:
     """Persist one completed dashboard run and all ticker rows."""
     init_db()
@@ -1111,6 +1218,7 @@ def save_scan_result(payload: dict[str, Any]) -> int:
     created_at_utc = datetime.now(timezone.utc).isoformat()
     cohort = cohort_fields_from_payload(payload)
     with connect() as conn:
+        ensure_observation_provenance(conn)
         cursor = conn.execute(
             """
             INSERT INTO scan_runs (
@@ -1231,6 +1339,15 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 ),
             )
             recommendation_id = int(cursor.lastrowid)
+            # Feature-store setup commits the open transaction, so provenance
+            # is written in this same transaction before that commit.
+            record_capture_provenance(
+                conn,
+                recommendation_id,
+                origin="production",
+                parent_observation_uid=None,
+                classification_reason="captured as a production observation",
+            )
             log_institutional_audit_event(
                 conn,
                 f"recommendation_created:{recommendation_id}",
@@ -1282,7 +1399,6 @@ def save_scan_result(payload: dict[str, Any]) -> int:
                 )
             except Exception:
                 pass
-        rebuild_pattern_intelligence(conn)
         return run_id
 
 
@@ -1323,6 +1439,7 @@ def save_scan_result_once(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("No completed recommendations were available to save.")
     existing_id = saved_scan_run_id(payload)
     if existing_id is not None:
+        require_saved_run_provenance(existing_id)
         return {
             "ok": True,
             "alreadySaved": True,
@@ -1351,6 +1468,7 @@ def create_outcome_test_record(
     ).isoformat()
 
     with connect() as conn:
+        ensure_observation_provenance(conn)
         source_filter = "COALESCE(is_test_record, 0) = 0"
         if ticker:
             source = conn.execute(
@@ -1374,6 +1492,7 @@ def create_outcome_test_record(
 
         if source is None:
             raise ValueError("No saved recommendation was found to copy.")
+        require_observation_provenance(conn, int(source["id"]))
 
         run_cursor = conn.execute(
             """
@@ -1481,6 +1600,13 @@ def create_outcome_test_record(
             ),
         )
         result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        record_capture_provenance(
+            conn,
+            result_id,
+            origin="synthetic",
+            parent_observation_uid=f"sr:{int(source['id'])}",
+            classification_reason="captured as a synthetic observation",
+        )
 
     return {
         "ok": True,
@@ -1497,6 +1623,7 @@ def create_gate_alpha_test_record() -> dict[str, Any]:
     init_db()
     created_at = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
+        ensure_observation_provenance(conn)
         source = conn.execute(
             """
             SELECT sr.*
@@ -1516,6 +1643,7 @@ def create_gate_alpha_test_record() -> dict[str, Any]:
         ).fetchone()
         if source is None:
             raise ValueError("No attributed scan was found. Run a new sandbox scan before creating Gate Alpha test data.")
+        require_observation_provenance(conn, int(source["id"]))
 
         existing = conn.execute(
             """
@@ -1531,7 +1659,7 @@ def create_gate_alpha_test_record() -> dict[str, Any]:
             (source["run_id"], source["ticker"]),
         ).fetchone()
         if existing is not None:
-            refresh_gate_alpha_metrics(conn)
+            require_observation_provenance(conn, int(existing["id"]))
             return {
                 "ok": True,
                 "created": False,
@@ -1621,6 +1749,13 @@ def create_gate_alpha_test_record() -> dict[str, Any]:
             ),
         )
         test_result_id = int(cursor.lastrowid)
+        record_capture_provenance(
+            conn,
+            test_result_id,
+            origin="test",
+            parent_observation_uid=f"sr:{int(source['id'])}",
+            classification_reason="captured as a test observation",
+        )
         log_outcome_update_audit(
             conn,
             created_at,
@@ -1637,7 +1772,6 @@ def create_gate_alpha_test_record() -> dict[str, Any]:
             "sandbox_gate_alpha_test_bridge",
             source["engine_version"] or current_engine_version(),
         )
-        refresh_gate_alpha_metrics(conn)
         return {
             "ok": True,
             "created": True,
@@ -2127,6 +2261,13 @@ def rebuild_gate_alpha() -> dict[str, Any]:
     return {"ok": True, "rebuild": rebuild, "gate_alpha": summary}
 
 
+def rebuild_gate_intelligence() -> dict[str, Any]:
+    init_db()
+    with connect() as conn:
+        rebuild = publish_gate_intelligence_metrics(conn)
+    return {"ok": True, "rebuild": rebuild}
+
+
 def rebuild_regime_intelligence() -> dict[str, Any]:
     init_db()
     return {"ok": True, "regime_intelligence": get_regime_intelligence_summary()}
@@ -2210,9 +2351,35 @@ def gate_alpha_confidence(sample_count: int, win_rate: float, returns: list[floa
     return round((0.45 * sample_score + 0.35 * consistency_score + 0.20 * stability_score) * 100, 2)
 
 
-def refresh_gate_alpha_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
+GATE_ALPHA_BUILDER_VERSION = "gate-alpha-1"
+GATE_ALPHA_BACKUP_TABLE = "gate_alpha_metrics_backup"
+GATE_ALPHA_INSERT_COLUMNS = (
+    "gate_name",
+    "sector",
+    "market_regime",
+    "volatility_regime",
+    "sample_count",
+    "wins",
+    "losses",
+    "win_rate",
+    "avg_return",
+    "expectancy",
+    "confidence_score",
+    "last_updated_utc",
+    "build_id",
+)
+
+
+class GateAlphaPublishError(Exception):
+    """The gate-alpha publication stopped before replacing the live rows."""
+
+
+def calculate_gate_alpha_candidates(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Calculate one gate-alpha generation. This does not write metrics or manifests."""
+    assert_research_population(conn)
+    eligible = research_eligible_predicate("sr")
     rows = conn.execute(
-        """
+        f"""
         SELECT sr.id AS recommendation_id, sr.run_id, sr.ticker, sr.raw_result_json,
                sr.return_1d, sr.return_3d, sr.return_5d, sr.return_10d, sr.return_20d,
                fv.sector_name, fv.risk_regime, fv.iv_percentile, fv.vix_level,
@@ -2223,6 +2390,7 @@ def refresh_gate_alpha_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
         LEFT JOIN feature_vectors fv
           ON fv.recommendation_id = sr.id
         WHERE sr.stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+          AND {eligible}
         GROUP BY sr.id
         """
     ).fetchall()
@@ -2263,7 +2431,7 @@ def refresh_gate_alpha_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
                     item["losses"] += 1
 
     updated_at = datetime.now(timezone.utc).isoformat()
-    conn.execute("DELETE FROM gate_alpha_metrics")
+    candidates = []
     for (gate_name, sector, market_regime, volatility_regime), item in metrics.items():
         sample_count = len(item["returns"])
         wins = item["wins"]
@@ -2272,35 +2440,221 @@ def refresh_gate_alpha_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
         avg_return = average(item["returns"]) or 0.0
         expectancy = round(avg_return * (win_rate / 100.0), 4)
         confidence = gate_alpha_confidence(sample_count, win_rate, item["returns"])
-        conn.execute(
-            """
-            INSERT INTO gate_alpha_metrics (
-                gate_name, sector, market_regime, volatility_regime,
-                sample_count, wins, losses, win_rate, avg_return,
-                expectancy, confidence_score, last_updated_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                gate_name,
-                sector,
-                market_regime,
-                volatility_regime,
-                sample_count,
-                wins,
-                losses,
-                win_rate,
-                avg_return,
-                expectancy,
-                confidence,
-                updated_at,
-            ),
+        candidates.append(
+            {
+                "gate_name": gate_name,
+                "sector": sector,
+                "market_regime": market_regime,
+                "volatility_regime": volatility_regime,
+                "sample_count": sample_count,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate,
+                "avg_return": avg_return,
+                "expectancy": expectancy,
+                "confidence_score": confidence,
+                "last_updated_utc": updated_at,
+            }
         )
     return {
+        "candidates": candidates,
         "completed_outcomes_checked": completed_rows,
         "attribution_rows_checked": attribution_rows,
-        "metric_rows": len(metrics),
         "last_updated_utc": updated_at,
     }
+
+
+def validate_gate_alpha_candidates(candidates: list[dict[str, Any]]) -> None:
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in candidates:
+        identity = (
+            row["gate_name"],
+            row["sector"],
+            row["market_regime"],
+            row["volatility_regime"],
+        )
+        if identity in seen:
+            raise GateAlphaPublishError(f"duplicate gate-alpha identity {identity}")
+        seen.add(identity)
+        sample_count = int(row["sample_count"])
+        if sample_count <= 0:
+            raise GateAlphaPublishError("gate-alpha sample_count must be positive")
+        if sample_count != int(row["wins"]) + int(row["losses"]):
+            raise GateAlphaPublishError("gate-alpha wins and losses do not add up to the sample")
+        expected_rate = round(int(row["wins"]) / sample_count * 100, 2)
+        if float(row["win_rate"]) != expected_rate:
+            raise GateAlphaPublishError("gate-alpha win_rate does not match wins and sample_count")
+
+
+def publish_gate_alpha_metrics(
+    conn: sqlite3.Connection,
+    *,
+    _probe: Optional[Callable[[str], None]] = None,
+) -> dict[str, Any]:
+    """Publish one manifest-backed gate-alpha generation."""
+    _ensure_gate_alpha_backup(conn)
+    _end_gate_alpha_transaction(conn)
+    assert_research_population(conn)
+    opening = population_stamp(conn)
+    _end_gate_alpha_transaction(conn)
+    started = start_build(
+        conn,
+        artifact_type="gate_alpha_metrics",
+        builder_version=GATE_ALPHA_BUILDER_VERSION,
+        stamp=opening,
+    )
+    _end_gate_alpha_transaction(conn)
+    build_id = started["build_id"]
+    try:
+        if _probe is not None:
+            _probe("before_calculate")
+        calculated = calculate_gate_alpha_candidates(conn)
+        candidates = calculated["candidates"]
+        validate_gate_alpha_candidates(candidates)
+        _end_gate_alpha_transaction(conn)
+        if _probe is not None:
+            _probe("before_lock")
+        _end_gate_alpha_transaction(conn)
+    except Exception as exc:
+        _fail_started_gate_alpha_build(conn, build_id, exc)
+        raise
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if _probe is not None:
+            _probe("inside_transaction")
+        final = population_stamp(conn)
+        if _gate_alpha_stamp_identity(final) != _gate_alpha_stamp_identity(opening):
+            raise GateAlphaPublishError("population stamp changed before publication")
+        current = get_build(conn, build_id)
+        if current is None or current["status"] != "STARTED":
+            raise GateAlphaPublishError("gate-alpha build is no longer STARTED")
+        if (
+            current["classifier_version"],
+            current["eligible_population_count"],
+            current["eligible_population_hash"],
+        ) != _gate_alpha_stamp_identity(opening):
+            raise GateAlphaPublishError("manifest stamp does not match the opening population")
+        _replace_live_gate_alpha(conn, candidates, build_id, _probe)
+        complete_build(
+            conn,
+            build_id,
+            built_at=calculated["last_updated_utc"],
+            artifact_row_count=len(candidates),
+        )
+        if _probe is not None:
+            _probe("after_complete")
+        conn.execute("COMMIT")
+    except Exception as exc:
+        _rollback_gate_alpha(conn)
+        _fail_started_gate_alpha_build(conn, build_id, exc)
+        raise
+    return {
+        "completed_outcomes_checked": calculated["completed_outcomes_checked"],
+        "attribution_rows_checked": calculated["attribution_rows_checked"],
+        "metric_rows": len(candidates),
+        "last_updated_utc": calculated["last_updated_utc"],
+        "build_id": build_id,
+        "status": "COMPLETED",
+    }
+
+
+def refresh_gate_alpha_metrics(
+    conn: sqlite3.Connection,
+    *,
+    _probe: Optional[Callable[[str], None]] = None,
+) -> dict[str, Any]:
+    """Explicit Horizon gate-alpha rebuild. Outcome refresh does not call this."""
+    return publish_gate_alpha_metrics(conn, _probe=_probe)
+
+
+def _gate_alpha_stamp_identity(stamp: Any) -> tuple[str, int, str]:
+    return (
+        stamp.classifier_version,
+        stamp.eligible_population_count,
+        stamp.eligible_population_hash,
+    )
+
+
+def _end_gate_alpha_transaction(conn: sqlite3.Connection) -> None:
+    try:
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def _rollback_gate_alpha(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ROLLBACK")
+    except sqlite3.OperationalError:
+        pass
+
+
+def _fail_started_gate_alpha_build(
+    conn: sqlite3.Connection,
+    build_id: str,
+    exc: BaseException,
+) -> None:
+    _rollback_gate_alpha(conn)
+    _end_gate_alpha_transaction(conn)
+    current = get_build(conn, build_id)
+    if current is None or current["status"] != "STARTED":
+        return
+    message = str(exc).strip() or exc.__class__.__name__
+    fail_build(conn, build_id, error_text=message[:500])
+    _end_gate_alpha_transaction(conn)
+
+
+def _ensure_gate_alpha_backup(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {GATE_ALPHA_BACKUP_TABLE} (
+            id INTEGER PRIMARY KEY,
+            gate_name TEXT NOT NULL,
+            sector TEXT NOT NULL,
+            market_regime TEXT NOT NULL,
+            volatility_regime TEXT NOT NULL,
+            sample_count INTEGER NOT NULL,
+            wins INTEGER NOT NULL,
+            losses INTEGER NOT NULL,
+            win_rate REAL NOT NULL,
+            avg_return REAL NOT NULL,
+            expectancy REAL NOT NULL,
+            confidence_score REAL NOT NULL,
+            last_updated_utc TEXT NOT NULL,
+            build_id TEXT
+        )
+        """
+    )
+
+
+def _replace_live_gate_alpha(
+    conn: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    build_id: str,
+    probe: Optional[Callable[[str], None]],
+) -> None:
+    listed = ", ".join(("id", *GATE_ALPHA_INSERT_COLUMNS))
+    value_listed = ", ".join(GATE_ALPHA_INSERT_COLUMNS)
+    placeholders = ", ".join("?" for _ in GATE_ALPHA_INSERT_COLUMNS)
+    conn.execute(f"DELETE FROM {GATE_ALPHA_BACKUP_TABLE}")
+    conn.execute(
+        f"""
+        INSERT INTO {GATE_ALPHA_BACKUP_TABLE} ({listed})
+        SELECT {listed} FROM gate_alpha_metrics
+        """
+    )
+    conn.execute("DELETE FROM gate_alpha_metrics")
+    if probe is not None:
+        probe("after_delete")
+    for row in candidates:
+        conn.execute(
+            f"""
+            INSERT INTO gate_alpha_metrics ({value_listed})
+            VALUES ({placeholders})
+            """,
+            tuple(build_id if column == "build_id" else row[column] for column in GATE_ALPHA_INSERT_COLUMNS),
+        )
 
 
 def gate_alpha_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -2405,7 +2759,9 @@ def get_regime_intelligence_summary(conn: Optional[sqlite3.Connection] = None) -
     should_close = conn is None
     active_conn = conn or connect()
     try:
-        query = """
+        assert_research_population(active_conn)
+        eligible = research_eligible_predicate("sr")
+        query = f"""
             SELECT rs.market_trend, rs.volatility_regime, rs.liquidity_regime, rs.macro_bias,
                    COUNT(*) AS sample_size,
                    SUM(CASE WHEN COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) > 0 THEN 1 ELSE 0 END) AS wins,
@@ -2429,6 +2785,7 @@ def get_regime_intelligence_summary(conn: Optional[sqlite3.Connection] = None) -
               ON sr.run_id = rs.scan_id AND sr.ticker = rs.ticker
             WHERE sr.stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
               AND COALESCE(sr.return_20d, sr.return_10d, sr.return_5d, sr.return_3d, sr.return_1d) IS NOT NULL
+              AND {eligible}
             GROUP BY rs.market_trend, rs.volatility_regime, rs.liquidity_regime, rs.macro_bias
         """
         rows = active_conn.execute(query).fetchall()
@@ -2521,82 +2878,107 @@ def predictive_score_for_gate(item: dict[str, Any]) -> float:
     return round(score * 100, 2)
 
 
-def refresh_gate_intelligence_metrics(conn: Optional[sqlite3.Connection] = None) -> list[dict[str, Any]]:
-    owns_connection = conn is None
-    if owns_connection:
-        init_db()
-    active_conn = conn or connect()
-    try:
-        rows = active_conn.execute(
-            f"""
-            SELECT *
-            FROM scan_results
-            WHERE {COMPLETED_OUTCOME_LABELS_SQL}
-              AND {ACTIONABLE_DIRECTION_SQL}
-              AND COALESCE(is_test_record, 0) = 0
-            """
-        ).fetchall()
-        metrics: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            outcome = row["stock_outcome_label"]
-            direction = row["final_direction"] or ""
-            for gate in completed_gate_entries(row):
-                key = gate["key"]
-                item = metrics.setdefault(
-                    key,
-                    {
-                        "gate_key": key,
-                        "gate_name": gate["name"],
-                        "total_occurrences": 0,
-                        "total_passes": 0,
-                        "total_failures": 0,
-                        "win_count": 0,
-                        "loss_count": 0,
-                        "bullish_wins": 0,
-                        "bullish_losses": 0,
-                        "bearish_wins": 0,
-                        "bearish_losses": 0,
-                        "return_1d": [],
-                        "return_3d": [],
-                        "return_5d": [],
-                        "return_10d": [],
-                        "return_20d": [],
-                    },
-                )
-                item["total_occurrences"] += 1
-                if gate["passed"]:
-                    item["total_passes"] += 1
-                else:
-                    item["total_failures"] += 1
-                # Outcome labels and forward returns apply only when this gate passed.
-                if not gate["passed"]:
-                    continue
-                if outcome == "WIN":
-                    item["win_count"] += 1
-                    if direction == "Bullish":
-                        item["bullish_wins"] += 1
-                    elif direction == "Bearish":
-                        item["bearish_wins"] += 1
-                elif outcome == "LOSS":
-                    item["loss_count"] += 1
-                    if direction == "Bullish":
-                        item["bullish_losses"] += 1
-                    elif direction == "Bearish":
-                        item["bearish_losses"] += 1
-                for horizon in (1, 3, 5, 10, 20):
-                    value = row[f"return_{horizon}d"]
-                    if isinstance(value, (int, float)):
-                        item[f"return_{horizon}d"].append(float(value))
+GATE_INTELLIGENCE_BUILDER_VERSION = "gate-intelligence-1"
+GATE_INTELLIGENCE_BACKUP_TABLE = "gate_intelligence_metrics_backup"
+GATE_INTELLIGENCE_COLUMNS = (
+    "gate_key",
+    "gate_name",
+    "total_occurrences",
+    "total_passes",
+    "total_failures",
+    "win_count",
+    "loss_count",
+    "win_rate",
+    "avg_1d_return",
+    "avg_3d_return",
+    "avg_5d_return",
+    "avg_10d_return",
+    "avg_20d_return",
+    "bullish_win_rate",
+    "bearish_win_rate",
+    "predictive_score",
+    "confidence",
+    "updated_at",
+    "build_id",
+)
 
-        updated_at = datetime.now(timezone.utc).isoformat()
-        active_conn.execute("DELETE FROM gate_intelligence_metrics")
-        output = []
-        for item in metrics.values():
-            decided = item["win_count"] + item["loss_count"]
-            bullish_decided = item["bullish_wins"] + item["bullish_losses"]
-            bearish_decided = item["bearish_wins"] + item["bearish_losses"]
-            predictive_score = predictive_score_for_gate(item)
-            row = {
+
+class GateIntelligencePublishError(Exception):
+    """The gate-intelligence publication stopped before replacing the live rows."""
+
+
+def calculate_gate_intelligence_candidates(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Calculate one gate-intelligence generation without writing metrics or manifests."""
+    assert_research_population(conn)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM scan_results
+        WHERE {COMPLETED_OUTCOME_LABELS_SQL}
+          AND {ACTIONABLE_DIRECTION_SQL}
+          AND {RESEARCH_ELIGIBLE_SQL}
+        """
+    ).fetchall()
+    metrics: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        outcome = row["stock_outcome_label"]
+        direction = row["final_direction"] or ""
+        for gate in completed_gate_entries(row):
+            key = gate["key"]
+            item = metrics.setdefault(
+                key,
+                {
+                    "gate_key": key,
+                    "gate_name": gate["name"],
+                    "total_occurrences": 0,
+                    "total_passes": 0,
+                    "total_failures": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "bullish_wins": 0,
+                    "bullish_losses": 0,
+                    "bearish_wins": 0,
+                    "bearish_losses": 0,
+                    "return_1d": [],
+                    "return_3d": [],
+                    "return_5d": [],
+                    "return_10d": [],
+                    "return_20d": [],
+                },
+            )
+            item["total_occurrences"] += 1
+            if gate["passed"]:
+                item["total_passes"] += 1
+            else:
+                item["total_failures"] += 1
+            if not gate["passed"]:
+                continue
+            if outcome == "WIN":
+                item["win_count"] += 1
+                if direction == "Bullish":
+                    item["bullish_wins"] += 1
+                elif direction == "Bearish":
+                    item["bearish_wins"] += 1
+            elif outcome == "LOSS":
+                item["loss_count"] += 1
+                if direction == "Bullish":
+                    item["bullish_losses"] += 1
+                elif direction == "Bearish":
+                    item["bearish_losses"] += 1
+            for horizon in (1, 3, 5, 10, 20):
+                value = row[f"return_{horizon}d"]
+                if isinstance(value, (int, float)):
+                    item[f"return_{horizon}d"].append(float(value))
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    candidates = []
+    for item in metrics.values():
+        decided = item["win_count"] + item["loss_count"]
+        bullish_decided = item["bullish_wins"] + item["bullish_losses"]
+        bearish_decided = item["bearish_wins"] + item["bearish_losses"]
+        predictive_score = predictive_score_for_gate(item)
+        candidates.append(
+            {
                 "gate_key": item["gate_key"],
                 "gate_name": item["gate_name"],
                 "total_occurrences": item["total_occurrences"],
@@ -2623,44 +3005,230 @@ def refresh_gate_intelligence_metrics(conn: Optional[sqlite3.Connection] = None)
                 "predictive_score": predictive_score,
                 "confidence": confidence_indicator(item["total_occurrences"], predictive_score),
                 "updated_at": updated_at,
+                "_scoring_item": item,
             }
-            active_conn.execute(
-                """
-                INSERT INTO gate_intelligence_metrics (
-                    gate_key, gate_name, total_occurrences, total_passes, total_failures,
-                    win_count, loss_count, win_rate, avg_1d_return, avg_3d_return,
-                    avg_5d_return, avg_10d_return, avg_20d_return, bullish_win_rate,
-                    bearish_win_rate, predictive_score, confidence, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["gate_key"],
-                    row["gate_name"],
-                    row["total_occurrences"],
-                    row["total_passes"],
-                    row["total_failures"],
-                    row["win_count"],
-                    row["loss_count"],
-                    row["win_rate"],
-                    row["avg_1d_return"],
-                    row["avg_3d_return"],
-                    row["avg_5d_return"],
-                    row["avg_10d_return"],
-                    row["avg_20d_return"],
-                    row["bullish_win_rate"],
-                    row["bearish_win_rate"],
-                    row["predictive_score"],
-                    row["confidence"],
-                    row["updated_at"],
-                ),
-            )
-            output.append(row)
-        if owns_connection:
-            active_conn.commit()
-        return sorted(output, key=lambda row: row["predictive_score"], reverse=True)
+        )
+    return {
+        "candidates": candidates,
+        "source_rows": len(rows),
+        "updated_at": updated_at,
+    }
+
+
+def validate_gate_intelligence_candidates(candidates: list[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    for row in candidates:
+        gate_key = row["gate_key"]
+        if gate_key in seen:
+            raise GateIntelligencePublishError(f"duplicate gate_key {gate_key}")
+        seen.add(gate_key)
+        occurrences = int(row["total_occurrences"])
+        if occurrences != int(row["total_passes"]) + int(row["total_failures"]):
+            raise GateIntelligencePublishError("gate pass and failure counts do not add up")
+        decided = int(row["win_count"]) + int(row["loss_count"])
+        expected_rate = round(int(row["win_count"]) / decided * 100, 2) if decided else 0.0
+        if float(row["win_rate"]) != expected_rate:
+            raise GateIntelligencePublishError("gate win_rate does not match wins and losses")
+        scoring_item = row.get("_scoring_item")
+        if scoring_item is not None and row["predictive_score"] != predictive_score_for_gate(scoring_item):
+            raise GateIntelligencePublishError("predictive_score does not match the gate formula")
+
+
+def publish_gate_intelligence_metrics(
+    conn: sqlite3.Connection,
+    *,
+    _probe: Optional[Callable[[str], None]] = None,
+) -> dict[str, Any]:
+    """Publish one manifest-backed gate-intelligence generation."""
+    _ensure_gate_intelligence_backup(conn)
+    _end_gate_intelligence_transaction(conn)
+    assert_research_population(conn)
+    opening = population_stamp(conn)
+    _end_gate_intelligence_transaction(conn)
+    started = start_build(
+        conn,
+        artifact_type="gate_intelligence_metrics",
+        builder_version=GATE_INTELLIGENCE_BUILDER_VERSION,
+        stamp=opening,
+    )
+    _end_gate_intelligence_transaction(conn)
+    build_id = started["build_id"]
+    try:
+        if _probe is not None:
+            _probe("before_calculate")
+        calculated = calculate_gate_intelligence_candidates(conn)
+        candidates = calculated["candidates"]
+        validate_gate_intelligence_candidates(candidates)
+        _end_gate_intelligence_transaction(conn)
+        if _probe is not None:
+            _probe("before_lock")
+        _end_gate_intelligence_transaction(conn)
+    except Exception as exc:
+        _fail_started_gate_intelligence_build(conn, build_id, exc)
+        raise
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if _probe is not None:
+            _probe("inside_transaction")
+        final = population_stamp(conn)
+        if _gate_intelligence_stamp_identity(final) != _gate_intelligence_stamp_identity(opening):
+            raise GateIntelligencePublishError("population stamp changed before publication")
+        current = get_build(conn, build_id)
+        if current is None or current["status"] != "STARTED":
+            raise GateIntelligencePublishError("gate-intelligence build is no longer STARTED")
+        if (
+            current["classifier_version"],
+            current["eligible_population_count"],
+            current["eligible_population_hash"],
+        ) != _gate_intelligence_stamp_identity(opening):
+            raise GateIntelligencePublishError("manifest stamp does not match the opening population")
+        stored_rows = _replace_live_gate_intelligence(conn, candidates, build_id, _probe)
+        complete_build(
+            conn,
+            build_id,
+            built_at=calculated["updated_at"],
+            artifact_row_count=len(stored_rows),
+        )
+        if _probe is not None:
+            _probe("after_complete")
+        conn.execute("COMMIT")
+    except Exception as exc:
+        _rollback_gate_intelligence(conn)
+        _fail_started_gate_intelligence_build(conn, build_id, exc)
+        raise
+    return {
+        "source_rows": calculated["source_rows"],
+        "metric_rows": len(stored_rows),
+        "rows": stored_rows,
+        "updated_at": calculated["updated_at"],
+        "build_id": build_id,
+        "status": "COMPLETED",
+        "classifier_version": opening.classifier_version,
+        "eligible_population_count": opening.eligible_population_count,
+        "eligible_population_hash": opening.eligible_population_hash,
+    }
+
+
+def refresh_gate_intelligence_metrics(
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    _probe: Optional[Callable[[str], None]] = None,
+) -> list[dict[str, Any]]:
+    """Explicit Horizon gate-intelligence rebuild. Outcome refresh does not call this."""
+    owns_connection = conn is None
+    if owns_connection:
+        init_db()
+        active_conn = connect()
+    else:
+        active_conn = conn
+    try:
+        published = publish_gate_intelligence_metrics(active_conn, _probe=_probe)
+        return published["rows"]
     finally:
         if owns_connection:
             active_conn.close()
+
+
+def _gate_intelligence_stamp_identity(stamp: Any) -> tuple[str, int, str]:
+    return (
+        stamp.classifier_version,
+        stamp.eligible_population_count,
+        stamp.eligible_population_hash,
+    )
+
+
+def _end_gate_intelligence_transaction(conn: sqlite3.Connection) -> None:
+    try:
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def _rollback_gate_intelligence(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ROLLBACK")
+    except sqlite3.OperationalError:
+        pass
+
+
+def _fail_started_gate_intelligence_build(
+    conn: sqlite3.Connection,
+    build_id: str,
+    exc: BaseException,
+) -> None:
+    _rollback_gate_intelligence(conn)
+    _end_gate_intelligence_transaction(conn)
+    current = get_build(conn, build_id)
+    if current is None or current["status"] != "STARTED":
+        return
+    message = str(exc).strip() or exc.__class__.__name__
+    fail_build(conn, build_id, error_text=message[:500])
+    _end_gate_intelligence_transaction(conn)
+
+
+def _ensure_gate_intelligence_backup(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {GATE_INTELLIGENCE_BACKUP_TABLE} (
+            gate_key TEXT PRIMARY KEY,
+            gate_name TEXT NOT NULL,
+            total_occurrences INTEGER NOT NULL,
+            total_passes INTEGER NOT NULL,
+            total_failures INTEGER NOT NULL,
+            win_count INTEGER NOT NULL,
+            loss_count INTEGER NOT NULL,
+            win_rate REAL NOT NULL,
+            avg_1d_return REAL,
+            avg_3d_return REAL,
+            avg_5d_return REAL,
+            avg_10d_return REAL,
+            avg_20d_return REAL,
+            bullish_win_rate REAL NOT NULL,
+            bearish_win_rate REAL NOT NULL,
+            predictive_score REAL NOT NULL,
+            confidence TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            build_id TEXT
+        )
+        """
+    )
+
+
+def _replace_live_gate_intelligence(
+    conn: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    build_id: str,
+    probe: Optional[Callable[[str], None]],
+) -> list[dict[str, Any]]:
+    listed = ", ".join(GATE_INTELLIGENCE_COLUMNS)
+    placeholders = ", ".join("?" for _ in GATE_INTELLIGENCE_COLUMNS)
+    conn.execute(f"DELETE FROM {GATE_INTELLIGENCE_BACKUP_TABLE}")
+    conn.execute(
+        f"""
+        INSERT INTO {GATE_INTELLIGENCE_BACKUP_TABLE} ({listed})
+        SELECT {listed} FROM gate_intelligence_metrics
+        """
+    )
+    conn.execute("DELETE FROM gate_intelligence_metrics")
+    if probe is not None:
+        probe("after_delete")
+    stored = []
+    for row in candidates:
+        values = tuple(
+            build_id if column == "build_id" else row[column]
+            for column in GATE_INTELLIGENCE_COLUMNS
+        )
+        conn.execute(
+            f"""
+            INSERT INTO gate_intelligence_metrics ({listed})
+            VALUES ({placeholders})
+            """,
+            values,
+        )
+        stored.append({column: value for column, value in zip(GATE_INTELLIGENCE_COLUMNS, values)})
+    stored.sort(key=lambda item: item["predictive_score"], reverse=True)
+    return stored
 
 
 def get_gate_intelligence_metrics() -> list[dict[str, Any]]:
@@ -3686,11 +4254,13 @@ def get_gate_statistics(sample_limit: int = 400) -> list[dict[str, Any]]:
     init_db()
     stats: dict[str, dict[str, Any]] = {}
     with connect() as conn:
+        assert_research_population(conn)
         rows = conn.execute(
-            """
+            f"""
             SELECT gates_json
             FROM scan_results
             WHERE gates_json IS NOT NULL AND gates_json != ''
+              AND {RESEARCH_ELIGIBLE_SQL}
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
             """,
@@ -3781,8 +4351,9 @@ def get_direction_accuracy() -> list[dict[str, Any]]:
     """Return local direction outcome distribution when available."""
     init_db()
     with connect() as conn:
+        assert_research_population(conn)
         rows = conn.execute(
-            """
+            f"""
             SELECT final_direction, COUNT(*) AS total,
                    AVG(scout_score) AS avg_score,
                    AVG(net_direction) AS avg_net_direction,
@@ -3791,6 +4362,7 @@ def get_direction_accuracy() -> list[dict[str, Any]]:
                    SUM(CASE WHEN stock_outcome_label = 'FLAT' THEN 1 ELSE 0 END) AS flats,
                    SUM(CASE WHEN stock_outcome_label = 'PENDING' OR stock_outcome_label IS NULL THEN 1 ELSE 0 END) AS pending
             FROM scan_results
+            WHERE {RESEARCH_ELIGIBLE_SQL}
             GROUP BY final_direction
             ORDER BY total DESC
             """
@@ -3819,6 +4391,7 @@ def _sql_win_rate_percent(wins: Any, losses: Any) -> float:
 
 
 def _directional_bucket(conn: sqlite3.Connection, direction: str) -> dict[str, Any]:
+    assert_research_population(conn)
     row = conn.execute(
         f"""
         SELECT
@@ -3829,6 +4402,7 @@ def _directional_bucket(conn: sqlite3.Connection, direction: str) -> dict[str, A
         FROM scan_results
         WHERE final_direction = ?
           AND {PRIMARY_RETURN_SQL} IS NOT NULL
+          AND {RESEARCH_ELIGIBLE_SQL}
         """,
         (direction,),
     ).fetchone()
@@ -3854,7 +4428,9 @@ def _completed_direction_stats(
     *,
     include_test: bool = False,
 ) -> dict[str, Any]:
-    test_filter = "" if include_test else "AND COALESCE(is_test_record, 0) = 0"
+    # Provenance eligibility applies even when include_test is requested.
+    del include_test
+    assert_research_population(conn)
     row = conn.execute(
         f"""
         SELECT
@@ -3866,7 +4442,7 @@ def _completed_direction_stats(
         FROM scan_results
         WHERE {COMPLETED_OUTCOME_LABELS_SQL}
           AND {direction_clause}
-          {test_filter}
+          AND {RESEARCH_ELIGIBLE_SQL}
         """
     ).fetchone()
     total = int(row["total"] or 0)
@@ -3888,6 +4464,7 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
     owns_connection = conn is None
     active_conn = conn or connect()
     try:
+        assert_research_population(active_conn)
         label_row = active_conn.execute(
             f"""
             SELECT
@@ -3902,7 +4479,7 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
                     END
                 ) AS pending
             FROM scan_results
-            WHERE COALESCE(is_test_record, 0) = 0
+            WHERE {RESEARCH_ELIGIBLE_SQL}
             """.format(primary=PRIMARY_RETURN_SQL)
         ).fetchone()
 
@@ -3938,7 +4515,7 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
             FROM scan_results
             WHERE {COMPLETED_OUTCOME_LABELS_SQL}
               AND final_direction = 'Bullish'
-              AND COALESCE(is_test_record, 0) = 0
+              AND {RESEARCH_ELIGIBLE_SQL}
             """
         ).fetchone()
         bearish_label = active_conn.execute(
@@ -3949,13 +4526,17 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
             FROM scan_results
             WHERE {COMPLETED_OUTCOME_LABELS_SQL}
               AND final_direction = 'Bearish'
-              AND COALESCE(is_test_record, 0) = 0
+              AND {RESEARCH_ELIGIBLE_SQL}
             """
         ).fetchone()
 
         completed_returns = int(
             active_conn.execute(
-                f"SELECT COUNT(*) FROM scan_results WHERE {PRIMARY_RETURN_SQL} IS NOT NULL"
+                f"""
+                SELECT COUNT(*) FROM scan_results
+                WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+                  AND {RESEARCH_ELIGIBLE_SQL}
+                """
             ).fetchone()[0]
             or 0
         )
@@ -3975,6 +4556,7 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
                 AVG(CASE WHEN final_direction = 'Bearish' THEN return_10d END) AS avg_10d_bearish
             FROM scan_results
             WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+              AND {RESEARCH_ELIGIBLE_SQL}
             """
         ).fetchone()
 
@@ -3983,6 +4565,7 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
             SELECT ticker, return_20d, return_10d, return_5d, return_1d
             FROM scan_results
             WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+              AND {RESEARCH_ELIGIBLE_SQL}
             ORDER BY {PRIMARY_RETURN_SQL} DESC
             LIMIT 1
             """
@@ -3992,6 +4575,7 @@ def get_outcome_analytics(conn: Optional[sqlite3.Connection] = None) -> dict[str
             SELECT ticker, return_20d, return_10d, return_5d, return_1d
             FROM scan_results
             WHERE {PRIMARY_RETURN_SQL} IS NOT NULL
+              AND {RESEARCH_ELIGIBLE_SQL}
             ORDER BY {PRIMARY_RETURN_SQL} ASC
             LIMIT 1
             """
@@ -4077,12 +4661,14 @@ def get_top_gate_failures(limit: int = 10, sample_limit: int = 500) -> list[dict
     init_db()
     counts: dict[str, dict[str, Any]] = {}
     with connect() as conn:
+        assert_research_population(conn)
         rows = conn.execute(
-            """
+            f"""
             SELECT failed_gates_json, failure_reasons_json
             FROM scan_results
             WHERE failed_gates_json IS NOT NULL
               AND failed_gates_json NOT IN ('', '[]', 'null')
+              AND {RESEARCH_ELIGIBLE_SQL}
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
             """,

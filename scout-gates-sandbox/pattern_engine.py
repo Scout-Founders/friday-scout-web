@@ -7,10 +7,35 @@ import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from derived_build_manifest import complete_build, fail_build, get_build, start_build
+from observation_evidence import assert_research_population, population_stamp, research_eligible_predicate
 
 
 MIN_PATTERN_SAMPLE_SIZE = 3
+PATTERN_BUILDER_VERSION = "pattern-1"
+PATTERN_BACKUP_TABLE = "pattern_intelligence_backup"
+PATTERN_COLUMNS = (
+    "pattern_id",
+    "pattern_signature",
+    "sample_size",
+    "win_rate",
+    "loss_rate",
+    "avg_1d",
+    "avg_3d",
+    "avg_5d",
+    "avg_10d",
+    "avg_20d",
+    "expectancy_score",
+    "confidence_score",
+    "created_at_utc",
+    "build_id",
+)
+
+
+class PatternPublishError(Exception):
+    """The pattern publication stopped before replacing the live rows."""
 
 
 def json_dump(value: Any) -> str:
@@ -42,7 +67,25 @@ def init_pattern_store(conn: sqlite3.Connection) -> None:
             avg_20d REAL,
             expectancy_score REAL NOT NULL,
             confidence_score REAL NOT NULL,
-            created_at_utc TEXT NOT NULL
+            created_at_utc TEXT NOT NULL,
+            build_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS pattern_intelligence_backup (
+            pattern_id TEXT PRIMARY KEY,
+            pattern_signature TEXT NOT NULL,
+            sample_size INTEGER NOT NULL,
+            win_rate REAL NOT NULL,
+            loss_rate REAL NOT NULL,
+            avg_1d REAL,
+            avg_3d REAL,
+            avg_5d REAL,
+            avg_10d REAL,
+            avg_20d REAL,
+            expectancy_score REAL NOT NULL,
+            confidence_score REAL NOT NULL,
+            created_at_utc TEXT NOT NULL,
+            build_id TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_pattern_expectancy
@@ -113,8 +156,10 @@ def pattern_id(signature: dict[str, Any]) -> str:
 
 
 def completed_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    assert_research_population(conn)
+    eligible = research_eligible_predicate("sr")
     return conn.execute(
-        """
+        f"""
         SELECT
             sr.id AS recommendation_id,
             sr.run_id AS scan_id,
@@ -129,6 +174,7 @@ def completed_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         FROM scan_results sr
         LEFT JOIN feature_vectors fv ON fv.recommendation_id = sr.id
         WHERE sr.stock_outcome_label IN ('WIN', 'LOSS', 'FLAT')
+          AND {eligible}
         """
     ).fetchall()
 
@@ -186,49 +232,191 @@ def summarize_pattern(signature: dict[str, Any], rows: list[sqlite3.Row], create
     }
 
 
-def rebuild_pattern_intelligence(conn: sqlite3.Connection) -> dict[str, Any]:
-    init_pattern_store(conn)
-    rows = completed_rows(conn)
+def _stamp_identity(stamp: Any) -> tuple[str, int, str]:
+    return (
+        stamp.classifier_version,
+        stamp.eligible_population_count,
+        stamp.eligible_population_hash,
+    )
+
+
+def _end_read_transaction(conn: sqlite3.Connection) -> None:
+    try:
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def _rollback(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ROLLBACK")
+    except sqlite3.OperationalError:
+        pass
+
+
+def _fail_started_build(conn: sqlite3.Connection, build_id: str, exc: BaseException) -> None:
+    _rollback(conn)
+    _end_read_transaction(conn)
+    current = get_build(conn, build_id)
+    if current is None or current["status"] != "STARTED":
+        return
+    message = str(exc).strip() or exc.__class__.__name__
+    fail_build(conn, build_id, error_text=message[:500])
+    _end_read_transaction(conn)
+
+
+def _replace_live_patterns(
+    conn: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    build_id: str,
+    probe: Optional[Callable[[str], None]],
+) -> None:
+    listed = ", ".join(PATTERN_COLUMNS)
+    placeholders = ", ".join("?" for _ in PATTERN_COLUMNS)
+    conn.execute(f"DELETE FROM {PATTERN_BACKUP_TABLE}")
+    conn.execute(
+        f"""
+        INSERT INTO {PATTERN_BACKUP_TABLE} ({listed})
+        SELECT {listed} FROM pattern_intelligence
+        """
+    )
+    conn.execute("DELETE FROM pattern_intelligence")
+    if probe is not None:
+        probe("after_delete")
+    for pattern in candidates:
+        conn.execute(
+            f"""
+            INSERT INTO pattern_intelligence ({listed})
+            VALUES ({placeholders})
+            """,
+            tuple(_pattern_storage_value(pattern, column, build_id) for column in PATTERN_COLUMNS),
+        )
+
+
+def _pattern_storage_value(pattern: dict[str, Any], column: str, build_id: str) -> Any:
+    if column == "build_id":
+        return build_id
+    if column == "pattern_signature":
+        return json_dump(pattern["pattern_signature"])
+    return pattern[column]
+
+
+def calculate_pattern_candidates(rows: list[sqlite3.Row], created_at: str) -> list[dict[str, Any]]:
+    """Group eligible completed rows. This does not write pattern_intelligence."""
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         for signature in signatures_for_row(row):
             key = json_dump(signature)
             item = grouped.setdefault(key, {"signature": signature, "rows": []})
             item["rows"].append(row)
-
-    created_at = datetime.now(timezone.utc).isoformat()
-    patterns = [
+    return [
         summarize_pattern(item["signature"], item["rows"], created_at)
         for item in grouped.values()
         if len(item["rows"]) >= MIN_PATTERN_SAMPLE_SIZE
     ]
-    conn.execute("DELETE FROM pattern_intelligence")
-    for pattern in patterns:
-        conn.execute(
-            """
-            INSERT INTO pattern_intelligence (
-                pattern_id, pattern_signature, sample_size, win_rate, loss_rate,
-                avg_1d, avg_3d, avg_5d, avg_10d, avg_20d,
-                expectancy_score, confidence_score, created_at_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                pattern["pattern_id"],
-                json_dump(pattern["pattern_signature"]),
-                pattern["sample_size"],
-                pattern["win_rate"],
-                pattern["loss_rate"],
-                pattern["avg_1d"],
-                pattern["avg_3d"],
-                pattern["avg_5d"],
-                pattern["avg_10d"],
-                pattern["avg_20d"],
-                pattern["expectancy_score"],
-                pattern["confidence_score"],
-                pattern["created_at_utc"],
-            ),
+
+
+def validate_pattern_candidates(candidates: list[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    for pattern in candidates:
+        signature = pattern["pattern_signature"]
+        if not isinstance(signature, dict):
+            raise PatternPublishError("pattern signature must be an object")
+        if int(pattern["sample_size"]) < MIN_PATTERN_SAMPLE_SIZE:
+            raise PatternPublishError("candidate is below the minimum sample size")
+        expected_id = pattern_id(signature)
+        if pattern["pattern_id"] != expected_id:
+            raise PatternPublishError("pattern_id does not match its signature")
+        if pattern["pattern_id"] in seen:
+            raise PatternPublishError(f"duplicate pattern_id {pattern['pattern_id']}")
+        seen.add(pattern["pattern_id"])
+
+
+def publish_pattern_intelligence(
+    conn: sqlite3.Connection,
+    *,
+    _probe: Optional[Callable[[str], None]] = None,
+) -> dict[str, Any]:
+    """Publish one manifest-backed pattern generation.
+
+    Calculation runs before the write lock. The live table changes only inside
+    a short transaction that rechecks the population stamp after BEGIN IMMEDIATE.
+    """
+    init_pattern_store(conn)
+    _end_read_transaction(conn)
+    assert_research_population(conn)
+    opening = population_stamp(conn)
+    _end_read_transaction(conn)
+    started = start_build(
+        conn,
+        artifact_type="pattern_intelligence",
+        builder_version=PATTERN_BUILDER_VERSION,
+        stamp=opening,
+    )
+    _end_read_transaction(conn)
+    build_id = started["build_id"]
+    try:
+        if _probe is not None:
+            _probe("before_calculate")
+        rows = completed_rows(conn)
+        created_at = datetime.now(timezone.utc).isoformat()
+        candidates = calculate_pattern_candidates(rows, created_at)
+        validate_pattern_candidates(candidates)
+        _end_read_transaction(conn)
+        if _probe is not None:
+            _probe("before_lock")
+        _end_read_transaction(conn)
+    except Exception as exc:
+        _fail_started_build(conn, build_id, exc)
+        raise
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if _probe is not None:
+            _probe("inside_transaction")
+        final = population_stamp(conn)
+        if _stamp_identity(final) != _stamp_identity(opening):
+            raise PatternPublishError("population stamp changed before publication")
+        current = get_build(conn, build_id)
+        if current is None or current["status"] != "STARTED":
+            raise PatternPublishError("pattern build is no longer STARTED")
+        if (
+            current["classifier_version"],
+            current["eligible_population_count"],
+            current["eligible_population_hash"],
+        ) != _stamp_identity(opening):
+            raise PatternPublishError("manifest stamp does not match the opening population")
+        _replace_live_patterns(conn, candidates, build_id, _probe)
+        complete_build(
+            conn,
+            build_id,
+            built_at=created_at,
+            artifact_row_count=len(candidates),
         )
-    return {"ok": True, "completed_outcomes": len(rows), "patterns_rebuilt": len(patterns)}
+        if _probe is not None:
+            _probe("after_complete")
+        conn.execute("COMMIT")
+    except Exception as exc:
+        _rollback(conn)
+        _fail_started_build(conn, build_id, exc)
+        raise
+
+    return {
+        "ok": True,
+        "completed_outcomes": len(rows),
+        "patterns_rebuilt": len(candidates),
+        "build_id": build_id,
+        "status": "COMPLETED",
+    }
+
+
+def rebuild_pattern_intelligence(
+    conn: sqlite3.Connection,
+    *,
+    _probe: Optional[Callable[[str], None]] = None,
+) -> dict[str, Any]:
+    """Explicit Horizon pattern rebuild. Scan save does not call this."""
+    return publish_pattern_intelligence(conn, _probe=_probe)
 
 
 def pattern_row(row: sqlite3.Row) -> dict[str, Any]:

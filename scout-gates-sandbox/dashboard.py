@@ -36,6 +36,7 @@ from memory_store import (
     rebuild_regime_intelligence,
     run_horizon_backfill,
     rebuild_gate_alpha,
+    rebuild_gate_intelligence,
     rebuild_patterns,
     save_scan_result_once,
 )
@@ -352,6 +353,10 @@ def execute_pattern_rebuild() -> dict[str, Any]:
 
 def execute_gate_alpha_rebuild() -> dict[str, Any]:
     return rebuild_gate_alpha()
+
+
+def execute_gate_intelligence_rebuild() -> dict[str, Any]:
+    return rebuild_gate_intelligence()
 
 
 def execute_gate_alpha_test_bridge() -> dict[str, Any]:
@@ -1051,6 +1056,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json(
                     {"ok": False, "message": f"Gate Alpha rebuild error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if parsed.path == "/api/control/gate-intelligence":
+            try:
+                self.send_json(execute_gate_intelligence_rebuild())
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "message": f"Gate Intelligence rebuild error: {exc}"},
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return

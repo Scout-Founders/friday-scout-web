@@ -18,9 +18,7 @@ from memory_store import (
     log_memory_load,
     log_outcome_update_audit,
     log_timing,
-    refresh_gate_intelligence_metrics,
     refresh_feature_vector_labels,
-    refresh_gate_alpha_metrics,
 )
 from option_picker import fmp_api_key
 
@@ -588,12 +586,8 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
                 flush=True,
             )
 
-        with log_timing(refresh_timings, "gate_intelligence_ms"):
-            gate_intelligence = refresh_gate_intelligence_metrics(conn)
         with log_timing(refresh_timings, "feature_vector_labels_ms"):
             feature_vector_labels_updated = refresh_feature_vector_labels(conn)
-        with log_timing(refresh_timings, "gate_alpha_ms"):
-            gate_alpha = refresh_gate_alpha_metrics(conn)
 
     refresh_timings["total_ms"] = round((time.perf_counter() - refresh_started) * 1000, 2)
     log_memory_load(refresh_timings, "outcome_refresh")
@@ -610,8 +604,8 @@ def update_outcomes(limit: int = 250, timeout: float = 25.0) -> dict[str, Any]:
         "label_refreshed": label_refreshed,
         "errors": errors,
         "details": details,
-        "gate_intelligence_updated": len(gate_intelligence),
+        "gate_intelligence_updated": 0,
         "feature_vector_labels_updated": feature_vector_labels_updated,
-        "gate_alpha_metrics_updated": gate_alpha["metric_rows"],
+        "gate_alpha_metrics_updated": 0,
         "timings": refresh_timings,
     }
