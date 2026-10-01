@@ -60,10 +60,13 @@ def list_preset_catalog() -> dict[str, Any]:
         }
     presets["custom"] = dict(CUSTOM_PRESET)
     presets["custom"]["tickerCount"] = 0
+    from run_gates import DEFAULT_CANDIDATES
+
     return {
         "manifestVersion": manifest.get("manifestVersion"),
         "maxTickers": manifest.get("maxTickers", 12),
         "recommendedTimeoutSec": manifest.get("recommendedTimeoutSec", 25),
+        "fallbackTickers": list(DEFAULT_CANDIDATES),
         "presets": presets,
     }
 
@@ -120,7 +123,8 @@ def resolve_universe_from_request(request: dict[str, Any]) -> tuple[list[str], d
     """
     Resolve ticker list and cohort metadata without changing gate/score behavior.
 
-    Uses explicit tickers when provided; otherwise manifest tickers for preset runs.
+    Uses explicit tickers when provided; otherwise the built-in fallback list
+    or manifest tickers for preset runs.
     """
     universe_mode = str(request.get("universeMode") or "custom")
     raw_tickers = str(request.get("tickers") or "")
@@ -129,12 +133,12 @@ def resolve_universe_from_request(request: dict[str, Any]) -> tuple[list[str], d
     cohort = cohort_metadata_from_request(request)
     preset_id = cohort["universePresetId"]
 
-    if universe_mode == "fallback":
-        return list(DEFAULT_CANDIDATES), cohort
-
     parsed = parse_ticker_list(raw_tickers)
     if parsed:
         return parsed, cohort
+
+    if universe_mode == "fallback":
+        return list(DEFAULT_CANDIDATES), cohort
 
     preset = resolve_preset(preset_id)
     if preset_id != "custom" and preset.get("tickers"):

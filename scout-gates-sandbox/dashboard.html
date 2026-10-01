@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store">
   <title>Scout Gate Sandbox</title>
   <style>
     :root {
@@ -982,12 +983,13 @@
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Local beta testing only</div>
+    <div class="eyebrow">Local beta testing only · scanner build 2026.08.18-2</div>
     <h1>Scout Gate Sandbox</h1>
     <p class="lede">
       Enter a ticker universe, run the deployed Scout gate engine on demand, and inspect the final pick,
       per-gate outcomes, rejected candidates, and raw JSON output.
     </p>
+    <div id="gate-health" class="status">Checking gate API connection…</div>
     <nav class="top-nav" aria-label="Sandbox navigation">
       <a class="active" href="/">Scout Gate Sandbox</a>
       <a href="/research">Research Memory</a>
@@ -1041,8 +1043,9 @@
             <label for="universe-mode">Universe Mode</label>
             <select id="universe-mode">
               <option value="custom">Test only the tickers I typed</option>
-              <option value="fallback">Pull tickers from raw data</option>
+              <option value="fallback">If ticker box is empty, use the built-in 15-name list</option>
             </select>
+            <div class="hint">Typed tickers always win. Fallback only fills in when the box is empty.</div>
           </div>
 
           <div class="field">
@@ -1147,6 +1150,7 @@
     const saveButton = document.getElementById("save-button");
     const storageModeEl = document.getElementById("storage-mode");
     const universePresetEl = document.getElementById("universe-preset");
+    const universeModeEl = document.getElementById("universe-mode");
     const tickersEl = document.getElementById("tickers");
     const timeoutEl = document.getElementById("timeout");
     const universeEstimatedCountEl = document.getElementById("universe-estimated-count");
@@ -1173,6 +1177,7 @@
     let UNIVERSE_PRESETS = { ...UNIVERSE_PRESET_FALLBACK };
     let universeManifestVersion = null;
     let universeMaxTickers = 12;
+    let fallbackTickers = [];
 
     const UNIVERSE_TAG_CLASS = {
       RESEARCH: "tag-research",
@@ -1253,11 +1258,42 @@
       return (tickers || []).join(", ");
     }
 
-    function estimatedTickerCountForPreset(preset) {
-      if (preset.tickers && preset.tickers.length) {
-        return preset.tickers.length;
+    function resolvedTickerList(preset = selectedUniversePreset()) {
+      const typed = parseTickerList(tickersEl.value);
+      if (typed.length) {
+        return typed;
       }
-      return parseTickerList(tickersEl.value).length;
+      if (universeModeEl && universeModeEl.value === "fallback" && fallbackTickers.length) {
+        return fallbackTickers;
+      }
+      if (preset.tickers && preset.tickers.length) {
+        return preset.tickers;
+      }
+      return [];
+    }
+
+    function estimatedTickerCountForPreset(preset) {
+      return resolvedTickerList(preset).length;
+    }
+
+    function formatRunFailure(payload, fallbackMessage) {
+      const errors = Array.isArray(payload?.errors)
+        ? [...new Set(payload.errors.filter(Boolean))]
+        : [];
+      const lines = [payload?.message || fallbackMessage || "Run failed."];
+      if (payload?.apiUrl) {
+        lines.push(`Gate API: ${payload.apiUrl}`);
+      }
+      if (errors.length) {
+        const extra = errors.filter((item) => item !== payload?.message && !String(payload?.message || "").includes(item));
+        if (extra.length) {
+          lines.push("", ...extra.slice(0, 8));
+          if (extra.length > 8) {
+            lines.push(`…and ${extra.length - 8} more`);
+          }
+        }
+      }
+      return lines.join("\n");
     }
 
     function populateUniversePresetSelect() {
@@ -1300,6 +1336,7 @@
         }
         universeManifestVersion = catalog.manifestVersion || null;
         universeMaxTickers = catalog.maxTickers || 12;
+        fallbackTickers = Array.isArray(catalog.fallbackTickers) ? catalog.fallbackTickers : [];
         UNIVERSE_PRESETS = {
           ...UNIVERSE_PRESET_FALLBACK,
           ...catalog.presets,
@@ -2757,7 +2794,7 @@
       const requestContext = buildScanRequestContext(request);
       const scanStartedMs = performance.now();
       const preset = selectedUniversePreset();
-      const requestedTickers = parseTickerList(request.tickers).length;
+      const requestedTickers = resolvedTickerList(preset).length;
       currentScanTelemetry = {
         timestamp: new Date().toISOString(),
         universePresetLabel: preset.label,
@@ -2781,9 +2818,20 @@
         const response = await fetch("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify(request),
         });
-        const payload = await response.json();
+        const raw = await response.text();
+        let payload;
+        try {
+          payload = JSON.parse(raw);
+        } catch (parseError) {
+          throw new Error(
+            `Dashboard did not return JSON (HTTP ${response.status}). `
+            + "Confirm python3 dashboard.py is serving http://127.0.0.1:8765. "
+            + `First bytes: ${raw.slice(0, 180)}`
+          );
+        }
         const clientRuntimeMs = performance.now() - scanStartedMs;
         if (!payload.ok) {
           if (payload.candidates || payload.errors) {
@@ -2792,7 +2840,7 @@
           } else {
             hideScanTelemetry();
           }
-          throw new Error(payload.message || (payload.errors || []).join("\\n") || "Run failed.");
+          throw new Error(formatRunFailure(payload, "Run failed."));
         }
         currentPayload = {
           ...payload,
@@ -2808,16 +2856,17 @@
         updateSaveButton();
         renderScanTelemetryCard(currentScanTelemetry);
         renderResults(payload);
-        const errorText = payload.errors.length ? `\\nScan errors: ${payload.errors.join("; ")}` : "";
-        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.\\nStorage mode: ${labelForSelect("storage-mode", request.storageMode)}. No memory write occurred.${errorText}`);
+        const errorText = payload.errors.length ? `\nScan errors: ${payload.errors.join("; ")}` : "";
+        setStatus(`Completed ${payload.results.length}/${payload.candidates.length} scans via ${payload.apiUrl}.\nStorage mode: ${labelForSelect("storage-mode", request.storageMode)}. No memory write occurred.${errorText}`);
       } catch (error) {
         currentPayload = null;
         currentRequest = null;
         currentScanSaved = false;
         currentSaveInFlight = false;
         updateSaveButton();
+        const detail = escapeHtml(error.message || String(error)).replaceAll("\n", "<br>");
         outputEl.className = "empty";
-        outputEl.innerHTML = "<div><strong>Run failed.</strong><br>Check the status message for details.</div>";
+        outputEl.innerHTML = `<div><strong>Run failed.</strong><br>${detail}</div>`;
         setStatus(error.message || String(error), true);
       } finally {
         runButton.disabled = false;
@@ -2831,9 +2880,34 @@
     universePresetEl.addEventListener("change", () => {
       updateUniversePresetPanel({ applyTickers: true });
     });
+    universeModeEl.addEventListener("change", () => {
+      if (universeModeEl.value === "fallback" && !parseTickerList(tickersEl.value).length && fallbackTickers.length) {
+        tickersEl.value = fallbackTickers.join(", ");
+      }
+      updateUniversePresetPanel();
+    });
     tickersEl.addEventListener("input", updateUniversePresetPanel);
     timeoutEl.addEventListener("input", updateUniversePresetPanel);
+    async function loadGateHealth() {
+      const healthEl = document.getElementById("gate-health");
+      if (!healthEl) {
+        return;
+      }
+      try {
+        const response = await fetch("/api/gate-health", { cache: "no-store" });
+        const payload = await response.json();
+        healthEl.textContent = payload.ok
+          ? `Gate API reachable: ${payload.apiUrl}`
+          : `Gate API unreachable: ${payload.message}`;
+        healthEl.classList.toggle("error", !payload.ok);
+      } catch (error) {
+        healthEl.textContent = "Dashboard is not responding. Confirm python3 dashboard.py is running on port 8765.";
+        healthEl.classList.add("error");
+      }
+    }
+
     loadUniversePresets();
+    loadGateHealth();
     saveButton.addEventListener("click", saveResultsToMemory);
     optionModalClose.addEventListener("click", closeOptionModal);
     whyModalClose.addEventListener("click", closeWhyModal);
