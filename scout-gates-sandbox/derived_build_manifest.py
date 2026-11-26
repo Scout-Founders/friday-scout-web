@@ -24,6 +24,7 @@ ARTIFACT_SHORT_NAMES = {
     "pattern_intelligence": "pattern",
     "gate_alpha_metrics": "gate-alpha",
     "gate_intelligence_metrics": "gate-intelligence",
+    "scoring_decompositions": "scoring",
 }
 
 _BUILDER_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

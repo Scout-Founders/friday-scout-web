@@ -77,6 +77,20 @@ TABLE_NAME = "derived_builds"
 INDEX_NAME = "idx_derived_builds_artifact_status_started"
 
 
+def widened_manifest_sql() -> str:
+    """Manifest DDL after the scoring artifact is added.
+
+    CREATE_TABLE_SQL stays the original three-artifact check. The scoring
+    migration is what writes this wider check. Recognizing it here keeps a
+    later dry-run of this script from treating that check as a conflict.
+    """
+    return CREATE_TABLE_SQL.replace(
+        "'gate_intelligence_metrics'\n        )",
+        "'gate_intelligence_metrics',\n"
+        "            'scoring_decompositions'\n        )",
+    )
+
+
 class MigrationAbort(Exception):
     """Stop the migration without leaving a partial schema."""
 
@@ -121,7 +135,14 @@ def schema_status(conn: sqlite3.Connection) -> str:
         return "missing"
     if table_sql is None or index_sql is None:
         return "conflict"
-    if normalize_sql(table_sql) != normalize_sql(CREATE_TABLE_SQL):
+    body = normalize_sql(table_sql)
+    body = body[body.find("(") :]
+    accepted = {
+        normalize_sql(CREATE_TABLE_SQL),
+        normalize_sql(widened_manifest_sql()),
+    }
+    accepted = {item[item.find("(") :] for item in accepted}
+    if body not in accepted:
         return "conflict"
     if normalize_sql(index_sql) != normalize_sql(CREATE_INDEX_SQL):
         return "conflict"

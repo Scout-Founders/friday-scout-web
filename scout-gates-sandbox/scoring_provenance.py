@@ -9,6 +9,13 @@ The snapshot hash identifies the inspected source. It is not a verified
 identity of the deployed Cloud Function, and a historical row that is
 compatible with the formula was not thereby shown to come from a verified
 deployment.
+
+``INSPECTED_SINGLE_SCAN_METHODOLOGY_ID`` names the scoring formula.
+``DECOMPOSER_VERSION`` names this parser. A parser fix bumps only the
+decomposer version. A formula change bumps the methodology id and leaves
+older stored decompositions attached to the formula they were built from.
+``SCORING_DECOMPOSITION_SCHEMA_VERSION`` names the persistence contract.
+None of these is the sandbox engine version or a verified deployment id.
 """
 
 from __future__ import annotations
@@ -34,6 +41,11 @@ INSPECTED_SINGLE_SCAN_METHODOLOGY_ID = (
 )
 DEPLOYMENT_VERIFICATION_STATUS = "unverified"
 VERIFIED_DEPLOYMENT_ID = None
+# Parser implementation identity. Bump this when the decomposer changes.
+# Do not change INSPECTED_SINGLE_SCAN_METHODOLOGY_ID unless the inspected
+# scoring formula itself changes. The two versions are independent.
+DECOMPOSER_VERSION = "scoring-decomp-1"
+SCORING_DECOMPOSITION_SCHEMA_VERSION = 1
 
 BASE_SCORE = 50
 SCORE_FLOOR = 0

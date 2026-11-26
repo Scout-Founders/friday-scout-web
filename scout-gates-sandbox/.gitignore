@@ -1,6 +1,7 @@
 scout_memory.db
 scout_memory.db-wal
 scout_memory.db-shm
+scout_memory_pre_scoring_*.db
 scout_research_cloud.db
 research_snapshot.db
 research_snapshot.manifest.json
