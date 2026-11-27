@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scoring Intelligence</title>
+  <style>
+    :root {
+      --bg: #030611;
+      --border: #28304a;
+      --text: #f8efe8;
+      --muted: #b9a8a1;
+      --peach: #ffb08a;
+      --gold: #f5d47a;
+      --rose: #c8788f;
+      --success: #83e6b7;
+      --warning: #f5c36a;
+      --danger: #ff7d85;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 6%, #ffb08a33, transparent 34rem),
+        linear-gradient(180deg, #071126 0%, #030611 46%, #02030a 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; color: inherit; }
+    .shell { width: min(1280px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 64px; }
+    .eyebrow, .kicker, .metric-label {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+    }
+    .eyebrow { color: var(--gold); font-size: 12px; font-weight: 800; }
+    h1 { margin: 10px 0 8px; font-size: clamp(40px, 7vw, 76px); font-weight: 750; line-height: 0.92; letter-spacing: -0.06em; }
+    h2 { margin: 0 0 12px; font-size: 20px; }
+    h3 { margin: 18px 0 8px; font-size: 16px; }
+    .lede, .hint, p { color: var(--muted); line-height: 1.55; }
+    .lede { max-width: 860px; margin: 0; font-size: 17px; }
+    .gradient-text {
+      background: linear-gradient(90deg, var(--peach), var(--gold), var(--rose));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .top-nav { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 24px 0 22px; }
+    .nav-primary, .nav-sub, .filters, .action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-sub { margin-left: 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .nav-kicker { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .top-nav a, button.button, .pager button {
+      padding: 8px 12px; border: 1px solid var(--border); border-radius: 999px;
+      background: #080d19cc; color: var(--muted); text-decoration: none;
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; cursor: pointer;
+    }
+    .nav-sub a { font-size: 11px; padding: 6px 10px; }
+    .top-nav a.active, button.button.primary { color: var(--text); border-color: var(--peach); }
+    .banner, .card {
+      margin: 0 0 16px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 22px;
+      background: linear-gradient(180deg, #11182be8, #090e1ae8);
+    }
+    .banner.current { border-color: #83e6b755; }
+    .banner.stale, .banner.inconsistent, .banner.missing { border-color: var(--warning); }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .metric { min-height: 84px; padding: 14px; border: 1px solid #ffffff12; border-radius: 16px; background: #060a14bb; }
+    .metric-value { color: var(--gold); font-family: "SFMono-Regular", Consolas, monospace; font-size: 22px; font-weight: 800; }
+    .metric-label { color: var(--muted); font-size: 11px; font-weight: 800; }
+    label { color: var(--muted); font-size: 12px; display: grid; gap: 4px; }
+    input, select { padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border); background: #060a14; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px 6px; border-bottom: 1px solid #ffffff14; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+    tr.selected td { background: #ffb08a14; }
+    button.link { padding: 0; border: 0; background: none; color: var(--peach); cursor: pointer; font-family: inherit; }
+    .origin { display: inline-block; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; }
+    .origin.inferred, .origin.ambiguous { border-color: var(--warning); color: var(--warning); }
+    .origin.missing, .origin.conflict { border-color: var(--danger); color: var(--danger); }
+    .origin.captured, .origin.narrative, .origin.invariant { border-color: var(--success); color: var(--success); }
+    .null { color: var(--warning); }
+    code, .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+    .split { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 16px; }
+    @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Horizon-1</div>
+    <h1><span class="gradient-text">Scoring</span></h1>
+    <p class="lede">A read-only view of the published single-scan decomposition. It does not rescore observations or publish a new generation.</p>
+    <nav class="top-nav" aria-label="Sandbox navigation">
+      <div class="nav-primary">
+        <a href="/">Horizon-1</a>
+        <a href="/scanner">Live Scanner</a>
+        <a class="active" href="/control">Intelligence</a>
+        <a href="/research">Research Memory</a>
+        <a href="/backtest">Backtests</a>
+        <a href="/research-intelligence">Experiments</a>
+      </div>
+      <div class="nav-sub" aria-label="Intelligence views">
+        <span class="nav-kicker">Intelligence</span>
+        <a href="/control">Operations</a>
+        <a class="active" href="/scoring-intelligence">Scoring</a>
+      </div>
+      <div class="nav-sub" aria-label="Experiment pipeline">
+        <span class="nav-kicker">Pipeline</span>
+        <a href="/research-queue">Queue</a>
+        <a href="/research-findings">Findings</a>
+        <a href="/rule-candidates">Candidates</a>
+        <a href="/rule-validations">Validations</a>
+      </div>
+    </nav>
+
+    <section class="banner" id="status-banner"><p id="status">Loading the published scoring generation…</p></section>
+
+    <section class="card">
+      <div class="kicker">Published generation</div>
+      <h2>What is stored</h2>
+      <div class="metric-grid" id="metrics"></div>
+      <p class="hint" id="identity"></p>
+    </section>
+
+    <section class="card">
+      <div class="kicker">How to read a reconstruction</div>
+      <h2>Methodology</h2>
+      <p>The Scout Score stored on an observation is the captured 0–100 result. The unclamped score is the inspected formula total before that cap. A total above 100 is clamped to 100, so one captured 100 can be compatible with more than one raw total.</p>
+      <p>Evidence-determined means the components, including a Specter penalty when one was required, were fixed by the captured narrative or by an invariant of the formula. Mathematical compatibility means a missing penalty was the only value in the inspected penalty domain that reproduced the captured score. That is not an independent confirmation, and neither class is a measure of later return.</p>
+      <p>An observation is ambiguous when more than one allowed penalty is compatible with the captured score. Those candidates stay listed. No candidate is stored as the reconstructed score, and a null total is not zero.</p>
+      <p>The methodology id is the inspected local snapshot. Deployment of that snapshot was not verified, so agreement with the formula is not a production revision identity.</p>
+    </section>
+
+    <section class="split">
+      <section class="card">
+        <div class="kicker">Explorer</div>
+        <h2>Published observations</h2>
+        <form class="filters" id="filters">
+          <label>Ticker <input id="ticker" name="ticker" maxlength="16"></label>
+          <label>Direction
+            <select id="direction" name="direction">
+              <option value="">Any</option>
+              <option>BULLISH</option>
+              <option>BEARISH</option>
+              <option>NEUTRAL</option>
+            </select>
+          </label>
+          <label>Class
+            <select id="reconstruction_class" name="reconstruction_class">
+              <option value="">Any</option>
+              <option value="A_evidence_determined">Evidence-determined</option>
+              <option value="B_algebraically_inferred">Algebraically inferred</option>
+              <option value="C_ambiguous">Ambiguous</option>
+              <option value="D_incomplete">Incomplete</option>
+              <option value="E_formula_mismatch">Formula mismatch</option>
+              <option value="E_evidence_conflict">Evidence conflict</option>
+            </select>
+          </label>
+          <label>Score from <input id="score_min" name="score_min" inputmode="numeric"></label>
+          <label>Score to <input id="score_max" name="score_max" inputmode="numeric"></label>
+          <button class="button primary" type="submit">Apply</button>
+        </form>
+        <div id="explorer"></div>
+        <div class="action-row pager" id="pager"></div>
+      </section>
+      <section class="card">
+        <div class="kicker">Observation</div>
+        <h2 id="detail-title">Select a row</h2>
+        <div id="detail"><p class="hint">The contribution vector loads for one stored observation.</p></div>
+      </section>
+    </section>
+
+    <section class="card">
+      <div class="kicker">Ambiguous</div>
+      <h2>More than one compatible score</h2>
+      <p>The captured score is kept. The unclamped score, clamped reconstruction, and residual stay empty because more than one candidate fits.</p>
+      <div id="ambiguous"></div>
+    </section>
+  </main>
+  <script>
+    const state = { offset: 0, limit: 25, total: 0, selected: "" };
+    const numberOrBlank = (value) => value === null || value === undefined ? "—" : String(value);
+    const originClass = (origin) => `origin ${origin || "missing"}`;
+
+    function metric(label, value) {
+      return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`;
+    }
+
+    async function loadSummary() {
+      const response = await fetch("/api/scoring-intelligence");
+      const payload = await response.json();
+      const banner = document.querySelector("#status-banner");
+      banner.className = `banner ${payload.generation_status && payload.generation_status.startsWith("stale") ? "stale" : payload.generation_status === "current" ? "current" : "missing"}`;
+      document.querySelector("#status").textContent = payload.generation_message || "Scoring generation could not be read.";
+      const published = payload.published || {};
+      const counts = payload.counts || {};
+      const classes = (payload.distributions || {}).reconstruction_class || {};
+      const independent = (payload.distributions || {}).independent_residual || {};
+      const compatible = (payload.distributions || {}).mathematical_compatibility_residual || {};
+      document.querySelector("#metrics").innerHTML = [
+        metric("Published", numberOrBlank(counts.published_rows)),
+        metric("Evidence-determined", numberOrBlank(classes.A_evidence_determined || 0)),
+        metric("Algebraic", numberOrBlank(classes.B_algebraically_inferred || 0)),
+        metric("Ambiguous", numberOrBlank(counts.ambiguous)),
+        metric("Missing or conflicting", numberOrBlank(counts.missing_or_conflicting)),
+        metric("Independent residual 0", numberOrBlank(independent["0"] || 0)),
+        metric("Compatibility residual 0", numberOrBlank(compatible["0"] || 0)),
+      ].join("");
+      document.querySelector("#identity").innerHTML = published.build_id
+        ? `Build <span class="mono">${published.build_id}</span> · ${published.status} · ${published.built_at || "no timestamp"}<br>Methodology <span class="mono">${published.methodology_id}</span> · deployment ${published.deployment_verification}<br>Decomposer ${published.decomposer_version} · schema ${published.schema_version}<br>Snapshot <span class="mono">${published.source_snapshot_sha256}</span><br>Population <span class="mono">${published.eligible_population_hash}</span><br>Scoring input <span class="mono">${published.scoring_input_fingerprint}</span><br>Source provenance <span class="mono">${published.source_provenance_fingerprint}</span>`
+        : "No completed scoring generation is available.";
+    }
+
+    function query() {
+      const form = new FormData(document.querySelector("#filters"));
+      const params = new URLSearchParams();
+      for (const [key, value] of form.entries()) {
+        if (String(value).trim()) params.set(key, String(value).trim());
+      }
+      params.set("limit", String(state.limit));
+      params.set("offset", String(state.offset));
+      return params;
+    }
+
+    async function loadExplorer() {
+      const response = await fetch(`/api/scoring-intelligence/observations?${query()}`);
+      const payload = await response.json();
+      const host = document.querySelector("#explorer");
+      if (!payload.ok) {
+        host.innerHTML = `<p>${payload.message}</p>`;
+        return;
+      }
+      state.total = payload.total;
+      if (!payload.observations.length) {
+        host.innerHTML = "<p>No published observations match these filters.</p>";
+      } else {
+        host.innerHTML = `<table><thead><tr><th>Ticker</th><th>Scan</th><th>Date</th><th>Direction</th><th>Captured</th><th>Unclamped</th><th>Clamped</th><th>Class</th><th>Warnings</th></tr></thead><tbody>${
+          payload.observations.map((row) => `<tr class="${row.observation_uid === state.selected ? "selected" : ""}"><td><button class="link" data-uid="${row.observation_uid}">${row.ticker || "—"}</button></td><td>${row.scan_result_id}</td><td>${(row.scanned_at || "").slice(0, 10) || "—"}</td><td>${row.direction || "—"}</td><td>${numberOrBlank(row.captured_scout_score)}</td><td class="${row.unclamped_score === null ? "null" : ""}">${row.unclamped_score === null ? "not unique" : row.unclamped_score}</td><td class="${row.clamped_score === null ? "null" : ""}">${row.clamped_score === null ? "not unique" : row.clamped_score}</td><td>${row.reconstruction_class}</td><td>${row.warning_count}</td></tr>`).join("")
+        }</tbody></table>`;
+        host.querySelectorAll("button[data-uid]").forEach((button) => {
+          button.addEventListener("click", () => loadDetail(button.dataset.uid));
+        });
+      }
+      const page = Math.floor(state.offset / state.limit) + 1;
+      const pages = Math.max(1, Math.ceil(state.total / state.limit));
+      document.querySelector("#pager").innerHTML = `<span class="hint">${state.total} matches · page ${page} of ${pages}</span> <button type="button" id="prev" ${state.offset === 0 ? "disabled" : ""}>Previous</button> <button type="button" id="next" ${state.offset + state.limit >= state.total ? "disabled" : ""}>Next</button>`;
+      document.querySelector("#prev").addEventListener("click", () => { state.offset = Math.max(0, state.offset - state.limit); loadExplorer(); });
+      document.querySelector("#next").addEventListener("click", () => { state.offset += state.limit; loadExplorer(); });
+    }
+
+    function componentRow(label, evidenced) {
+      const item = evidenced || { value: null, origin: "missing", detail: "", sources: [] };
+      const value = item.value === null || item.value === undefined ? "<span class=\"null\">not determined</span>" : item.value;
+      return `<tr><td>${label}</td><td>${value}</td><td><span class="${originClass(item.origin)}">${item.origin}</span></td><td>${item.detail || ""}<div class="hint">${(item.sources || []).join(", ")}</div></td></tr>`;
+    }
+
+    async function loadDetail(uid) {
+      state.selected = uid;
+      const response = await fetch(`/api/scoring-intelligence/observations/${encodeURIComponent(uid)}`);
+      const payload = await response.json();
+      const host = document.querySelector("#detail");
+      if (!payload.ok) {
+        document.querySelector("#detail-title").textContent = "Not available";
+        host.innerHTML = `<p>${payload.message}</p>`;
+        return;
+      }
+      const row = payload.observation;
+      document.querySelector("#detail-title").textContent = `${row.ticker || "Observation"} · scan ${row.scan_result_id}`;
+      const parts = row.contributions || {};
+      const warnings = (row.warnings || []).map((warning) => `<li>${warning}</li>`).join("");
+      const disagreements = (row.disagreements || []).map((item) => `<li>${item.field}: captured ${item.captured}, narrative ${item.narrative}</li>`).join("");
+      host.innerHTML = `
+        <p>Captured score ${numberOrBlank(row.captured_scout_score)}. Unclamped ${row.unclamped_score === null ? "<span class=\"null\">not uniquely determined</span>" : row.unclamped_score}. Clamped ${row.clamped_score === null ? "<span class=\"null\">not uniquely determined</span>" : row.clamped_score}. Residual ${row.reconstruction_error === null ? "<span class=\"null\">not uniquely determined</span>" : row.reconstruction_error}.</p>
+        <p>Direction ${row.direction || "—"} · reconstruction ${row.direction_status}. Confirmation ${row.formula_confirmation}. Class ${row.reconstruction_class}.</p>
+        <p class="hint">${row.formula_confirmation === "mathematical_compatibility" ? "The penalty was inferred because it was the only domain value compatible with the captured score. It was not printed as captured evidence." : row.formula_confirmation === "not_unique" ? "More than one penalty remains compatible. None is selected." : ""}</p>
+        <table><thead><tr><th>Component</th><th>Value</th><th>Origin</th><th>Evidence</th></tr></thead><tbody>
+          ${componentRow("Base", parts.base_score)}
+          ${componentRow("Atlas raw", parts.atlas_raw)}
+          ${componentRow("Atlas capped", parts.atlas_contribution)}
+          ${componentRow("Oracle raw", parts.oracle_raw)}
+          ${componentRow("Oracle capped", parts.oracle_contribution)}
+          ${componentRow("Phantom raw", parts.phantom_raw)}
+          ${componentRow("Phantom capped", parts.phantom_contribution)}
+          ${componentRow("Catalyst raw", parts.catalyst_raw)}
+          ${componentRow("Catalyst capped", parts.catalyst_contribution)}
+          ${componentRow("Specter bonus", parts.specter_clean_bonus)}
+          ${componentRow("Specter penalty", parts.specter_penalty)}
+          ${componentRow("Sector wind", parts.wind_contribution)}
+          ${componentRow("Trend alignment", parts.alignment_bonus)}
+          ${componentRow("Volatility", parts.volatility_bonus)}
+          ${componentRow("Earnings", parts.earnings_penalty)}
+        </tbody></table>
+        <h3>Warnings</h3>${warnings ? `<ul>${warnings}</ul>` : "<p>None stored.</p>"}
+        <h3>Disagreements</h3>${disagreements ? `<ul>${disagreements}</ul>` : "<p>None stored.</p>"}
+      `;
+      loadExplorer();
+    }
+
+    async function loadAmbiguous() {
+      const response = await fetch("/api/scoring-intelligence/ambiguous");
+      const payload = await response.json();
+      const host = document.querySelector("#ambiguous");
+      const rows = payload.observations || [];
+      if (!rows.length) {
+        host.innerHTML = "<p>No ambiguous observations are in the published generation.</p>";
+        return;
+      }
+      host.innerHTML = rows.map((row) => {
+        const candidates = (row.penalty_candidates || []).map((item) => `<li>Penalty ${item.penalty}, unclamped ${item.unclamped_score}, would clamp to ${item.clamped_score}</li>`).join("");
+        return `<article><h3><button class="link" data-uid="${row.observation_uid}">${row.ticker || "Observation"} scan ${row.scan_result_id}</button></h3><p>Captured ${numberOrBlank(row.captured_scout_score)}. Reconstructed unclamped, clamped, and residual are ${row.unclamped_score === null && row.clamped_score === null && row.reconstruction_error === null ? "empty" : "unexpectedly populated"}. The captured score is compatible with each candidate below.</p><ul>${candidates}</ul></article>`;
+      }).join("");
+      host.querySelectorAll("button[data-uid]").forEach((button) => {
+        button.addEventListener("click", () => loadDetail(button.dataset.uid));
+      });
+    }
+
+    document.querySelector("#filters").addEventListener("submit", (event) => {
+      event.preventDefault();
+      state.offset = 0;
+      loadExplorer();
+    });
+    loadSummary();
+    loadExplorer();
+    loadAmbiguous();
+  </script>
+</body>
+</html>

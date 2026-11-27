@@ -104,6 +104,13 @@ from rule_validation_engine import (
 )
 from research_intelligence import get_research_intelligence_dashboard
 from overview_read_model import build_overview_snapshot
+from scoring_intelligence_read_model import (
+    ScoringReadError,
+    build_scoring_intelligence_summary,
+    get_scoring_observation,
+    list_ambiguous_scoring_observations,
+    list_scoring_observations,
+)
 from ingest_scout_reports import (
     generate_findings_from_daily_reports,
     ingest_scout_reports,
@@ -126,6 +133,7 @@ RESEARCH_FINDINGS_HTML = SANDBOX_DIR / "research_findings.html"
 RULE_CANDIDATES_HTML = SANDBOX_DIR / "rule_candidates.html"
 RULE_VALIDATIONS_HTML = SANDBOX_DIR / "rule_validations.html"
 RESEARCH_INTELLIGENCE_HTML = SANDBOX_DIR / "research_intelligence.html"
+SCORING_INTELLIGENCE_HTML = SANDBOX_DIR / "scoring_intelligence.html"
 REPORTS_DIR = REPO_ROOT / "exports" / "reports"
 SAFE_REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 
@@ -386,6 +394,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/control", "/control.html"):
             self.send_file(CONTROL_HTML, "text/html; charset=utf-8")
             return
+        if parsed.path in ("/scoring-intelligence", "/scoring-intelligence.html"):
+            self.send_file(SCORING_INTELLIGENCE_HTML, "text/html; charset=utf-8")
+            return
         if parsed.path in ("/backtest", "/backtest.html"):
             self.send_file(BACKTEST_HTML, "text/html; charset=utf-8")
             return
@@ -415,6 +426,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/control/summary":
             self.send_json(build_control_summary())
+            return
+        if parsed.path == "/api/scoring-intelligence":
+            self._send_scoring_read(build_scoring_intelligence_summary)
+            return
+        if parsed.path == "/api/scoring-intelligence/observations":
+            self._send_scoring_observations(parsed.query)
+            return
+        if parsed.path == "/api/scoring-intelligence/ambiguous":
+            self._send_scoring_read(list_ambiguous_scoring_observations)
+            return
+        if parsed.path.startswith("/api/scoring-intelligence/observations/"):
+            observation_uid = urllib.parse.unquote(parsed.path.split("/api/scoring-intelligence/observations/", 1)[1])
+            try:
+                row = get_scoring_observation(observation_uid)
+            except ScoringReadError as exc:
+                self.send_json({"ok": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if row is None:
+                self.send_json(
+                    {"ok": False, "message": "Scoring observation was not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self.send_json({"ok": True, "observation": row})
             return
         if parsed.path == "/api/control/self-audit":
             self.send_json(build_horizon_self_audit())
@@ -1205,6 +1240,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_scoring_read(self, builder) -> None:
+        try:
+            self.send_json(builder())
+        except ScoringReadError as exc:
+            self.send_json({"ok": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _send_scoring_observations(self, query: str) -> None:
+        params = urllib.parse.parse_qs(query)
+
+        def optional_int(name: str) -> Optional[int]:
+            raw = (params.get(name) or [None])[0]
+            if raw in (None, ""):
+                return None
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise ScoringReadError(f"{name} must be an integer") from exc
+
+        try:
+            payload = list_scoring_observations(
+                ticker=(params.get("ticker") or [""])[0],
+                direction=(params.get("direction") or [""])[0],
+                reconstruction_class=(params.get("reconstruction_class") or [""])[0],
+                score_min=optional_int("score_min"),
+                score_max=optional_int("score_max"),
+                limit=int((params.get("limit") or ["25"])[0]),
+                offset=int((params.get("offset") or ["0"])[0]),
+            )
+        except (ScoringReadError, ValueError) as exc:
+            message = str(exc) if str(exc) else "scoring query is not valid"
+            self.send_json({"ok": False, "message": message}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[dashboard] {self.address_string()} - {format % args}")
