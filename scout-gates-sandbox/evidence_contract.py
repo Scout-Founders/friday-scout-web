@@ -356,6 +356,21 @@ class OutcomeKind(str, Enum):
     OPTION_CONTRACT = "option_contract"
 
 
+class OutcomeRealization(str, Enum):
+    """How an outcome relates to a trade.
+
+    hypothetical: a formula or a verified contract priced from history, with
+    no claim that a trade was sent.
+    observed_contract_price: a verified contract and a historical contract
+    price, still not an execution.
+    realized_execution: requires actual execution evidence.
+    """
+
+    HYPOTHETICAL = "hypothetical"
+    OBSERVED_CONTRACT_PRICE = "observed_contract_price"
+    REALIZED_EXECUTION = "realized_execution"
+
+
 class EmailClassification(str, Enum):
     TOP = "top"
     SECONDARY = "secondary"
@@ -601,6 +616,22 @@ def record_to_dict(record: Any) -> Dict[str, Any]:
 def is_decisive_evaluation(state: EvaluationState) -> bool:
     """True only for an evaluation that actually passed or failed."""
     return state.value in DECISIVE_EVALUATION_STATES
+
+
+def security_observation_id(
+    acquisition_run_id: str, symbol_as_observed: str, exchange: Optional[str] = None
+) -> str:
+    """One observation per run, ticker, and exchange.
+
+    A missing exchange stays in the id as an empty exchange marker so two
+    named exchanges cannot collapse into the no-exchange observation. The
+    function does not invent an instrument id.
+    """
+    _text("acquisition_run_id", acquisition_run_id)
+    _text("symbol_as_observed", symbol_as_observed)
+    _optional_text("exchange", exchange)
+    venue = exchange or ""
+    return "{0}|{1}|{2}".format(acquisition_run_id, venue, symbol_as_observed)
 
 
 def make_acquisition_run_id(
@@ -953,6 +984,7 @@ class SecurityObservation:
     methodology_id: str
     missing_reasons: Tuple[Tuple[str, str], ...]
     quote_request_id: Optional[str] = None
+    exchange: Optional[str] = None
     price: Optional[float] = None
     year_high: Optional[float] = None
     year_low: Optional[float] = None
@@ -964,6 +996,7 @@ class SecurityObservation:
     uniqueness: ClassVar[Tuple[str, ...]] = (
         "acquisition_run_id",
         "symbol_as_observed",
+        "exchange",
     )
 
 
@@ -1053,6 +1086,8 @@ class FeatureObservation:
     cache_retrieved_at: Optional[datetime] = None
     staleness_limit_seconds: Optional[int] = None
     supersedes_feature_observation_id: Optional[str] = None
+    revision_sequence: int = 0
+    consumed_by_decision: bool = False
 
     uniqueness: ClassVar[Tuple[str, ...]] = (
         "observation_id",
@@ -1060,6 +1095,7 @@ class FeatureObservation:
         "feature_name",
         "methodology_id",
         "evidence_derivation",
+        "revision_sequence",
     )
 
 
@@ -1101,12 +1137,14 @@ class RankingDecision:
     decision_available_at: datetime
     rank: Optional[int] = None
     cut_limit: Optional[int] = None
+    exchange: Optional[str] = None
 
     uniqueness: ClassVar[Tuple[str, ...]] = (
         "acquisition_run_id",
         "direction",
         "stage",
         "symbol_as_observed",
+        "exchange",
     )
 
 
@@ -1170,6 +1208,7 @@ class MarketOutcome:
     formula_strike_used: bool
     contract_verified: bool
     chain_present: bool
+    outcome_realization: OutcomeRealization = OutcomeRealization.HYPOTHETICAL
     value: Optional[float] = None
     missing_reason: Optional[str] = None
     observation_at: Optional[datetime] = None
@@ -1185,6 +1224,7 @@ class MarketOutcome:
         "horizon_sessions",
         "outcome_kind",
         "anchor_type",
+        "outcome_realization",
     )
 
 
@@ -1290,6 +1330,7 @@ class EvidenceCheckpointManifest:
     capture_completeness: CaptureCompleteness
     chunks: Tuple[ChunkRef, ...]
     previous_checkpoint_id: Optional[str] = None
+    evidence_accounting: str = "incremental"
 
     uniqueness: ClassVar[Tuple[str, ...]] = ("checkpoint_id",)
 
@@ -1531,6 +1572,7 @@ def validate_security_observation(record: SecurityObservation) -> None:
     _enum("evidence_derivation", record.evidence_derivation, EvidenceDerivation)
     _text("methodology_id", record.methodology_id)
     _optional_text("quote_request_id", record.quote_request_id)
+    _optional_text("exchange", record.exchange)
     for name, value in (
         ("price", record.price),
         ("year_high", record.year_high),
@@ -1548,9 +1590,11 @@ def validate_security_observation(record: SecurityObservation) -> None:
             _fail("receipt time cannot be stored as vendor effective time")
     elif record.quote_as_of is None:
         _fail("vendor quote time requires quote_as_of")
-    expected = "{0}:{1}".format(record.acquisition_run_id, record.symbol_as_observed)
+    expected = security_observation_id(
+        record.acquisition_run_id, record.symbol_as_observed, record.exchange
+    )
     if record.observation_id != expected:
-        _fail("observation_id does not match run and ticker")
+        _fail("observation_id does not match run, exchange, and ticker")
 
 
 def validate_directional_evaluation(record: DirectionalEvaluation) -> None:
@@ -1602,15 +1646,22 @@ def validate_gate_evaluation(record: GateEvaluation) -> None:
         _fail("clean must be a boolean when set")
     _optional_number("penalty", record.penalty)
     _optional_aware("evaluated_at", record.evaluated_at)
-    evaluated = {
+    # Attempted evaluations, including a gate that ran and found an input
+    # missing, have an evaluation timestamp. A gate that never started does
+    # not. An interruption may carry the time the attempt stopped.
+    attempted = {
         EvaluationState.EVALUATED_PASSED,
         EvaluationState.EVALUATED_FAILED,
         EvaluationState.EVALUATED_MISSING_INPUTS,
     }
-    if record.evaluation_state in evaluated and record.evaluated_at is None:
+    if record.evaluation_state in attempted and record.evaluated_at is None:
         _fail("an evaluated gate requires evaluated_at")
-    if record.evaluation_state not in evaluated and record.evaluated_at is not None:
-        _fail("an unevaluated gate cannot carry evaluated_at")
+    if (
+        record.evaluation_state not in attempted
+        and record.evaluation_state != EvaluationState.EVALUATION_INTERRUPTED
+        and record.evaluated_at is not None
+    ):
+        _fail("a gate that did not execute cannot carry evaluated_at")
     if record.production_reported_state == "clean_true_placeholder":
         if record.evaluation_state != EvaluationState.NOT_EVALUATED_EARLIER_FAILURE:
             _fail("a skipped Gate 4 placeholder cannot validate as a pass or fail")
@@ -1679,6 +1730,18 @@ def validate_feature_observation(record: FeatureObservation) -> None:
         and record.supersedes_feature_observation_id == record.feature_observation_id
     ):
         _fail("a feature cannot supersede itself")
+    _int("revision_sequence", record.revision_sequence, 0)
+    if not isinstance(record.consumed_by_decision, bool):
+        _fail("consumed_by_decision must be a boolean")
+    if record.revision_sequence == 0 and record.supersedes_feature_observation_id is not None:
+        _fail("the original feature revision does not supersede another row")
+    if record.revision_sequence > 0 and record.supersedes_feature_observation_id is None:
+        _fail("a later feature revision must name the row it follows")
+    if record.consumed_by_decision:
+        if record.evidence_derivation != EvidenceDerivation.CAPTURED or record.revision_sequence != 0:
+            _fail("only the original captured feature can be marked consumed by the decision")
+    if record.evidence_derivation != EvidenceDerivation.CAPTURED and record.consumed_by_decision:
+        _fail("a reconstructed or experimental feature was not consumed by the production decision")
 
 
 def assert_historically_available(
@@ -1697,12 +1760,21 @@ def assert_historically_available(
         _fail("feature was acquired after the decision that would use it")
     if feature.vendor_effective_at is not None and feature.vendor_effective_at > decision_at:
         _fail("vendor effective time is after the decision")
+    calculated_later = (
+        feature.calculated_at is not None and feature.calculated_at > decision_at
+    )
+    if feature.consumed_by_decision and calculated_later:
+        _fail("a retrospective calculation cannot be marked consumed by the production decision")
+    retrospective = calculated_later or feature.evidence_derivation != EvidenceDerivation.CAPTURED
     return {
         "usable": True,
         "vendor_effective_safe": feature.vendor_effective_source == TimeSource.VENDOR
         and feature.vendor_effective_at is not None,
         "acquired_at": feature.response_received_at,
         "cache_retrieved_at": feature.cache_retrieved_at,
+        "consumed_by_decision": feature.consumed_by_decision,
+        "retrospective": retrospective,
+        "calculated_at": feature.calculated_at,
     }
 
 
@@ -1861,6 +1933,26 @@ def validate_market_outcome(record: MarketOutcome) -> None:
             _fail("an option chain alone does not establish a strategy return")
     if record.observed_at is not None and record.observed_at < entry:
         _fail("outcome observation precedes entry")
+    _enum("outcome_realization", record.outcome_realization, OutcomeRealization)
+    if record.outcome_realization == OutcomeRealization.REALIZED_EXECUTION:
+        if record.anchor_type != OutcomeAnchor.ACTUAL_EXECUTION or record.execution_evidence_id is None:
+            _fail("realized execution requires actual execution evidence")
+    elif record.anchor_type == OutcomeAnchor.ACTUAL_EXECUTION:
+        _fail("actual execution evidence is a realized outcome, not a hypothetical one")
+    if record.outcome_realization == OutcomeRealization.OBSERVED_CONTRACT_PRICE:
+        if record.outcome_kind != OutcomeKind.OPTION_CONTRACT or not record.contract_verified:
+            _fail("an observed contract price requires a verified option contract")
+        if record.contract_symbol is None or record.execution_evidence_id is not None:
+            _fail("an observed contract price is not an execution")
+        if record.formula_strike_used:
+            _fail("a formula strike is not an observed contract price")
+    if (
+        record.outcome_realization == OutcomeRealization.HYPOTHETICAL
+        and record.outcome_kind == OutcomeKind.OPTION_CONTRACT
+        and record.contract_verified
+        and record.execution_evidence_id is not None
+    ):
+        _fail("a hypothetical contract return cannot carry execution evidence")
 
 
 def _member_sort_key(member: PopulationMember) -> Tuple[str, str, str]:
@@ -2209,6 +2301,8 @@ def validate_checkpoint(record: EvidenceCheckpointManifest) -> None:
     expected = "{0}/checkpoint/{1:04d}".format(record.acquisition_run_id, record.sequence)
     if record.checkpoint_id != expected:
         _fail("checkpoint_id does not match run and sequence")
+    if record.evidence_accounting not in ("incremental", "cumulative"):
+        _fail("evidence_accounting must be incremental or cumulative")
     if record.sequence == 1:
         if record.previous_checkpoint_id is not None:
             _fail("the first checkpoint has no predecessor")

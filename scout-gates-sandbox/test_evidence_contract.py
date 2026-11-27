@@ -80,6 +80,7 @@ from evidence_contract import (
     discovery_members,
     is_decisive_evaluation,
     make_acquisition_run_id,
+    security_observation_id,
     params_fingerprint,
     payload_identity,
     predictive_roi_from_observations,
@@ -246,7 +247,7 @@ def _request(run_id, symbol, state, external, *, retry=0, payload=None, received
 def _observation(run_id, symbol):
     return SecurityObservation(
         evidence_schema_version=EVIDENCE_SCHEMA_VERSION,
-        observation_id="{0}:{1}".format(run_id, symbol),
+        observation_id=security_observation_id(run_id, symbol),
         acquisition_run_id=run_id,
         symbol_as_observed=symbol,
         membership_id="universe-fixture:{0}:1".format(symbol),
@@ -523,6 +524,7 @@ class IdentityAndProvenanceTests(unittest.TestCase):
             feature_observation_id="feature-rsi-reconstructed",
             evidence_derivation=EvidenceDerivation.RECONSTRUCTED,
             value_number=30.0,
+            revision_sequence=1,
             supersedes_feature_observation_id=captured.feature_observation_id,
             feature_derivation=FeatureDerivation.CALCULATED,
         )
@@ -1014,6 +1016,7 @@ class PointInTimeTests(unittest.TestCase):
             evidence_derivation=EvidenceDerivation.RECONSTRUCTED,
             feature_derivation=FeatureDerivation.CALCULATED,
             value_number=31.0,
+            revision_sequence=1,
             supersedes_feature_observation_id=original.feature_observation_id,
             source_request_ids=("req-rsi", "req-bars"),
         )
@@ -1200,7 +1203,7 @@ class EconomicsTests(unittest.TestCase):
         known_zero = evaluate_budget(
             spend,
             BudgetCounters(),
-            _proposal(cost_known=True, actual_cost=0),
+            _proposal(cost_known=True, actual_cost=0, cost_currency="USD"),
         )
         self.assertEqual(known_zero.status, BudgetDecisionStatus.ALLOWED)
         permitted = evaluate_budget(

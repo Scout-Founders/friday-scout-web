@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Acquisition telemetry, derived ratios, and process-local budget decisions.
+"""Acquisition telemetry and process-local budget safeguards.
 
-No vendor price table lives here. Unknown cost stays null. A known zero
-marginal cost stays zero. Cache hits do not increment external request
-counts. This module does not send requests and does not enforce a budget
-across processes.
+These checks are operational support. They do not decide which research is
+worth doing. Unknown cost stays null. A known zero marginal cost stays zero.
+Cache hits do not increment external request counts. This module does not
+send requests and does not enforce a budget across machines.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Dict, Optional, Sequence, Tuple
 
 from evidence_contract import (
@@ -103,6 +105,7 @@ class DerivedAcquisitionMetrics:
 class EntitlementPolicy:
     entitlement_id: str
     permit_unknown_cost: bool
+    expires_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,8 @@ class ProposedAcquisition:
     actual_cost: Optional[float] = None
     counts_as_deep_security: bool = False
     entitlement_id: Optional[str] = None
+    external_requests: int = 1
+    cost_currency: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -401,10 +406,18 @@ def _decision(
     )
 
 
+def committed_external_requests(decision: BudgetDecision) -> int:
+    """Blocked proposals are not external acquisitions."""
+    if decision.status != BudgetDecisionStatus.ALLOWED:
+        return 0
+    return decision.external_request_increment
+
+
 def evaluate_budget(
     budget: AcquisitionBudget,
     counters: BudgetCounters,
     proposal: ProposedAcquisition,
+    as_of: Optional[datetime] = None,
 ) -> BudgetDecision:
     """Decide a single proposed acquisition against process-local counters.
 
@@ -418,7 +431,11 @@ def evaluate_budget(
     if proposal.duration_seconds < 0:
         _fail("duration_seconds must be >= 0")
     _number("elapsed_seconds", counters.elapsed_seconds)
-    external_increment = 0 if proposal.cache_hit else 1
+    if isinstance(proposal.external_requests, bool) or not isinstance(proposal.external_requests, int):
+        _fail("external_requests must be an integer")
+    if proposal.external_requests < 1 and not proposal.cache_hit:
+        _fail("an external proposal must request at least one call")
+    external_increment = 0 if proposal.cache_hit else proposal.external_requests
     if proposal.cache_hit or proposal.quota_units is None:
         quota_increment = 0
         quota_unknown = proposal.quota_units is None and not proposal.cache_hit
@@ -508,7 +525,7 @@ def evaluate_budget(
             )
     spend_cap = budget.max_actual_spend is not None or budget.max_estimated_spend is not None
     if spend_cap and not proposal.cost_known:
-        if not _unknown_cost_permitted(budget, proposal.entitlement_id):
+        if not _unknown_cost_permitted(budget, proposal.entitlement_id, as_of):
             return _decision(
                 BudgetDecisionStatus.BLOCKED_UNKNOWN_COST,
                 "spending cap requires a known cost",
@@ -518,6 +535,21 @@ def evaluate_budget(
     if proposal.cost_known:
         if proposal.actual_cost is None:
             _fail("known cost requires actual_cost")
+        if budget.spend_currency is not None:
+            if proposal.cost_currency is None:
+                return _decision(
+                    BudgetDecisionStatus.BLOCKED_SPENDING_BUDGET,
+                    "currency_missing",
+                    external_increment,
+                    quota_increment,
+                )
+            if proposal.cost_currency != budget.spend_currency:
+                return _decision(
+                    BudgetDecisionStatus.BLOCKED_SPENDING_BUDGET,
+                    "currency_mismatch",
+                    external_increment,
+                    quota_increment,
+                )
         if budget.max_actual_spend is not None:
             if counters.actual_spend + proposal.actual_cost > budget.max_actual_spend:
                 return _decision(
@@ -549,10 +581,50 @@ def evaluate_budget(
     )
 
 
-def _unknown_cost_permitted(budget: AcquisitionBudget, entitlement_id: Optional[str]) -> bool:
+def _unknown_cost_permitted(
+    budget: AcquisitionBudget,
+    entitlement_id: Optional[str],
+    as_of: Optional[datetime],
+) -> bool:
     if not entitlement_id:
         return False
     for policy in budget.approved_entitlements:
-        if policy.entitlement_id == entitlement_id and policy.permit_unknown_cost:
-            return True
+        if policy.entitlement_id != entitlement_id or not policy.permit_unknown_cost:
+            continue
+        if policy.expires_at is not None and (as_of is None or as_of >= policy.expires_at):
+            continue
+        return True
     return False
+
+
+class LocalBudgetLedger:
+    """Serialize process-local reservations. This is not cloud-wide enforcement."""
+
+    def __init__(self, budget: AcquisitionBudget, counters: BudgetCounters):
+        validate_budget(budget)
+        self.budget = budget
+        self.counters = counters
+        self._lock = threading.Lock()
+        self.shared_enforcement_implemented = False
+
+    def try_acquire(self, proposal: ProposedAcquisition, as_of: Optional[datetime] = None) -> BudgetDecision:
+        with self._lock:
+            decision = evaluate_budget(self.budget, self.counters, proposal, as_of=as_of)
+            if decision.status != BudgetDecisionStatus.ALLOWED:
+                return decision
+            self.counters = replace(
+                self.counters,
+                requests_this_run=self.counters.requests_this_run + decision.external_request_increment,
+                requests_today=self.counters.requests_today + decision.external_request_increment,
+                requests_this_month=self.counters.requests_this_month + decision.external_request_increment,
+                quota_units_consumed=self.counters.quota_units_consumed + decision.quota_increment,
+                retries=self.counters.retries + (1 if proposal.retry else 0),
+                deep_securities=self.counters.deep_securities + (1 if proposal.counts_as_deep_security else 0),
+                actual_spend=self.counters.actual_spend + (
+                    (proposal.actual_cost or 0) if proposal.cost_known else 0
+                ),
+                estimated_spend=self.counters.estimated_spend + (
+                    proposal.estimated_cost if proposal.estimated_cost is not None else 0
+                ),
+            )
+            return decision

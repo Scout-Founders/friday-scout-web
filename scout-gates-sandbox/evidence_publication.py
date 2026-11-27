@@ -15,9 +15,16 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
 
 from evidence_contract import (
     ENTITY_PRIMARY_FIELDS,
@@ -221,6 +228,22 @@ def _reject_duplicate_rows(entity: str, rows: Sequence[Mapping]) -> None:
         seen.add(identity)
 
 
+# The future cloud adapter must implement these semantics. This local store
+# only demonstrates them on one filesystem. It is not proof of GCS behavior.
+CLOUD_ADAPTER_REQUIREMENTS = (
+    "conditional create with ifGenerationMatch=0 for every immutable object",
+    "identical bytes for an existing generation are an idempotent retry",
+    "different bytes for an existing immutable name are a hard conflict",
+    "write a temporary object, then link or compose it into the final name",
+    "a crash remnant is not a published object and is not promoted",
+    "catalog entries are individual immutable objects, not an appended JSONL",
+    "the latest pointer uses a generation precondition and is optional",
+    "historical runs are listed from run-start and catalog prefixes",
+    "checkpoint chains are validated before a terminal is treated as complete",
+    "a repeated chunk object key is one payload, not a second copy of the rows",
+)
+
+
 class LocalEvidenceStore:
     """Process-local stand-in for an immutable object store."""
 
@@ -229,15 +252,68 @@ class LocalEvidenceStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def put_bytes(self, object_key: str, data: bytes) -> WriteResult:
+        """Publish by exclusive create. A partial file is not the object.
+
+        os.link is the local stand-in for a conditional create. Two writers
+        of different bytes cannot both become the published object.
+        """
         path = self._path(object_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            existing = path.read_bytes()
-            if existing == data:
-                return WriteResult(object_key, sha256_bytes(data), False, True)
-            raise ImmutableConflict(object_key)
-        path.write_bytes(data)
+            return self._existing_result(object_key, path, data)
+        partial = Path(str(path) + ".partial")
+        try:
+            descriptor = os.open(str(partial), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            for _ in range(50):
+                if path.exists():
+                    return self._existing_result(object_key, path, data)
+                time.sleep(0.01)
+            raise EvidenceContractError(
+                "a partial object is already present and was not promoted"
+            )
+        try:
+            os.write(descriptor, data)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(str(partial), str(path))
+        except FileExistsError:
+            os.unlink(partial)
+            return self._existing_result(object_key, path, data)
+        os.unlink(partial)
         return WriteResult(object_key, sha256_bytes(data), True, False)
+
+    def write_partial(self, object_key: str, data: bytes) -> str:
+        """Leave a crash remnant. The published name stays absent."""
+        path = self._path(object_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = Path(str(path) + ".partial")
+        descriptor = os.open(str(partial), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        try:
+            os.write(descriptor, data)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return str(Path(object_key + ".partial"))
+
+    def list_partials(self) -> list:
+        return sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*.partial"))
+
+    def discard_partials(self) -> int:
+        """Remove crash remnants. Do not promote them."""
+        removed = 0
+        for relative in self.list_partials():
+            self._path(relative).unlink()
+            removed += 1
+        return removed
+
+    def _existing_result(self, object_key: str, path: Path, data: bytes) -> WriteResult:
+        existing = path.read_bytes()
+        if existing == data:
+            return WriteResult(object_key, sha256_bytes(data), False, True)
+        raise ImmutableConflict(object_key)
 
     def put_run_start(self, start: RunStartRecord) -> WriteResult:
         validate_run_start(start)
@@ -291,12 +367,16 @@ class LocalEvidenceStore:
             canonical_json_bytes(checkpoint),
         )
 
-    def put_terminal(self, terminal: TerminalPublicationManifest) -> WriteResult:
+    def put_terminal(
+        self, terminal: TerminalPublicationManifest, *, publish_catalog: bool = True
+    ) -> WriteResult:
         validate_terminal(terminal)
         result = self.put_bytes(
             terminal_object_key(terminal.acquisition_run_id),
             canonical_json_bytes(terminal),
         )
+        if not publish_catalog:
+            return result
         catalog = CatalogEntry(
             evidence_schema_version=terminal.evidence_schema_version,
             acquisition_run_id=terminal.acquisition_run_id,
@@ -318,6 +398,23 @@ class LocalEvidenceStore:
             raise GenerationPreconditionError("generation must be >= 0")
         key = "pointers/latest-{0}.json".format(role)
         path = self._path(key)
+        lock_path = self._path(key + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_handle = open(str(lock_path), "a+")
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            return self._write_pointer_locked(
+                key, path, role, acquisition_run_id, catalog_key, expected_generation
+            )
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+
+    def _write_pointer_locked(
+        self, key, path, role, acquisition_run_id, catalog_key, expected_generation
+    ) -> WriteResult:
         desired_identity = {
             "acquisition_run_id": acquisition_run_id,
             "catalog_object_key": catalog_key,
