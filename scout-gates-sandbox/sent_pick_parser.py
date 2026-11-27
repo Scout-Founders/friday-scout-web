@@ -32,9 +32,9 @@ PARSE_MODE_EDITORIAL = "editorial"
 PARSE_MODE_RAW_SCAN_FALLBACK = "raw_scan_fallback"
 PARSE_MODE_UNRECOGNIZED = "unrecognized"
 
-# Bumped when heading recognition or strategy-text cleanup changes.
+# Bumped when heading, watch-list, or expiration-boundary recognition changes.
 # Recorded on each pick and persisted through the existing pick_json field.
-PARSER_VERSION = "sent-pick-parser-2"
+PARSER_VERSION = "sent-pick-parser-3"
 
 EMAIL_CLASSIFICATION_TOP = "top"
 EMAIL_CLASSIFICATION_SECONDARY = "secondary"
@@ -165,13 +165,17 @@ _STRIKE = re.compile(
     r"|\b\$(\d{2,5}(?:\.\d{1,2})?)\s*(?:strike|/)\b",
     re.IGNORECASE,
 )
+# Expiration values stay on the labeled line. Horizontal whitespace only, so a
+# following bullet or the next labeled field cannot become part of the date.
 _EXPIRATION = re.compile(
     r"(?:exp(?:iration|iry)?(?:\s*rec)?\s*(?:date)?\s*[:=\-]\s*)"
-    r"([A-Za-z0-9][A-Za-z0-9/\-]{0,20}(?:\s+[A-Za-z0-9/\-]{1,20}){0,4})"
-    r"|(?:\b(?:expiring|expires)\s+(?:on\s+)?)"
-    r"([A-Za-z0-9][A-Za-z0-9/\-]{0,20}(?:\s+[A-Za-z0-9/\-]{1,20}){0,4})",
+    r"([A-Za-z0-9][A-Za-z0-9/\-]{0,20}(?:[ \t]+[A-Za-z0-9/\-]{1,20}){0,4})"
+    r"|(?:\b(?:expiring|expires)[ \t]+(?:on[ \t]+)?)"
+    r"([A-Za-z0-9][A-Za-z0-9/\-]{0,20}(?:[ \t]+[A-Za-z0-9/\-]{1,20}){0,4})",
     re.IGNORECASE,
 )
+_TABLE_SEPARATOR_CELL = re.compile(r":?-{3,}:?")
+_WATCH_BULLET = re.compile(r"^(?:•|\*(?!\*)|-(?!\s*-)|\d+[.)])\s*(.*)$")
 _STRATEGY = re.compile(
     r"(?:strategy\s*[:=\-]\s*)([^\n]{3,80})"
     r"|((?:bull|bear)\s+(?:call|put)\s+spread)"
@@ -182,11 +186,6 @@ _STRATEGY = re.compile(
     r"|(LEAPS?)",
     re.IGNORECASE,
 )
-
-_WATCH_ENTRY_LINE = re.compile(
-    r"^\s*(?:[-*•]|\d+[\.\)])\s*(.+)$"
-)
-
 
 def _normalize_whitespace(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
@@ -388,13 +387,89 @@ def _extract_expiration(text: str) -> Optional[str]:
     match = _EXPIRATION.search(text)
     if not match:
         return None
-    raw = (match.group(1) or match.group(2) or "").strip(" .;,:")
-    raw = re.sub(r"\s+", " ", raw).strip()
+    raw = (match.group(1) or match.group(2) or "")
+    # A value never crosses into the next line or a following label.
+    raw = raw.splitlines()[0]
+    raw = re.split(r"[ \t]+-[ \t]+(?=[A-Za-z])", raw, maxsplit=1)[0]
+    raw = re.sub(r"\s+", " ", raw).strip(" .;,:")
     if not _looks_like_expiration_value(raw):
         return None
     if len(raw) > 48:
         raw = raw[:48].rstrip()
     return raw or None
+
+
+def _is_markdown_separator_row(line: str) -> bool:
+    text = line.strip()
+    if not text.startswith("|"):
+        return False
+    cells = [cell.strip() for cell in text.strip("|").split("|")]
+    return bool(cells) and all(_TABLE_SEPARATOR_CELL.fullmatch(cell) for cell in cells)
+
+
+def _markdown_first_cell(line: str) -> Optional[str]:
+    text = line.strip()
+    if not text.startswith("|"):
+        return None
+    cells = [cell.strip() for cell in text.strip("|").split("|")]
+    if not cells:
+        return None
+    return cells[0]
+
+
+def _ticker_from_structural_label(text: str) -> Optional[str]:
+    """Accept a ticker only when the line opens as a label, not as prose.
+
+    A label is a bold symbol, a bare uppercase symbol followed by a delimiter,
+    or a single-cell symbol. A title-case company name, a sentence that happens
+    to begin with a short word, and a statistic such as ``FCF +920%`` are not
+    labels. The symbol is not checked against a market-data listing.
+    """
+    raw = (text or "").strip()
+    if not raw or raw[0].isdigit():
+        return None
+    match = re.match(r"^(?:\*\*\s*)?([A-Z]{1,5})\b(.*)$", raw)
+    if not match or not _is_plausible_ticker(match.group(1)):
+        return None
+    ticker = match.group(1)
+    rest = match.group(2)
+    if raw.startswith("**"):
+        if re.match(r"^(?:\s*\*\*|\s*[—\-:|(]|\s+\$)", rest):
+            return ticker
+        return None
+    if rest == "" or re.match(r"^\s*(?:[—:|(]|$)", rest):
+        return ticker
+    # "SYM - note" is a label. "SYM -2.4%" is a statistic.
+    if re.match(r"^\s+-\s+\D", rest):
+        return ticker
+    return None
+
+
+def _watch_bullet_payload(line: str) -> Optional[str]:
+    """Return the payload of one bullet. A bold label is not a bullet."""
+    text = line.strip()
+    if not text or text.startswith("**"):
+        return None
+    match = _WATCH_BULLET.match(text)
+    if not match:
+        return None
+    payload = match.group(1).strip()
+    return payload or None
+
+
+def _watch_line_ticker(line: str, following_line: str) -> Optional[str]:
+    """Ticker for one watch line, or None when the line is not an entry."""
+    stripped = line.strip()
+    if not stripped or _is_markdown_separator_row(stripped):
+        return None
+    if stripped.startswith("|"):
+        if _is_markdown_separator_row(following_line):
+            return None
+        return _ticker_from_structural_label(_markdown_first_cell(stripped) or "")
+    payload = _watch_bullet_payload(stripped)
+    if payload is not None:
+        return _ticker_from_structural_label(payload)
+    return _ticker_from_structural_label(stripped)
 
 
 def _normalize_strategy_text(value: str) -> Optional[str]:
@@ -557,42 +632,38 @@ def _parse_watch_list_entries(
     *,
     parse_mode: str,
 ) -> list[dict[str, Any]]:
+    """Watch entries come from labels, bullets, and table data rows.
+
+    Table headers, separator rows, company-name sentences, and continuation
+    prose are not entries, even when they contain a short uppercase word.
+    """
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
+    lines: list[str] = []
+    if header_remainder.strip():
+        lines.append(header_remainder)
+    lines.extend(body.split("\n"))
 
-    candidate_lines: list[str] = []
-    if header_remainder:
-        candidate_lines.append(header_remainder)
-    for line in body.split("\n"):
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
-        bullet = _WATCH_ENTRY_LINE.match(stripped)
-        if bullet:
-            candidate_lines.append(bullet.group(1).strip())
-            continue
-        # Allow plain "TICKER — note" lines inside the watch section.
-        if _first_ticker_candidate(stripped):
-            candidate_lines.append(stripped)
-
-    for line in candidate_lines:
-        ticker = _first_ticker_candidate(line)
+        following = ""
+        for later in lines[index + 1 :]:
+            if later.strip():
+                following = later.strip()
+                break
+        ticker = _watch_line_ticker(stripped, following)
         if not ticker or ticker in seen:
             continue
-        # Skip lines that are mostly macro prose with incidental tickers later.
-        first_token_match = re.match(r"^\s*(?:\*\*)?([A-Za-z]{1,5})", line)
-        if first_token_match:
-            first = first_token_match.group(1).upper()
-            if first != ticker and first not in {"THE", "FOR", "AND"}:
-                # Ticker is not leading — too risky for watch-list extraction.
-                continue
         seen.add(ticker)
-        direction = _extract_direction(line)
-        strike = _extract_strike(line)
-        expiration = _extract_expiration(line)
-        strategy_text = _extract_strategy(line)
+        direction = _extract_direction(stripped)
+        strike = _extract_strike(stripped)
+        expiration = _extract_expiration(stripped)
+        strategy_text = _extract_strategy(stripped)
         confidence = 0.72 if direction else 0.66
-        if line.upper().startswith(ticker) or f"**{ticker}**" in line.upper().replace(" ", ""):
+        compact = stripped.upper().replace(" ", "")
+        if stripped.upper().startswith(ticker) or f"**{ticker}**" in compact:
             confidence += 0.1
         confidence = round(min(confidence, 0.95), 2)
         entries.append(
@@ -600,7 +671,7 @@ def _parse_watch_list_entries(
                 classification=EMAIL_CLASSIFICATION_WATCH,
                 ticker=ticker,
                 source_section="watch",
-                source_excerpt=line[:500],
+                source_excerpt=stripped[:500],
                 direction=direction,
                 strike=strike,
                 expiration=expiration,

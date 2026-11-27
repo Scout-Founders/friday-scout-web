@@ -224,7 +224,7 @@ WATCH LIST
         self.assertIsNone(top["expiration"])
         self.assertIsNone(watch["direction"])
         self.assertIsNone(watch["strategy_text"])
-        self.assertEqual(top["parser_version"], "sent-pick-parser-2")
+        self.assertEqual(top["parser_version"], "sent-pick-parser-3")
 
     def test_strategy_markdown_cleanup_does_not_change_words(self) -> None:
         from sent_pick_parser import _normalize_strategy_text
@@ -246,6 +246,126 @@ Strategy: long call.
             _identities(text),
             [("secondary", "AMD"), ("top", "QCOM")],
         )
+
+
+class WatchListAndExpirationTests(unittest.TestCase):
+    def _watch(self, body: str) -> list[dict]:
+        text = f"MACRO BRIEF\nQuiet.\n\nWATCH LIST\n{body}\n"
+        parsed = _parse(text)
+        self.assertEqual(parsed["parse_mode"], "editorial")
+        return parsed["picks"]
+
+    def test_bold_ticker_labels_and_short_symbols(self) -> None:
+        picks = self._watch(
+            "**HL (Hecla Mining)** — metals name\n"
+            "**F** — single-letter symbol on a label\n"
+            "**RDDT $100.62** — five-letter symbol with a price\n"
+            "**IONQ ($23.54)** — price in parentheses\n"
+        )
+        self.assertEqual([pick["ticker"] for pick in picks], ["HL", "F", "RDDT", "IONQ"])
+        for pick in picks:
+            self.assertIsNone(pick["direction"])
+            self.assertIsNone(pick["strike"])
+            self.assertIsNone(pick["expiration"])
+            self.assertEqual(pick["parser_version"], "sent-pick-parser-3")
+
+    def test_bullets_accept_labels_and_ignore_duplicate_lines(self) -> None:
+        picks = self._watch(
+            "- NVDA: waiting on volume\n"
+            "* AMD — second label\n"
+            "• ON: short symbol\n"
+            "1. AVGO — numbered label\n"
+            "- NVDA: repeated bullet\n"
+        )
+        self.assertEqual([pick["ticker"] for pick in picks], ["NVDA", "AMD", "ON", "AVGO"])
+
+    def test_markdown_table_keeps_data_rows_only(self) -> None:
+        picks = self._watch(
+            "| Ticker | Why We're Watching |\n"
+            "|---|---|\n"
+            "| **QBTS** | oversold, needs the rest of the gate data |\n"
+            "| **GTLB** | put candidate, no explicit contract |\n"
+            "| DDOG | growing, wait for a technical turn |\n"
+        )
+        self.assertEqual([pick["ticker"] for pick in picks], ["QBTS", "GTLB", "DDOG"])
+        self.assertIsNone(picks[0]["direction"])
+        self.assertIsNone(picks[0]["strategy_text"])
+
+    def test_separator_only_table_adds_nothing(self) -> None:
+        self.assertEqual(self._watch("|---|---|\n| --- | --- |\n"), [])
+
+    def test_narrative_company_name_and_statistics_are_not_entries(self) -> None:
+        picks = self._watch(
+            "**UCTT — $52.85 | RSI 26 | FCF +920%**\n"
+            "Ultra Clean Holdings supplies equipment components and remains on watch.\n"
+            "1,505% revenue growth is not a typo. Cash is shrinking.\n"
+            "FCF +920% and EPS acceleration are statistics, not a symbol.\n"
+            "WHY this sentence is narrative even though it opens in capitals.\n"
+            "IS not a ticker when it begins an ordinary sentence.\n"
+        )
+        self.assertEqual([pick["ticker"] for pick in picks], ["UCTT"])
+        self.assertIsNone(picks[0]["strike"])
+        self.assertIsNone(picks[0]["expiration"])
+
+    def test_expiration_stops_before_the_next_label(self) -> None:
+        text = """\
+MACRO BRIEF
+Quiet.
+
+TOP PICK — BSX
+- Expiration: Jan 2028 (15+ months)
+- Estimated net debit: about three dollars
+
+SECONDARY PICK — KTOS
+- Expiration: Jan 2028
+- Estimated net debit: about four dollars
+"""
+        parsed = _parse(text)
+        self.assertEqual(
+            [(pick["ticker"], pick["expiration"]) for pick in parsed["picks"]],
+            [("BSX", "Jan 2028"), ("KTOS", "Jan 2028")],
+        )
+        for pick in parsed["picks"]:
+            self.assertIsNone(pick["strike"])
+            self.assertNotIn("Estimated", pick["expiration"])
+
+    def test_expiration_preserves_stated_precision_without_filling_gaps(self) -> None:
+        text = """\
+MACRO BRIEF
+Quiet.
+
+TOP PICK — HL
+Sell the name expiring January 16, 2026 and do not invent a contract.
+
+SECONDARY PICK — KTOS
+Expiration: Nov 21
+No year is written on this line.
+
+WATCH LIST
+- AMD: no expiration is stated
+"""
+        parsed = _parse(text)
+        by_ticker = {pick["ticker"]: pick for pick in parsed["picks"]}
+        self.assertEqual(by_ticker["HL"]["expiration"], "January 16")
+        self.assertEqual(by_ticker["KTOS"]["expiration"], "Nov 21")
+        self.assertIsNone(by_ticker["AMD"]["expiration"])
+        self.assertIsNone(by_ticker["HL"]["strike"])
+        self.assertIsNone(by_ticker["KTOS"]["direction"])
+
+    def test_missing_expiration_stays_missing(self) -> None:
+        text = """\
+MACRO BRIEF
+Quiet.
+
+TOP PICK — COST (CALL)
+Strategy: long call.
+No date label appears in this section.
+"""
+        pick = _parse(text)["picks"][0]
+        self.assertEqual(pick["direction"], "CALL")
+        self.assertEqual(pick["strategy_text"], "long call")
+        self.assertIsNone(pick["expiration"])
+        self.assertIsNone(pick["strike"])
 
 
 class SentPickIngestIntegrityTests(unittest.TestCase):
@@ -328,7 +448,7 @@ Synthetic brief.
         self.assertEqual(emailed["HL"]["emailClassification"], "top")
         self.assertIsNone(emailed["HL"]["direction"])
         stored = emailed["KTOS"]["pick"]
-        self.assertEqual(stored["parser_version"], "sent-pick-parser-2")
+        self.assertEqual(stored["parser_version"], "sent-pick-parser-3")
 
     def test_repeated_ingestion_keeps_ids_and_report_body(self) -> None:
         import ingest_scout_reports as isr
