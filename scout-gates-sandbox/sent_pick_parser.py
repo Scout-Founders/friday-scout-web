@@ -5,6 +5,19 @@ Parses Claude editorial sections from `raw_report_text` (the SMTP email body):
 
   TOP PICK / SECONDARY PICK / WATCH LIST
 
+Section headings may use markdown hashes, bold markers, emoji or other
+symbol prefixes, numbering, and varied capitalization. The keyword must be
+the first words after that decoration. A sentence that merely mentions
+"top pick" or "watch list" is not a section.
+
+Strategy text has surrounding markdown emphasis removed (`Bull Call Spread**`
+becomes `Bull Call Spread`). The words themselves are not rewritten.
+Direction, strike, expiration, score, and contract fields are taken only
+from the editorial section. Missing fields stay missing.
+
+`parser_version` is stored on each pick dict. Ingest persists that dict in
+the existing `pick_json` column. There is no separate parser-version column.
+
 Distinguishes editorial email bodies from raw-scan fallback dumps so
 deterministic FINAL RANKINGS are never treated as Claude classifications.
 """
@@ -18,6 +31,10 @@ from typing import Any, Optional
 PARSE_MODE_EDITORIAL = "editorial"
 PARSE_MODE_RAW_SCAN_FALLBACK = "raw_scan_fallback"
 PARSE_MODE_UNRECOGNIZED = "unrecognized"
+
+# Bumped when heading recognition or strategy-text cleanup changes.
+# Recorded on each pick and persisted through the existing pick_json field.
+PARSER_VERSION = "sent-pick-parser-2"
 
 EMAIL_CLASSIFICATION_TOP = "top"
 EMAIL_CLASSIFICATION_SECONDARY = "secondary"
@@ -84,38 +101,30 @@ _TICKER_BLOCKLIST = frozenset(
     }
 )
 
-_SECTION_HEADER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    (
-        EMAIL_CLASSIFICATION_TOP,
-        re.compile(
-            r"^\s*(?:#{1,6}\s*|\*\*\s*)?(?:(?:\d+)[\.\)]\s*)?"
-            r"TOP\s+PICK\b\s*(?:—|-|:|\*\*)?\s*(.*)$",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        EMAIL_CLASSIFICATION_SECONDARY,
-        re.compile(
-            r"^\s*(?:#{1,6}\s*|\*\*\s*)?(?:(?:\d+)[\.\)]\s*)?"
-            r"SECONDARY\s+PICK\b\s*(?:—|-|:|\*\*)?\s*(.*)$",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        EMAIL_CLASSIFICATION_WATCH,
-        re.compile(
-            r"^\s*(?:#{1,6}\s*|\*\*\s*)?(?:(?:\d+)[\.\)]\s*)?"
-            r"WATCH\s+LIST\b\s*(?:—|-|:|\*\*)?\s*(.*)$",
-            re.IGNORECASE,
-        ),
-    ),
-]
-
-_OTHER_SECTION_HEADER = re.compile(
-    r"^\s*(?:#{1,6}\s*|\*\*\s*)?(?:(?:\d+)[\.\)]\s*)?"
-    r"(?:MACRO\s+BRIEF|SECTOR\s+TABLE|ACTIVE\s+TRADE|DISCLAIMER|FINAL\s+RANKINGS|"
+# Heading decoration is stripped before the keyword is tested, so these
+# patterns see the words themselves. A keyword that is not at the start of
+# the stripped line does not match.
+_SECTION_KEYWORD = re.compile(
+    r"^(TOP\s+PICK|SECONDARY\s+PICK|WATCH\s+LIST)\b[ \t]*(?:[—\-:]|\*\*)?[ \t]*(.*)$",
+    re.IGNORECASE,
+)
+_SECTION_CLASS = {
+    "TOP PICK": EMAIL_CLASSIFICATION_TOP,
+    "SECONDARY PICK": EMAIL_CLASSIFICATION_SECONDARY,
+    "WATCH LIST": EMAIL_CLASSIFICATION_WATCH,
+}
+_OTHER_SECTION_KEYWORD = re.compile(
+    r"^(?:MACRO\s+BRIEF|SECTOR\s+TABLE|ACTIVE\s+TRADE|DISCLAIMER|FINAL\s+RANKINGS|"
     r"CALL\s+CANDIDATES|PUT\s+CANDIDATES|VERDICT)\b",
     re.IGNORECASE,
+)
+_HEADING_DECORATIONS = (
+    re.compile(r"^#{1,6}[ \t]*"),
+    re.compile(r"^\*\*[ \t]*"),
+    re.compile(r"^\d+[.)][ \t]+"),
+    # Emoji and other symbols. Asterisks and hashes are handled above so a
+    # bullet or bold marker is not eaten as decoration.
+    re.compile(r"^[^\w\s#*]+[ \t]*"),
 )
 
 _RAW_SCAN_MARKERS = (
@@ -226,20 +235,56 @@ def detect_parse_mode(raw_report_text: Optional[str]) -> str:
     return PARSE_MODE_UNRECOGNIZED
 
 
+def _strip_heading_decoration(line: str) -> str:
+    """Remove heading markers, bold markers, numbering, and symbol prefixes."""
+    text = line.strip()
+    while text:
+        for pattern in _HEADING_DECORATIONS:
+            match = pattern.match(text)
+            if match and match.end() > 0:
+                text = text[match.end() :].strip()
+                break
+        else:
+            break
+    return text.strip()
+
+
+def _remainder_starts_with_ticker(remainder: str) -> bool:
+    """True when the heading tail opens with a ticker, not a later word."""
+    line = remainder.strip()
+    match = re.match(r"^(?:\*\*)?([A-Za-z]{1,5})(?:\*\*)?(?=\b|[\s(\-—:])", line)
+    if not match:
+        return False
+    return _is_plausible_ticker(match.group(1).upper())
+
+
+def _remainder_is_narrative(remainder: str) -> bool:
+    """Reject a long clause that names the section without being a heading."""
+    text = remainder.strip()
+    if not text or _remainder_starts_with_ticker(text):
+        return False
+    return len(text.split()) > 8
+
+
 def _match_section_header(line: str) -> Optional[tuple[str, str]]:
-    for classification, pattern in _SECTION_HEADER_PATTERNS:
-        match = pattern.match(line)
-        if match:
-            remainder = (match.group(1) or "").strip()
-            remainder = remainder.strip("*").strip()
-            return classification, remainder
-    return None
+    stripped = _strip_heading_decoration(line)
+    match = _SECTION_KEYWORD.match(stripped)
+    if not match:
+        return None
+    keyword = re.sub(r"\s+", " ", match.group(1)).upper()
+    classification = _SECTION_CLASS.get(keyword)
+    if classification is None:
+        return None
+    remainder = (match.group(2) or "").strip().strip("*").strip()
+    if _remainder_is_narrative(remainder):
+        return None
+    return classification, remainder
 
 
 def _is_other_section_header(line: str) -> bool:
     if _match_section_header(line):
         return False
-    return bool(_OTHER_SECTION_HEADER.match(line))
+    return bool(_OTHER_SECTION_KEYWORD.match(_strip_heading_decoration(line)))
 
 
 def _split_editorial_sections(text: str) -> list[tuple[str, str, str]]:
@@ -352,14 +397,23 @@ def _extract_expiration(text: str) -> Optional[str]:
     return raw or None
 
 
+def _normalize_strategy_text(value: str) -> Optional[str]:
+    """Remove markdown emphasis wrapped around an otherwise unchanged phrase."""
+    text = str(value).replace("**", "")
+    text = text.strip().strip("*_`").strip()
+    text = re.sub(r"\s+", " ", text).strip(" .;,:")
+    if not text:
+        return None
+    return text[:120]
+
+
 def _extract_strategy(text: str) -> Optional[str]:
     match = _STRATEGY.search(text)
     if not match:
         return None
     for group in match.groups():
         if group and str(group).strip():
-            value = re.sub(r"\s+", " ", str(group).strip(" .;,:"))
-            return value[:120] if value else None
+            return _normalize_strategy_text(str(group))
     return None
 
 
@@ -432,6 +486,7 @@ def _build_pick(
         "source_section": source_section,
         "parser_confidence": parser_confidence,
         "parse_mode": parse_mode,
+        "parser_version": PARSER_VERSION,
         "source_excerpt": source_excerpt[:500],
     }
 
